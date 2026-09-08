@@ -238,3 +238,69 @@ RETURNING *;
 INSERT INTO payment_coverage (processed_transaction_id, member_number, covers_year, covers_month)
 VALUES (sqlc.arg(processed_transaction_id), sqlc.arg(member_number), sqlc.arg(covers_year), sqlc.arg(covers_month))
 ON CONFLICT (member_number, covers_year, covers_month) DO NOTHING;
+
+-- name: GetTransactionDetail :one
+-- One row for the transaction browser's detail / edit view — same columns as
+-- ListTransactions minus the window count. Covered months come from
+-- ListCoverageForTransaction.
+SELECT
+    pt.id,
+    rt.transaction_date,
+    rt.amount,
+    rt.currency,
+    pt.direction,
+    pt.category,
+    pt.member_number,
+    pt.matched_by,
+    pt.is_public_visible,
+    rt.variable_symbol,
+    rt.specific_symbol,
+    rt.constant_symbol,
+    rt.counter_account_number,
+    rt.counter_account_name,
+    rt.message_for_recipient,
+    rt.user_identification,
+    rt.comment
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE pt.id = sqlc.arg(id);
+
+-- name: ListCoverageForTransaction :many
+SELECT covers_year, covers_month
+FROM payment_coverage
+WHERE processed_transaction_id = sqlc.arg(processed_transaction_id)
+ORDER BY covers_year, covers_month;
+
+-- name: MemberExists :one
+SELECT EXISTS (SELECT 1 FROM members WHERE member_number = sqlc.arg(member_number)) AS exists;
+
+-- name: AssignTransactionToMember :one
+-- Manual member match (see docs/logic-design.md "Manual Assignment & Coverage").
+-- Coverage rows are managed separately by the caller in the same DB transaction.
+UPDATE processed_transactions
+SET member_number = sqlc.arg(member_number),
+    category = sqlc.arg(category),
+    matched_by = 'manual'
+WHERE id = sqlc.arg(id)
+RETURNING id;
+
+-- name: UnassignTransaction :one
+-- Reverts a manual (or automatic) match: clears the member and matched_by, and
+-- resets category to the direction-based default the caller passes in.
+UPDATE processed_transactions
+SET member_number = NULL,
+    matched_by = NULL,
+    category = sqlc.arg(category)
+WHERE id = sqlc.arg(id)
+RETURNING id;
+
+-- name: DeleteCoverageForTransaction :exec
+DELETE FROM payment_coverage WHERE processed_transaction_id = sqlc.arg(processed_transaction_id);
+
+-- name: InsertCoverageRow :execrows
+-- ON CONFLICT DO NOTHING + :execrows so the caller can tell which requested
+-- month was already covered by a *different* transaction (0 rows affected) and
+-- report it, rather than silently dropping it.
+INSERT INTO payment_coverage (processed_transaction_id, member_number, covers_year, covers_month)
+VALUES (sqlc.arg(processed_transaction_id), sqlc.arg(member_number), sqlc.arg(covers_year), sqlc.arg(covers_month))
+ON CONFLICT (member_number, covers_year, covers_month) DO NOTHING;

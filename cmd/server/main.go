@@ -103,6 +103,9 @@ func main() {
 	// survive to production as-is. See internal/keycloak and handler/auth.go.
 	api.HandleFunc("GET /members", handler.RequireRole(keycloakProvider, keycloak.RoleListMembers, handler.ListMembers(db.New(pool))))
 	api.HandleFunc("GET /transactions", handler.RequireRole(keycloakProvider, keycloak.RoleListTransactions, handler.ListTransactions(db.New(pool))))
+	api.HandleFunc("GET /transactions/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleListTransactions, handler.GetTransaction(db.New(pool))))
+	api.HandleFunc("PUT /transactions/{id}/assignment", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.AssignTransaction(pool)))
+	api.HandleFunc("DELETE /transactions/{id}/assignment", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.UnassignTransaction(pool)))
 	api.HandleFunc("GET /payments/{member_number}/history", handler.RequireRole(keycloakProvider, keycloak.RolePaymentHistory, handler.PaymentHistory(db.New(pool))))
 	api.HandleFunc("GET /payments/me/history", handler.RequireAuth(keycloakProvider, handler.MyPaymentHistory(db.New(pool))))
 	api.HandleFunc("GET /payments/{year}/{month}/missing", handler.RequireRole(keycloakProvider, keycloak.RolePaymentHistory, handler.MissingPayments(db.New(pool))))

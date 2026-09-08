@@ -11,11 +11,15 @@ import (
 )
 
 type Querier interface {
+	// Manual member match (see docs/logic-design.md "Manual Assignment & Coverage").
+	// Coverage rows are managed separately by the caller in the same DB transaction.
+	AssignTransactionToMember(ctx context.Context, arg AssignTransactionToMemberParams) (int64, error)
 	CreateBankAccount(ctx context.Context, arg CreateBankAccountParams) (BankAccount, error)
 	CreatePaymentCoverage(ctx context.Context, arg CreatePaymentCoverageParams) error
 	CreateProcessedTransaction(ctx context.Context, arg CreateProcessedTransactionParams) (ProcessedTransaction, error)
 	CreateSyncFioRun(ctx context.Context, bankAccountID int32) (SyncFioRun, error)
 	CreateSyncOrcaRun(ctx context.Context) (SyncOrcaRun, error)
+	DeleteCoverageForTransaction(ctx context.Context, processedTransactionID int64) error
 	// Seeds the auto-generated "default" payment identifier for a member: variable
 	// symbol == member_number, valid from their fee_start_date. Runs on every Orca
 	// sync. DO NOTHING on conflict so a re-run is a no-op. Skipped by the caller when
@@ -27,8 +31,17 @@ type Querier interface {
 	GetMaxFioTransactionID(ctx context.Context, bankAccountID int32) (int64, error)
 	GetMemberNumberBySub(ctx context.Context, sub pgtype.UUID) (int32, error)
 	GetPaymentHistory(ctx context.Context, memberNumber int32) ([]GetPaymentHistoryRow, error)
+	// One row for the transaction browser's detail / edit view — same columns as
+	// ListTransactions minus the window count. Covered months come from
+	// ListCoverageForTransaction.
+	GetTransactionDetail(ctx context.Context, id int64) (GetTransactionDetailRow, error)
+	// ON CONFLICT DO NOTHING + :execrows so the caller can tell which requested
+	// month was already covered by a *different* transaction (0 rows affected) and
+	// report it, rather than silently dropping it.
+	InsertCoverageRow(ctx context.Context, arg InsertCoverageRowParams) (int64, error)
 	InsertRawTransaction(ctx context.Context, arg InsertRawTransactionParams) (int64, error)
 	ListBankAccounts(ctx context.Context) ([]BankAccount, error)
+	ListCoverageForTransaction(ctx context.Context, processedTransactionID int64) ([]ListCoverageForTransactionRow, error)
 	ListMembers(ctx context.Context) ([]Member, error)
 	// Members who were liable for the membership fee in the given year/month but
 	// have no payment_coverage row for it. "Liable" = fee_start_date is set (the
@@ -54,6 +67,7 @@ type Querier interface {
 	// docs/logic-design.md "Transaction Browser".
 	ListTransactions(ctx context.Context, arg ListTransactionsParams) ([]ListTransactionsRow, error)
 	ListUnprocessedTransactions(ctx context.Context) ([]RawTransaction, error)
+	MemberExists(ctx context.Context, memberNumber int32) (bool, error)
 	// Mirrors members.fee_stop_date onto the default payment identifier's valid_to
 	// (variable_symbol == member_number): fee liability ended -> row closed with that
 	// date, fee_stop_date cleared in Orca -> row reopened (valid_to = NULL). The sync
@@ -63,6 +77,9 @@ type Querier interface {
 	// that row has variable_symbol != member_number so this UPDATE never touches it.
 	// The IS DISTINCT FROM guard makes a steady-state run write nothing.
 	SyncDefaultPaymentIdentifierValidTo(ctx context.Context, arg SyncDefaultPaymentIdentifierValidToParams) error
+	// Reverts a manual (or automatic) match: clears the member and matched_by, and
+	// resets category to the direction-based default the caller passes in.
+	UnassignTransaction(ctx context.Context, arg UnassignTransactionParams) (int64, error)
 	UpsertMember(ctx context.Context, arg UpsertMemberParams) error
 }
 

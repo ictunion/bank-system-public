@@ -1,5 +1,16 @@
 import { userManager } from '../auth'
 
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: unknown,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
 // Single entry point for API calls. Attaches the current Keycloak access token,
 // and on a 401 tries one silent renew + retry before forcing a fresh sign-in.
 // All paths are same-origin and relative (`/api/...`) — dev proxy and prod nginx
@@ -16,7 +27,6 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
   const res = await fetch(path, { ...init, headers })
   if (res.status !== 401) return res
 
-  // Access token rejected — attempt one refresh, then retry the request once.
   try {
     const renewed = await userManager.signinSilent()
     if (renewed?.access_token) {
@@ -30,10 +40,34 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
   return res
 }
 
-export async function apiGet<T>(path: string): Promise<T> {
-  const res = await apiFetch(path)
-  if (!res.ok) {
-    throw new Error(`GET ${path} → ${res.status}: ${await res.text()}`)
+// JSON request/response helper. Returns the parsed body (or undefined for 204),
+// throws ApiError with the parsed error body on a non-2xx.
+export async function apiSend<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const init: RequestInit = { method }
+  if (body !== undefined) {
+    init.body = JSON.stringify(body)
+    init.headers = { 'Content-Type': 'application/json' }
   }
-  return (await res.json()) as T
+
+  const res = await apiFetch(path, init)
+  if (res.status === 204) return undefined as T
+
+  const text = await res.text()
+  let parsed: unknown = null
+  if (text) {
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      parsed = text
+    }
+  }
+
+  if (!res.ok) {
+    throw new ApiError(res.status, parsed, `${method} ${path} → ${res.status}`)
+  }
+  return parsed as T
+}
+
+export function apiGet<T>(path: string): Promise<T> {
+  return apiSend<T>('GET', path)
 }

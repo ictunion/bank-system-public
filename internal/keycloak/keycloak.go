@@ -46,12 +46,20 @@ const (
 	// against members.sub instead of checking this role.
 	RolePaymentHistory Role = "payment-history"
 
-	// RoleListTransactions gates GET /transactions (see handler.ListTransactions)
-	// — the admin transaction browser. Kept separate from RolePaymentHistory
-	// because this view shows every bank transaction with counterparty names,
-	// including salary payments, with no redaction; "chase up missing member
-	// payments" and "see who gets paid what" are different levels of trust.
+	// RoleListTransactions gates GET /transactions and GET /transactions/{id}
+	// (see handler.ListTransactions / handler.GetTransaction) — the admin
+	// transaction browser. Kept separate from RolePaymentHistory because this
+	// view shows every bank transaction with counterparty names, including
+	// salary payments, with no redaction; "chase up missing member payments"
+	// and "see who gets paid what" are different levels of trust.
 	RoleListTransactions Role = "list-transactions"
+
+	// RoleManageTransactions gates the transaction write routes
+	// (PUT/DELETE /transactions/{id}/assignment — see handler.AssignTransaction
+	// / handler.UnassignTransaction): manual member match and payment_coverage
+	// editing. Separate from RoleListTransactions so a read-only auditor can
+	// hold the browser role without being able to change matches.
+	RoleManageTransactions Role = "manage-transactions"
 )
 
 // Claims is the subset of a Keycloak access token we care about.

@@ -1,4 +1,4 @@
-import { apiGet } from './client'
+import { apiGet, apiSend } from './client'
 
 export type Direction = 'incoming' | 'outgoing'
 export type Category = 'membership_fee' | 'salary' | 'other_income' | 'other_expense'
@@ -60,4 +60,38 @@ export function fetchTransactions(q: TransactionQuery = {}): Promise<Transaction
   if (q.memberNumber != null) params.set('member_number', String(q.memberNumber))
   const qs = params.toString()
   return apiGet<TransactionsResponse>(`/api/transactions${qs ? `?${qs}` : ''}`)
+}
+
+export interface MonthRef {
+  year: number
+  month: number
+}
+
+export interface TransactionDetail extends TransactionListItem {
+  covered_months: MonthRef[]
+}
+
+export interface AssignPayload {
+  member_number: number
+  category?: Category
+  /** only for category === 'membership_fee'; empty = the transaction's own month */
+  covers?: MonthRef[]
+}
+
+/** 409 body from assignTransaction when a month is already covered elsewhere. */
+export interface CoverageConflict {
+  error: string
+  conflicts: MonthRef[]
+}
+
+export function fetchTransaction(id: number): Promise<TransactionDetail> {
+  return apiGet<TransactionDetail>(`/api/transactions/${id}`)
+}
+
+export function assignTransaction(id: number, payload: AssignPayload): Promise<TransactionDetail> {
+  return apiSend<TransactionDetail>('PUT', `/api/transactions/${id}/assignment`, payload)
+}
+
+export function unassignTransaction(id: number): Promise<void> {
+  return apiSend<void>('DELETE', `/api/transactions/${id}/assignment`)
 }

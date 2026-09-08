@@ -1,9 +1,10 @@
 import { type CSSProperties, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { AssignDialog } from './AssignDialog'
 import { fetchTransactions, type TransactionQuery } from './api/transactions'
 
 const PAGE_SIZE = 100
-const COLUMNS = ['Date', 'Amount', 'Dir', 'Category', 'Member', 'VS', 'Counterparty', 'Message'] as const
+const COLUMNS = ['Date', 'Amount', 'Dir', 'Category', 'Member', 'VS', 'Counterparty', 'Message', ''] as const
 
 interface Filters {
   from: string
@@ -55,6 +56,7 @@ export function TransactionsTable() {
   const [defaults] = useState(defaultFilters)
   const [filters, setFilters] = useState<Filters>(defaults)
   const [offset, setOffset] = useState(0)
+  const [editingId, setEditingId] = useState<number | null>(null)
 
   const modified = JSON.stringify(filters) !== JSON.stringify(defaults)
 
@@ -206,8 +208,8 @@ export function TransactionsTable() {
         <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '0.875rem' }}>
           <thead>
             <tr>
-              {COLUMNS.map((h) => (
-                <th key={h} style={th}>
+              {COLUMNS.map((h, i) => (
+                <th key={i} style={th}>
                   {h}
                 </th>
               ))}
@@ -226,12 +228,19 @@ export function TransactionsTable() {
                 <td style={td}>{t.variable_symbol ?? '—'}</td>
                 <td style={td}>{t.counter_account_name ?? t.counter_account_number ?? '—'}</td>
                 <td style={td}>{t.message_for_recipient ?? t.comment ?? '—'}</td>
+                <td style={td}>
+                  <button onClick={() => setEditingId(t.id)}>Edit</button>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
       {needsPager && pager}
+
+      {editingId != null && (
+        <AssignDialog transactionId={editingId} onClose={() => setEditingId(null)} />
+      )}
     </section>
   )
 }

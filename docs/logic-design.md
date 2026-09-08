@@ -124,6 +124,49 @@ lists the unassigned January credits to match against them.
 Deferred filters: free-text search (`ILIKE` on counterparty name / VS / message),
 amount range, currency, `bank_account_id`, "covers month X" (join `payment_coverage`).
 
+### Detail view
+
+`GET /transactions/{id}` (same `list-transactions` role) returns one transaction in the
+list-item shape plus `covered_months: [{year, month}]` from `payment_coverage`. Backs the
+edit dialog.
+
+## Manual Assignment & Coverage
+
+The admin edits an auto-processed transaction: attach it to the right member, and (for a
+membership fee) say which months it pays for. Both live on one endpoint so the write is
+atomic and matches how the admin thinks ("this payment is member 42's, covering
+Jan–Mar"). Gated by the **`manage-transactions`** role — separate from
+`list-transactions` so a read-only auditor can browse without being able to re-match.
+
+**`PUT /transactions/{id}/assignment`**
+
+```json
+{ "member_number": 42, "category": "membership_fee", "covers": [ {"year":2026,"month":1}, {"year":2026,"month":2} ] }
+```
+
+- `category` optional, default `membership_fee`; must be one of the four categories.
+- One DB transaction: set `member_number` + `category`, `matched_by = 'manual'`; delete
+  this transaction's `payment_coverage` rows; re-insert one per `covers` entry.
+- `covers` only allowed for `category = membership_fee` (else `400`). When omitted/empty
+  for a membership fee, it defaults to the transaction's own year/month — same as the
+  automatic single-month case.
+- A requested month already covered by a **different** transaction (the
+  `payment_coverage` `UNIQUE (member_number, covers_year, covers_month)` constraint) →
+  `409` with `{conflicts: [{year, month}]}`, whole write rolled back. The admin clears
+  the other transaction's coverage first.
+- `404` if the transaction doesn't exist, `400` if `member_number` isn't a real member.
+- Success returns the updated detail (`GET /transactions/{id}` shape).
+
+**`DELETE /transactions/{id}/assignment`**
+
+Reverts a match (manual or automatic): clears `member_number` and `matched_by`, deletes
+the transaction's `payment_coverage` rows, resets `category` to the direction default
+(`other_income` / `other_expense`). Salary re-detection is *not* re-run — an edge case;
+re-processing would be a separate action. `204` on success. One DB transaction.
+
+Liability-window checks are deliberately **not** enforced on `covers` — manual override
+(including back-dating a lump sum) is the whole point of this endpoint.
+
 ## Payment History Endpoint (`/payments/<member_number>/history`)
 
 **Driven by `payment_coverage`, not `processed_transactions` directly** — coverage table

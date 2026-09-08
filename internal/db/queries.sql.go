@@ -12,6 +12,30 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const assignTransactionToMember = `-- name: AssignTransactionToMember :one
+UPDATE processed_transactions
+SET member_number = $1,
+    category = $2,
+    matched_by = 'manual'
+WHERE id = $3
+RETURNING id
+`
+
+type AssignTransactionToMemberParams struct {
+	MemberNumber *int32 `json:"member_number"`
+	Category     string `json:"category"`
+	ID           int64  `json:"id"`
+}
+
+// Manual member match (see docs/logic-design.md "Manual Assignment & Coverage").
+// Coverage rows are managed separately by the caller in the same DB transaction.
+func (q *Queries) AssignTransactionToMember(ctx context.Context, arg AssignTransactionToMemberParams) (int64, error) {
+	row := q.db.QueryRow(ctx, assignTransactionToMember, arg.MemberNumber, arg.Category, arg.ID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const createBankAccount = `-- name: CreateBankAccount :one
 INSERT INTO bank_accounts (fio_account_id, iban, currency, display_name)
 VALUES ($1, $2, $3, $4)
@@ -144,6 +168,15 @@ func (q *Queries) CreateSyncOrcaRun(ctx context.Context) (SyncOrcaRun, error) {
 		&i.ErrorMessage,
 	)
 	return i, err
+}
+
+const deleteCoverageForTransaction = `-- name: DeleteCoverageForTransaction :exec
+DELETE FROM payment_coverage WHERE processed_transaction_id = $1
+`
+
+func (q *Queries) DeleteCoverageForTransaction(ctx context.Context, processedTransactionID int64) error {
+	_, err := q.db.Exec(ctx, deleteCoverageForTransaction, processedTransactionID)
+	return err
 }
 
 const ensureDefaultPaymentIdentifier = `-- name: EnsureDefaultPaymentIdentifier :exec
@@ -317,6 +350,107 @@ func (q *Queries) GetPaymentHistory(ctx context.Context, memberNumber int32) ([]
 	return items, nil
 }
 
+const getTransactionDetail = `-- name: GetTransactionDetail :one
+SELECT
+    pt.id,
+    rt.transaction_date,
+    rt.amount,
+    rt.currency,
+    pt.direction,
+    pt.category,
+    pt.member_number,
+    pt.matched_by,
+    pt.is_public_visible,
+    rt.variable_symbol,
+    rt.specific_symbol,
+    rt.constant_symbol,
+    rt.counter_account_number,
+    rt.counter_account_name,
+    rt.message_for_recipient,
+    rt.user_identification,
+    rt.comment
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE pt.id = $1
+`
+
+type GetTransactionDetailRow struct {
+	ID                   int64     `json:"id"`
+	TransactionDate      time.Time `json:"transaction_date"`
+	Amount               string    `json:"amount"`
+	Currency             string    `json:"currency"`
+	Direction            string    `json:"direction"`
+	Category             string    `json:"category"`
+	MemberNumber         *int32    `json:"member_number"`
+	MatchedBy            *string   `json:"matched_by"`
+	IsPublicVisible      bool      `json:"is_public_visible"`
+	VariableSymbol       *string   `json:"variable_symbol"`
+	SpecificSymbol       *string   `json:"specific_symbol"`
+	ConstantSymbol       *string   `json:"constant_symbol"`
+	CounterAccountNumber *string   `json:"counter_account_number"`
+	CounterAccountName   *string   `json:"counter_account_name"`
+	MessageForRecipient  *string   `json:"message_for_recipient"`
+	UserIdentification   *string   `json:"user_identification"`
+	Comment              *string   `json:"comment"`
+}
+
+// One row for the transaction browser's detail / edit view — same columns as
+// ListTransactions minus the window count. Covered months come from
+// ListCoverageForTransaction.
+func (q *Queries) GetTransactionDetail(ctx context.Context, id int64) (GetTransactionDetailRow, error) {
+	row := q.db.QueryRow(ctx, getTransactionDetail, id)
+	var i GetTransactionDetailRow
+	err := row.Scan(
+		&i.ID,
+		&i.TransactionDate,
+		&i.Amount,
+		&i.Currency,
+		&i.Direction,
+		&i.Category,
+		&i.MemberNumber,
+		&i.MatchedBy,
+		&i.IsPublicVisible,
+		&i.VariableSymbol,
+		&i.SpecificSymbol,
+		&i.ConstantSymbol,
+		&i.CounterAccountNumber,
+		&i.CounterAccountName,
+		&i.MessageForRecipient,
+		&i.UserIdentification,
+		&i.Comment,
+	)
+	return i, err
+}
+
+const insertCoverageRow = `-- name: InsertCoverageRow :execrows
+INSERT INTO payment_coverage (processed_transaction_id, member_number, covers_year, covers_month)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (member_number, covers_year, covers_month) DO NOTHING
+`
+
+type InsertCoverageRowParams struct {
+	ProcessedTransactionID int64 `json:"processed_transaction_id"`
+	MemberNumber           int32 `json:"member_number"`
+	CoversYear             int32 `json:"covers_year"`
+	CoversMonth            int16 `json:"covers_month"`
+}
+
+// ON CONFLICT DO NOTHING + :execrows so the caller can tell which requested
+// month was already covered by a *different* transaction (0 rows affected) and
+// report it, rather than silently dropping it.
+func (q *Queries) InsertCoverageRow(ctx context.Context, arg InsertCoverageRowParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertCoverageRow,
+		arg.ProcessedTransactionID,
+		arg.MemberNumber,
+		arg.CoversYear,
+		arg.CoversMonth,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const insertRawTransaction = `-- name: InsertRawTransaction :execrows
 INSERT INTO raw_transactions (
     bank_account_id, fio_transaction_id, transaction_date, amount, currency,
@@ -425,6 +559,38 @@ func (q *Queries) ListBankAccounts(ctx context.Context) ([]BankAccount, error) {
 			&i.DisplayName,
 			&i.CreatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCoverageForTransaction = `-- name: ListCoverageForTransaction :many
+SELECT covers_year, covers_month
+FROM payment_coverage
+WHERE processed_transaction_id = $1
+ORDER BY covers_year, covers_month
+`
+
+type ListCoverageForTransactionRow struct {
+	CoversYear  int32 `json:"covers_year"`
+	CoversMonth int16 `json:"covers_month"`
+}
+
+func (q *Queries) ListCoverageForTransaction(ctx context.Context, processedTransactionID int64) ([]ListCoverageForTransactionRow, error) {
+	rows, err := q.db.Query(ctx, listCoverageForTransaction, processedTransactionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCoverageForTransactionRow
+	for rows.Next() {
+		var i ListCoverageForTransactionRow
+		if err := rows.Scan(&i.CoversYear, &i.CoversMonth); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -742,6 +908,17 @@ func (q *Queries) ListUnprocessedTransactions(ctx context.Context) ([]RawTransac
 	return items, nil
 }
 
+const memberExists = `-- name: MemberExists :one
+SELECT EXISTS (SELECT 1 FROM members WHERE member_number = $1) AS exists
+`
+
+func (q *Queries) MemberExists(ctx context.Context, memberNumber int32) (bool, error) {
+	row := q.db.QueryRow(ctx, memberExists, memberNumber)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const syncDefaultPaymentIdentifierValidTo = `-- name: SyncDefaultPaymentIdentifierValidTo :exec
 UPDATE member_payment_identifiers
 SET valid_to = $1
@@ -767,6 +944,29 @@ type SyncDefaultPaymentIdentifierValidToParams struct {
 func (q *Queries) SyncDefaultPaymentIdentifierValidTo(ctx context.Context, arg SyncDefaultPaymentIdentifierValidToParams) error {
 	_, err := q.db.Exec(ctx, syncDefaultPaymentIdentifierValidTo, arg.ValidTo, arg.MemberNumber, arg.VariableSymbol)
 	return err
+}
+
+const unassignTransaction = `-- name: UnassignTransaction :one
+UPDATE processed_transactions
+SET member_number = NULL,
+    matched_by = NULL,
+    category = $1
+WHERE id = $2
+RETURNING id
+`
+
+type UnassignTransactionParams struct {
+	Category string `json:"category"`
+	ID       int64  `json:"id"`
+}
+
+// Reverts a manual (or automatic) match: clears the member and matched_by, and
+// resets category to the direction-based default the caller passes in.
+func (q *Queries) UnassignTransaction(ctx context.Context, arg UnassignTransactionParams) (int64, error) {
+	row := q.db.QueryRow(ctx, unassignTransaction, arg.Category, arg.ID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
 }
 
 const upsertMember = `-- name: UpsertMember :exec
