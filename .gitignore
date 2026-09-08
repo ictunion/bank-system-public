@@ -1,0 +1,38 @@
+# Binaries
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# Go build/test artifacts
+*.out
+/dist/
+
+# Go workspace
+go.work
+go.work.sum
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Nix
+.direnv/
+.gopath/
+
+# Local dev Postgres (native, via `make db-init`)
+/.pgdata/
+/.pgsocket/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Claude Code
+CLAUDE.md
+.mcp.json
