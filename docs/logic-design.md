@@ -143,7 +143,35 @@ paid — one row per `(member_number, covers_year, covers_month)`. A "missing" m
 just the absence of a row, found by diffing against the months a member was liable to
 pay.
 
-Query shape:
+Two cohort endpoints, both gated by the same `payment-history` Keycloak role as the
+per-member history route (anyone trusted with an individual member's payments is trusted
+with the cohort list — same data sensitivity), both returning
+`{member_number, total_missed_months}` sorted by `total_missed_months` descending (top
+offenders first), `member_number` breaking ties:
+
+- `GET /payments/{year}/{month}/missing` (handler `MissingPayments`, query
+  `ListMembersMissingPayment`) — members liable that specific month with no coverage
+  row for it.
+- `GET /payments/{year}/missing` (handler `MissingPaymentsInYear`, query
+  `ListMembersMissingPaymentInYear`) — members who missed at least one liable month
+  anywhere in that calendar year.
+
+`total_missed_months` is the same figure for both: a total-arrears count — *every*
+unpaid month across the member's full liability window, not scoped to the queried
+month/year — so it's stable regardless of what you ask about and serves as the
+contact-priority sort key. It's always `>= 1` for a member in either list. Nothing else
+is returned: the frontend resolves names/contact details from Orca by `member_number`.
+
+Both `total_missed_months` values come from the `member_arrears` view
+(`migrations/…_member_arrears_view.sql`), which is the full-window `generate_series` +
+`NOT EXISTS` diff below wrapped as a per-member `count(*)` — defined once so the two
+endpoints (and any future `/payments/{member_number}/missing`) can't drift. The
+month/year endpoints add only their own "was a payment missed in this window" filter on
+top. `year` is validated `1 <= year <= current year + 1`, `month` `1 <= month <= 12`,
+before the query runs.
+
+Per-member query shape (the diff the `member_arrears` view is built from; also the
+basis for a future `/payments/{member_number}/missing` route):
 
 ```sql
 SELECT expected.month

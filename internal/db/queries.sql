@@ -106,6 +106,63 @@ JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
 WHERE pc.member_number = sqlc.arg(member_number)
 ORDER BY pc.covers_year DESC, pc.covers_month DESC;
 
+-- name: ListMembersMissingPayment :many
+-- Members who were liable for the membership fee in the given year/month but
+-- have no payment_coverage row for it. "Liable" = fee_start_date is set (the
+-- member_arrears view enforces this) and the target month falls within
+-- [fee_start_date, COALESCE(fee_stop_date, CURRENT_DATE)] at month granularity.
+--
+-- total_missed_months comes from the member_arrears view: a total-arrears figure
+-- independent of the queried month (every unpaid month across the member's full
+-- liability window). Always >= 1 here, since the queried month is one of them.
+-- Rows are ordered by it descending ("top offenders first"), member_number
+-- breaking ties. See docs/logic-design.md "Missed Payment Detection".
+SELECT ma.member_number, ma.total_missed_months
+FROM member_arrears ma
+JOIN members m ON m.member_number = ma.member_number
+WHERE date_trunc('month', m.fee_start_date::timestamp)
+        <= make_date(sqlc.arg(year)::int, sqlc.arg(month)::int, 1)::timestamp
+  AND make_date(sqlc.arg(year)::int, sqlc.arg(month)::int, 1)::timestamp
+        <= date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)::timestamp)
+  AND NOT EXISTS (
+      SELECT 1 FROM payment_coverage pc
+      WHERE pc.member_number = ma.member_number
+        AND pc.covers_year = sqlc.arg(year)::int
+        AND pc.covers_month = sqlc.arg(month)::int
+  )
+ORDER BY ma.total_missed_months DESC, ma.member_number;
+
+-- name: ListMembersMissingPaymentInYear :many
+-- Members who missed at least one liable month during the given calendar year —
+-- the whole-year counterpart of ListMembersMissingPayment. Same
+-- {member_number, total_missed_months} shape and ordering; total_missed_months
+-- is still the full-liability-window arrears count (member_arrears view), not
+-- scoped to the year. See docs/logic-design.md "Missed Payment Detection".
+SELECT ma.member_number, ma.total_missed_months
+FROM member_arrears ma
+JOIN members m ON m.member_number = ma.member_number
+WHERE EXISTS (
+    SELECT 1
+    FROM generate_series(
+        greatest(
+            date_trunc('month', m.fee_start_date::timestamp),
+            make_date(sqlc.arg(year)::int, 1, 1)::timestamp
+        ),
+        least(
+            date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)::timestamp),
+            make_date(sqlc.arg(year)::int, 12, 1)::timestamp
+        ),
+        interval '1 month'
+    ) AS ym(month)
+    WHERE NOT EXISTS (
+        SELECT 1 FROM payment_coverage pc
+        WHERE pc.member_number = ma.member_number
+          AND pc.covers_year = EXTRACT(YEAR FROM ym.month)::int
+          AND pc.covers_month = EXTRACT(MONTH FROM ym.month)::int
+    )
+)
+ORDER BY ma.total_missed_months DESC, ma.member_number;
+
 -- name: CreateSyncOrcaRun :one
 INSERT INTO sync_orca_runs (status)
 VALUES ('running')

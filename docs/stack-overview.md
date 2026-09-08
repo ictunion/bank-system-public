@@ -27,6 +27,41 @@ Caching is not automatic anywhere in this stack — it's implemented explicitly 
   - `go-redis/redis` for Redis-backed caching
   - `patrickmn/go-cache` or a `sync.Map` + TTL for simple single-instance in-memory caching
 
+## HTTP surface
+- All application routes are mounted under an **`/api` prefix** (`/api/payments/...`,
+  `/api/healthz`, ...). `cmd/server/main.go` builds the route mux unprefixed and mounts
+  it via `http.StripPrefix("/api", ...)`. The prefix keeps the API namespace clear of
+  the admin frontend's client-side routes and lets the reverse proxy split the two.
+
+## Auth
+- **Keycloak** (same realm as the rest of ictunion's stack). Bearer tokens verified in
+  `internal/keycloak`; role-gated routes via `handler.RequireRole` (`list-members`,
+  `payment-history`). Machine-to-machine sync routes use a static shared secret instead
+  (see `logic-design.md` "Orca Member Sync").
+
+## Frontend (planned — admin tool, not built yet)
+- Separate SPA: **React + TypeScript, built with Vite**. Scope is small — Keycloak login,
+  a processed-transactions table, and two admin actions (assign a transaction to a
+  member, mark a payment as covering multiple months).
+- Supporting libs: TanStack Query (server state), TanStack Table (the list),
+  React Hook Form + Zod (forms + response validation), `react-oidc-context` (Keycloak
+  OIDC), a component kit (Mantine or shadcn/ui).
+- Needs new backend write endpoints first: manual member assignment and lump-sum
+  `payment_coverage` entry (see `db-design.md` "processed_transactions is a real table"
+  and `payment_coverage` sections).
+
+## Deployment
+- **NixOS host.** Go service and the frontend are **separate Nix derivations**, no
+  Go-side `embed`.
+- **nginx** as the only public listener: TLS via `security.acme` (Let's Encrypt), one
+  virtualHost for the admin subdomain. `location /` serves the frontend derivation's
+  static files with an SPA fallback (`tryFiles $uri /index.html`); `location /api/`
+  `proxy_pass` to the Go service.
+- Go service runs as a **systemd unit** bound to `127.0.0.1` only (never exposed
+  directly), secrets via `EnvironmentFile`.
+- Frontend-only changes rebuild just the frontend derivation; the Go binary is
+  untouched.
+
 ## Suggested Project Structure (starting point)
 ```
 /cmd/server        — main.go, server startup
@@ -39,5 +74,4 @@ Caching is not automatic anywhere in this stack — it's implemented explicitly 
 ## Open Decisions / To Revisit
 - Whether to introduce Chi (or stay stdlib-only)
 - Redis — add only if/when caching becomes necessary
-- Auth strategy (not yet discussed)
-- Deployment target (not yet discussed)
+- Frontend framework details (React + Vite direction set; libs above are provisional)

@@ -9,10 +9,16 @@ Postgres DB, then run custom processing on top:
 - Categorize individual payments (e.g. matching monthly membership fees by variable symbol)
 - Detect members who missed a monthly payment
 - Expose `/payments/<member_number>/history` — per-member payment history for their member panel
-- Expose `/payments/<year>/<month>/missing` — list of members who didn't pay that specific year/month
+- Expose `/payments/<year>/<month>/missing` and `/payments/<year>/missing` — members who didn't
+  pay that specific month, or missed any month in that year (see logic-design.md)
 - Internal budgeting view: incoming vs outgoing totals, with privacy redaction
   (no counterparty names on incoming payments; salaries grouped into one number, not
   itemized per employee)
+
+All HTTP routes are served under an `/api` prefix (`GET /api/payments/...`, `GET
+/api/healthz`, etc.); paths in these docs are written without it for brevity. The prefix
+exists so a reverse proxy can serve the admin frontend at `/` and forward only `/api/`
+to this service — see the deployment notes.
 
 **Scale:** ~1,000 transactions/month. No need for replication. No GIS types needed.
 Read-heavy; writes happen once/day via sync job.
@@ -281,8 +287,12 @@ Jan–Mar" instead of 3 separate lines.
 (`members.fee_start_date` .. `COALESCE(members.fee_stop_date, CURRENT_DATE)`), `LEFT
 JOIN` against `payment_coverage` grouped by member/month, flag gaps. A member with a
 null `fee_start_date` isn't liable yet (no expected months); one with a `fee_stop_date`
-isn't expected to pay past it. Fine to compute this on read (view or plain query) at
-current volume rather than storing it.
+isn't expected to pay past it. Fine to compute this on read at current volume rather
+than storing it — the per-member arrears count is a plain (non-materialized) view,
+`member_arrears`, that both `/payments/<year>/<month>/missing` and
+`/payments/<year>/missing` build on (see logic-design.md). This is unrelated to the
+"`processed_transactions` is a real table" decision below — that's about not recomputing
+manual/heuristic categorization, whereas an arrears diff has no manual state.
 
 Budgeting view with privacy redaction: query `processed_transactions` grouped by
 `category`, controlling via `is_public_visible` whether individual counterparties are ever

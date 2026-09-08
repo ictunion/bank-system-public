@@ -30,6 +30,23 @@ type Querier interface {
 	InsertRawTransaction(ctx context.Context, arg InsertRawTransactionParams) (int64, error)
 	ListBankAccounts(ctx context.Context) ([]BankAccount, error)
 	ListMembers(ctx context.Context) ([]Member, error)
+	// Members who were liable for the membership fee in the given year/month but
+	// have no payment_coverage row for it. "Liable" = fee_start_date is set (the
+	// member_arrears view enforces this) and the target month falls within
+	// [fee_start_date, COALESCE(fee_stop_date, CURRENT_DATE)] at month granularity.
+	//
+	// total_missed_months comes from the member_arrears view: a total-arrears figure
+	// independent of the queried month (every unpaid month across the member's full
+	// liability window). Always >= 1 here, since the queried month is one of them.
+	// Rows are ordered by it descending ("top offenders first"), member_number
+	// breaking ties. See docs/logic-design.md "Missed Payment Detection".
+	ListMembersMissingPayment(ctx context.Context, arg ListMembersMissingPaymentParams) ([]MemberArrear, error)
+	// Members who missed at least one liable month during the given calendar year —
+	// the whole-year counterpart of ListMembersMissingPayment. Same
+	// {member_number, total_missed_months} shape and ordering; total_missed_months
+	// is still the full-liability-window arrears count (member_arrears view), not
+	// scoped to the year. See docs/logic-design.md "Missed Payment Detection".
+	ListMembersMissingPaymentInYear(ctx context.Context, year int32) ([]MemberArrear, error)
 	ListUnprocessedTransactions(ctx context.Context) ([]RawTransaction, error)
 	// Mirrors members.fee_stop_date onto the default payment identifier's valid_to
 	// (variable_symbol == member_number): fee liability ended -> row closed with that

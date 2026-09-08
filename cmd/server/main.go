@@ -87,20 +87,28 @@ func main() {
 		log.Fatalf("keycloak: %v", err)
 	}
 
-	mux := http.NewServeMux()
+	// All application routes live under /api so a reverse proxy can serve the
+	// frontend at / and forward only /api/ here (see docs deploy notes). Handler
+	// patterns below stay unprefixed; StripPrefix trims /api before matching.
+	api := http.NewServeMux()
 
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
 
-	mux.HandleFunc("POST /account", handler.CreateBankAccount(db.New(pool)))
+	api.HandleFunc("POST /account", handler.CreateBankAccount(db.New(pool)))
 
 	// Debug prototype for Keycloak-authenticated read endpoints — not meant to
 	// survive to production as-is. See internal/keycloak and handler/auth.go.
-	mux.HandleFunc("GET /members", handler.RequireRole(keycloakProvider, keycloak.RoleListMembers, handler.ListMembers(db.New(pool))))
-	mux.HandleFunc("GET /payments/{member_number}/history", handler.RequireRole(keycloakProvider, keycloak.RolePaymentHistory, handler.PaymentHistory(db.New(pool))))
-	mux.HandleFunc("GET /payments/me/history", handler.RequireAuth(keycloakProvider, handler.MyPaymentHistory(db.New(pool))))
+	api.HandleFunc("GET /members", handler.RequireRole(keycloakProvider, keycloak.RoleListMembers, handler.ListMembers(db.New(pool))))
+	api.HandleFunc("GET /payments/{member_number}/history", handler.RequireRole(keycloakProvider, keycloak.RolePaymentHistory, handler.PaymentHistory(db.New(pool))))
+	api.HandleFunc("GET /payments/me/history", handler.RequireAuth(keycloakProvider, handler.MyPaymentHistory(db.New(pool))))
+	api.HandleFunc("GET /payments/{year}/{month}/missing", handler.RequireRole(keycloakProvider, keycloak.RolePaymentHistory, handler.MissingPayments(db.New(pool))))
+	api.HandleFunc("GET /payments/{year}/missing", handler.RequireRole(keycloakProvider, keycloak.RolePaymentHistory, handler.MissingPaymentsInYear(db.New(pool))))
+
+	mux := http.NewServeMux()
+	mux.Handle("/api/", http.StripPrefix("/api", api))
 
 	srv := &http.Server{
 		Addr:    cfg.Addr,

@@ -35,11 +35,15 @@ const (
 	// prototype only, not meant to survive to production as-is.
 	RoleListMembers Role = "list-members"
 
-	// RolePaymentHistory gates GET /payments/{member_number}/history (see
-	// handler.PaymentHistory) — the by-member_number admin route, for Orca
-	// admins looking up any member's history. Not required on the future
-	// self-service /payments/me/history route, which authorizes by matching
-	// the token's sub against members.sub instead of checking this role.
+	// RolePaymentHistory gates the admin payment routes:
+	//   GET /payments/{member_number}/history  (see handler.PaymentHistory)
+	//   GET /payments/{year}/{month}/missing   (see handler.MissingPayments)
+	// for Orca admins looking up any member's payment status. One role covers
+	// both: anyone allowed to see an individual member's payments is also
+	// allowed to see the cohort-wide "who didn't pay this month" list — the
+	// data sensitivity is the same. Not required on the self-service
+	// /payments/me/history route, which authorizes by matching the token's sub
+	// against members.sub instead of checking this role.
 	RolePaymentHistory Role = "payment-history"
 )
 

@@ -28,6 +28,11 @@ type Member struct {
 	FeeStopDate  pgtype.Date `json:"fee_stop_date"`
 }
 
+type MemberArrear struct {
+	MemberNumber      int32 `json:"member_number"`
+	TotalMissedMonths int32 `json:"total_missed_months"`
+}
+
 type MemberPaymentIdentifier struct {
 	ID             int32       `json:"id"`
 	MemberNumber   int32       `json:"member_number"`
