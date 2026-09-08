@@ -38,14 +38,17 @@ Caching is not automatic anywhere in this stack — it's implemented explicitly 
   `internal/keycloak`; role-gated routes via `handler.RequireRole` (`list-members`,
   `payment-history`). Machine-to-machine sync routes use a static shared secret instead
   (see `logic-design.md` "Orca Member Sync").
+- Frontend logs in with Authorization Code + PKCE against the same `bank-system` client
+  (public), tokens held in memory only. Full setup — including the **required audience
+  mapper** without which the backend rejects every SPA token — in `frontend-auth.md`.
 
 ## Frontend (planned — admin tool, not built yet)
 - Separate SPA: **React + TypeScript, built with Vite**. Scope is small — Keycloak login,
   a processed-transactions table, and two admin actions (assign a transaction to a
   member, mark a payment as covering multiple months).
-- Supporting libs: TanStack Query (server state), TanStack Table (the list),
-  React Hook Form + Zod (forms + response validation), `react-oidc-context` (Keycloak
-  OIDC), a component kit (Mantine or shadcn/ui).
+- Supporting libs: TanStack Query (server state), `react-oidc-context` (Keycloak OIDC —
+  wired, see `frontend-auth.md`), and still to add: TanStack Table (the list), React
+  Hook Form + Zod (forms + response validation), a component kit (Mantine or shadcn/ui).
 - Needs new backend write endpoints first: manual member assignment and lump-sum
   `payment_coverage` entry (see `db-design.md` "processed_transactions is a real table"
   and `payment_coverage` sections).
@@ -61,15 +64,23 @@ Caching is not automatic anywhere in this stack — it's implemented explicitly 
   directly), secrets via `EnvironmentFile`.
 - Frontend-only changes rebuild just the frontend derivation; the Go binary is
   untouched.
+- nginx also sets the SPA's security headers (CSP, HSTS, `X-Content-Type-Options`,
+  `frame-ancestors 'none'`) — exact header block in `frontend-auth.md`. The CSP's
+  `connect-src` must list the Keycloak origin.
 
 ## Suggested Project Structure (starting point)
 ```
-/cmd/server        — main.go, server startup
+/cmd/server         — main.go, server startup
 /internal/handler   — HTTP handlers
 /internal/db        — sqlc-generated code, queries.sql
-/internal/model      — domain structs
-/migrations          — goose to migrate SQL files
+/internal/model     — domain structs
+/migrations         — goose migration SQL files
+/frontend           — React + Vite admin SPA (own package.json / node_modules)
+/docs               — design notes (shared)
 ```
+Go stays at the module root (idiomatic `cmd/`, `internal/`); the frontend is a
+sibling directory, not nested under the backend. `nix develop` covers both
+toolchains; `make frontend-*` targets wrap `npm` in `frontend/`.
 
 ## Open Decisions / To Revisit
 - Whether to introduce Chi (or stay stdlib-only)

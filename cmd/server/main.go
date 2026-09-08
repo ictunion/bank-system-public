@@ -102,6 +102,7 @@ func main() {
 	// Debug prototype for Keycloak-authenticated read endpoints — not meant to
 	// survive to production as-is. See internal/keycloak and handler/auth.go.
 	api.HandleFunc("GET /members", handler.RequireRole(keycloakProvider, keycloak.RoleListMembers, handler.ListMembers(db.New(pool))))
+	api.HandleFunc("GET /transactions", handler.RequireRole(keycloakProvider, keycloak.RoleListTransactions, handler.ListTransactions(db.New(pool))))
 	api.HandleFunc("GET /payments/{member_number}/history", handler.RequireRole(keycloakProvider, keycloak.RolePaymentHistory, handler.PaymentHistory(db.New(pool))))
 	api.HandleFunc("GET /payments/me/history", handler.RequireAuth(keycloakProvider, handler.MyPaymentHistory(db.New(pool))))
 	api.HandleFunc("GET /payments/{year}/{month}/missing", handler.RequireRole(keycloakProvider, keycloak.RolePaymentHistory, handler.MissingPayments(db.New(pool))))

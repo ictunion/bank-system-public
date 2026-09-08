@@ -1,0 +1,12 @@
+node_modules
+dist
+*.tsbuildinfo
+.DS_Store
+
+# Vite env files. The repo-root .gitignore ignores .env.* everywhere; re-include
+# the two that are safe to commit (no secrets — public client id, realm, URL).
+!.env.example
+!.env.development
+.env
+.env.local
+.env.*.local

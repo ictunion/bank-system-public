@@ -45,6 +45,13 @@ const (
 	// /payments/me/history route, which authorizes by matching the token's sub
 	// against members.sub instead of checking this role.
 	RolePaymentHistory Role = "payment-history"
+
+	// RoleListTransactions gates GET /transactions (see handler.ListTransactions)
+	// — the admin transaction browser. Kept separate from RolePaymentHistory
+	// because this view shows every bank transaction with counterparty names,
+	// including salary payments, with no redaction; "chase up missing member
+	// payments" and "see who gets paid what" are different levels of trust.
+	RoleListTransactions Role = "list-transactions"
 )
 
 // Claims is the subset of a Keycloak access token we care about.

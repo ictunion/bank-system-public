@@ -47,6 +47,12 @@ type Querier interface {
 	// is still the full-liability-window arrears count (member_arrears view), not
 	// scoped to the year. See docs/logic-design.md "Missed Payment Detection".
 	ListMembersMissingPaymentInYear(ctx context.Context, year int32) ([]MemberArrear, error)
+	// Admin transaction browser: processed_transactions enriched with their
+	// raw_transactions row, with optional filters. Every filter arg is nullable —
+	// NULL / omitted means "don't filter on this". total_count is the full match
+	// count ignoring LIMIT/OFFSET (window aggregate) so the caller can paginate. See
+	// docs/logic-design.md "Transaction Browser".
+	ListTransactions(ctx context.Context, arg ListTransactionsParams) ([]ListTransactionsRow, error)
 	ListUnprocessedTransactions(ctx context.Context) ([]RawTransaction, error)
 	// Mirrors members.fee_stop_date onto the default payment identifier's valid_to
 	// (variable_symbol == member_number): fee liability ended -> row closed with that

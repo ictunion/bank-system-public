@@ -51,3 +51,15 @@ start:
 .PHONY: build
 build:
 	go build -o server ./cmd/server
+
+.PHONY: frontend-install
+frontend-install:
+	cd frontend && npm install
+
+.PHONY: frontend-dev
+frontend-dev:
+	cd frontend && npm run dev
+
+.PHONY: frontend-build
+frontend-build:
+	cd frontend && npm run build

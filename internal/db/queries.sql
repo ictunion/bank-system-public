@@ -183,6 +183,44 @@ LEFT JOIN processed_transactions pt ON pt.raw_transaction_id = rt.id
 WHERE pt.id IS NULL
 ORDER BY rt.id;
 
+-- name: ListTransactions :many
+-- Admin transaction browser: processed_transactions enriched with their
+-- raw_transactions row, with optional filters. Every filter arg is nullable —
+-- NULL / omitted means "don't filter on this". total_count is the full match
+-- count ignoring LIMIT/OFFSET (window aggregate) so the caller can paginate. See
+-- docs/logic-design.md "Transaction Browser".
+SELECT
+    pt.id,
+    rt.transaction_date,
+    rt.amount,
+    rt.currency,
+    pt.direction,
+    pt.category,
+    pt.member_number,
+    pt.matched_by,
+    pt.is_public_visible,
+    rt.variable_symbol,
+    rt.specific_symbol,
+    rt.constant_symbol,
+    rt.counter_account_number,
+    rt.counter_account_name,
+    rt.message_for_recipient,
+    rt.user_identification,
+    rt.comment,
+    count(*) OVER () AS total_count
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE (sqlc.narg(assigned)::boolean IS NULL
+        OR (pt.member_number IS NOT NULL) = sqlc.narg(assigned)::boolean)
+  AND (sqlc.narg(direction)::text IS NULL OR pt.direction = sqlc.narg(direction)::text)
+  AND (sqlc.narg(category)::text IS NULL OR pt.category = sqlc.narg(category)::text)
+  AND (sqlc.narg(matched_by)::text IS NULL OR pt.matched_by = sqlc.narg(matched_by)::text)
+  AND (sqlc.narg(member_number)::int IS NULL OR pt.member_number = sqlc.narg(member_number)::int)
+  AND (sqlc.narg(date_from)::date IS NULL OR rt.transaction_date >= sqlc.narg(date_from)::date)
+  AND (sqlc.narg(date_to)::date IS NULL OR rt.transaction_date <= sqlc.narg(date_to)::date)
+ORDER BY rt.transaction_date DESC, rt.id DESC
+LIMIT sqlc.arg(lim)::int OFFSET sqlc.arg(off)::int;
+
 -- name: FindMemberByVariableSymbol :one
 SELECT member_number FROM member_payment_identifiers
 WHERE variable_symbol = sqlc.arg(variable_symbol)

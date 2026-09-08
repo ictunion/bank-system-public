@@ -21,6 +21,9 @@
             sqlc
             goose
             postgresql
+
+            # frontend/ (React + Vite) — bundles npm
+            nodejs_22
           ];
 
           shellHook = ''

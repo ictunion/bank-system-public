@@ -8,6 +8,8 @@ Postgres DB, then run custom processing on top:
 
 - Categorize individual payments (e.g. matching monthly membership fees by variable symbol)
 - Detect members who missed a monthly payment
+- Expose `/transactions` — filterable admin browser over processed transactions
+  (assigned/unassigned, direction, category, date range, ... — see logic-design.md)
 - Expose `/payments/<member_number>/history` — per-member payment history for their member panel
 - Expose `/payments/<year>/<month>/missing` and `/payments/<year>/missing` — members who didn't
   pay that specific month, or missed any month in that year (see logic-design.md)

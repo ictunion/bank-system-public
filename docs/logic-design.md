@@ -87,6 +87,43 @@ auto-marked visible in budget views; that's a manual admin edit, same as recateg
 a mismatched row (see `db-design.md` "Design Decision: `processed_transactions` is a
 real table").
 
+## Transaction Browser (`GET /transactions`)
+
+Backs the admin frontend's transaction list: `processed_transactions` joined to its
+`raw_transactions` row, newest first (`transaction_date DESC, id DESC`), with optional
+filters. Handler `ListTransactions`, query `ListTransactions`, gated by the
+**`list-transactions`** Keycloak role — kept separate from `payment-history` because
+this view carries every transaction's counterparty name including salary payments, with
+no redaction; chasing missing member dues and seeing who gets paid what are different
+trust levels.
+
+Filters, all optional query params, all combinable (each is a nullable SQL arg —
+omitted means "don't filter on it", via `(sqlc.narg(x)::T IS NULL OR col = x)`):
+
+| param | values | effect |
+|---|---|---|
+| `assigned` | `true` / `false` | `member_number IS [NOT] NULL` — `false` is the unassigned worklist |
+| `direction` | `incoming` / `outgoing` | |
+| `category` | `membership_fee` / `salary` / `other_income` / `other_expense` | |
+| `matched_by` | `variable_symbol` / `manual` / `amount_heuristic` | audit auto- vs hand-matched |
+| `member_number` | int | one member's transactions |
+| `from`, `to` | `YYYY-MM-DD` | inclusive range on `transaction_date` |
+| `limit`, `offset` | int | `limit` default 100, capped 500; `offset` default 0 |
+
+Bad enum / date / int values are `400`. Response is
+`{total, limit, offset, transactions[]}` where `total` is the full match count ignoring
+pagination (`count(*) OVER ()` in the same query, read off the first row). Each item
+carries `id` (the `processed_transactions.id` — the handle for the upcoming assign /
+add-coverage actions), amount/date/currency/direction, category/member_number/matched_by,
+the payment symbols, and counterparty + free-text fields for identification.
+
+The January-missing-payments workflow: `/payments/2026/1/missing` says *who* is short,
+then `GET /transactions?direction=incoming&assigned=false&from=2026-01-01&to=2026-01-31`
+lists the unassigned January credits to match against them.
+
+Deferred filters: free-text search (`ILIKE` on counterparty name / VS / message),
+amount range, currency, `bank_account_id`, "covers month X" (join `payment_coverage`).
+
 ## Payment History Endpoint (`/payments/<member_number>/history`)
 
 **Driven by `payment_coverage`, not `processed_transactions` directly** — coverage table

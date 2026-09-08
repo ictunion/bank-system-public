@@ -570,6 +570,127 @@ func (q *Queries) ListMembersMissingPaymentInYear(ctx context.Context, year int3
 	return items, nil
 }
 
+const listTransactions = `-- name: ListTransactions :many
+SELECT
+    pt.id,
+    rt.transaction_date,
+    rt.amount,
+    rt.currency,
+    pt.direction,
+    pt.category,
+    pt.member_number,
+    pt.matched_by,
+    pt.is_public_visible,
+    rt.variable_symbol,
+    rt.specific_symbol,
+    rt.constant_symbol,
+    rt.counter_account_number,
+    rt.counter_account_name,
+    rt.message_for_recipient,
+    rt.user_identification,
+    rt.comment,
+    count(*) OVER () AS total_count
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE ($1::boolean IS NULL
+        OR (pt.member_number IS NOT NULL) = $1::boolean)
+  AND ($2::text IS NULL OR pt.direction = $2::text)
+  AND ($3::text IS NULL OR pt.category = $3::text)
+  AND ($4::text IS NULL OR pt.matched_by = $4::text)
+  AND ($5::int IS NULL OR pt.member_number = $5::int)
+  AND ($6::date IS NULL OR rt.transaction_date >= $6::date)
+  AND ($7::date IS NULL OR rt.transaction_date <= $7::date)
+ORDER BY rt.transaction_date DESC, rt.id DESC
+LIMIT $9::int OFFSET $8::int
+`
+
+type ListTransactionsParams struct {
+	Assigned     *bool       `json:"assigned"`
+	Direction    *string     `json:"direction"`
+	Category     *string     `json:"category"`
+	MatchedBy    *string     `json:"matched_by"`
+	MemberNumber *int32      `json:"member_number"`
+	DateFrom     pgtype.Date `json:"date_from"`
+	DateTo       pgtype.Date `json:"date_to"`
+	Off          int32       `json:"off"`
+	Lim          int32       `json:"lim"`
+}
+
+type ListTransactionsRow struct {
+	ID                   int64     `json:"id"`
+	TransactionDate      time.Time `json:"transaction_date"`
+	Amount               string    `json:"amount"`
+	Currency             string    `json:"currency"`
+	Direction            string    `json:"direction"`
+	Category             string    `json:"category"`
+	MemberNumber         *int32    `json:"member_number"`
+	MatchedBy            *string   `json:"matched_by"`
+	IsPublicVisible      bool      `json:"is_public_visible"`
+	VariableSymbol       *string   `json:"variable_symbol"`
+	SpecificSymbol       *string   `json:"specific_symbol"`
+	ConstantSymbol       *string   `json:"constant_symbol"`
+	CounterAccountNumber *string   `json:"counter_account_number"`
+	CounterAccountName   *string   `json:"counter_account_name"`
+	MessageForRecipient  *string   `json:"message_for_recipient"`
+	UserIdentification   *string   `json:"user_identification"`
+	Comment              *string   `json:"comment"`
+	TotalCount           int64     `json:"total_count"`
+}
+
+// Admin transaction browser: processed_transactions enriched with their
+// raw_transactions row, with optional filters. Every filter arg is nullable —
+// NULL / omitted means "don't filter on this". total_count is the full match
+// count ignoring LIMIT/OFFSET (window aggregate) so the caller can paginate. See
+// docs/logic-design.md "Transaction Browser".
+func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsParams) ([]ListTransactionsRow, error) {
+	rows, err := q.db.Query(ctx, listTransactions,
+		arg.Assigned,
+		arg.Direction,
+		arg.Category,
+		arg.MatchedBy,
+		arg.MemberNumber,
+		arg.DateFrom,
+		arg.DateTo,
+		arg.Off,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListTransactionsRow
+	for rows.Next() {
+		var i ListTransactionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TransactionDate,
+			&i.Amount,
+			&i.Currency,
+			&i.Direction,
+			&i.Category,
+			&i.MemberNumber,
+			&i.MatchedBy,
+			&i.IsPublicVisible,
+			&i.VariableSymbol,
+			&i.SpecificSymbol,
+			&i.ConstantSymbol,
+			&i.CounterAccountNumber,
+			&i.CounterAccountName,
+			&i.MessageForRecipient,
+			&i.UserIdentification,
+			&i.Comment,
+			&i.TotalCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUnprocessedTransactions = `-- name: ListUnprocessedTransactions :many
 SELECT rt.id, rt.bank_account_id, rt.fio_transaction_id, rt.transaction_date, rt.amount, rt.currency, rt.counter_account_number, rt.counter_account_name, rt.counter_bank_code, rt.counter_bank_name, rt.bic, rt.variable_symbol, rt.specific_symbol, rt.constant_symbol, rt.user_identification, rt.message_for_recipient, rt.transaction_type, rt.executor, rt.specification, rt.comment, rt.instruction_id, rt.raw_payload, rt.synced_at FROM raw_transactions rt
 LEFT JOIN processed_transactions pt ON pt.raw_transaction_id = rt.id
