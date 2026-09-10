@@ -31,8 +31,8 @@ repeated here:
 
 - **`GET /payments/workplace/{year}/{month}/missing`** / **`GET
   /payments/workplace/{year}/missing`** — same `{member_number,
-  total_missed_months}[]` shape as `MissingPayments`/`MissingPaymentsInYear`, filtered
-  to the caller's workplace(s).
+  total_missed_months, has_ever_paid}[]` shape as
+  `MissingPayments`/`MissingPaymentsInYear`, filtered to the caller's workplace(s).
 
 (A bulk `GET /payments/workplace/history` — every payment for every member in a rep's
 workplace, not just who's missing — was built alongside these but removed: missed
@@ -350,8 +350,8 @@ pay.
 Two cohort endpoints, both gated by the same `payment-history` Keycloak role as the
 per-member history route (anyone trusted with an individual member's payments is trusted
 with the cohort list — same data sensitivity), both returning
-`{member_number, total_missed_months}` sorted by `total_missed_months` descending (top
-offenders first), `member_number` breaking ties:
+`{member_number, total_missed_months, has_ever_paid}` sorted by `total_missed_months`
+descending (top offenders first), `member_number` breaking ties:
 
 - `GET /payments/{year}/{month}/missing` (handler `MissingPayments`, query
   `ListMembersMissingPayment`) — members liable that specific month with no coverage
@@ -363,12 +363,21 @@ offenders first), `member_number` breaking ties:
 `total_missed_months` is the same figure for both: a total-arrears count — *every*
 unpaid month across the member's full liability window, not scoped to the queried
 month/year — so it's stable regardless of what you ask about and serves as the
-contact-priority sort key. It's always `>= 1` for a member in either list. Nothing else
-is returned: the frontend resolves names/contact details from Orca by `member_number`.
+contact-priority sort key. It's always `>= 1` for a member in either list.
 
-Both `total_missed_months` values come from the `member_arrears` view
+`has_ever_paid` is `false` when the member has zero `payment_coverage` rows at all,
+across their whole history — not just for the queried month/year. Distinguishes a member
+who never started paying at all (a real, common case in practice — e.g. missed the
+onboarding email with bank transfer details and never noticed) from one who's usually
+current but missed a month; `total_missed_months` alone can't tell those apart, but they
+warrant different follow-up (send onboarding info again vs. a one-off reminder). Nothing
+else is returned: the frontend resolves names/contact details from Orca by
+`member_number`.
+
+Both `total_missed_months` and `has_ever_paid` come from the `member_arrears` view
 (`migrations/…_member_arrears_view.sql`), which is the full-window `generate_series` +
-`NOT EXISTS` diff below wrapped as a per-member `count(*)` — defined once so the two
+`NOT EXISTS` diff below wrapped as a per-member `count(*)` (plus a plain `EXISTS` for
+`has_ever_paid`) — defined once so the two
 endpoints (and any future `/payments/{member_number}/missing`) can't drift. The
 month/year endpoints add only their own "was a payment missed in this window" filter on
 top. `year` is validated `1 <= year <= current year + 1`, `month` `1 <= month <= 12`,

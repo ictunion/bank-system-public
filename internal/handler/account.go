@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kubik/bank-system/internal/db"
+	"github.com/kubik/bank-system/internal/processing"
 	"github.com/kubik/bank-system/internal/syncjob"
 )
 
@@ -232,9 +234,11 @@ func DeleteBankAccount(queries *db.Queries) http.HandlerFunc {
 }
 
 type syncResultResponse struct {
-	BankAccountID        int32 `json:"bank_account_id"`
-	TransactionsFetched  int   `json:"transactions_fetched"`
-	TransactionsInserted int   `json:"transactions_inserted"`
+	BankAccountID         int32 `json:"bank_account_id"`
+	TransactionsFetched   int   `json:"transactions_fetched"`
+	TransactionsInserted  int   `json:"transactions_inserted"`
+	TransactionsProcessed int   `json:"transactions_processed"`
+	TransactionsFailed    int   `json:"transactions_failed"`
 }
 
 // TriggerFioSync handles POST /account/{id}/sync — an admin "sync now" button
@@ -243,6 +247,14 @@ type syncResultResponse struct {
 // DISABLE_FIO_SYNC is set, same local-dev safety net as the scheduled job
 // (see config.DisableFioSync) — nothing here bypasses it, so flipping that env
 // var back off later re-enables this button with no code change.
+//
+// Runs transaction processing/matching synchronously right after a
+// successful sync, same as BackfillAccount and for the same reason: an admin
+// pressing "sync now" wants to see the result categorized immediately, not
+// wait for the next 3am scheduled cycle. If processing fails, the
+// already-committed raw_transactions rows aren't lost — left for the next
+// scheduled cycle, same as any other unprocessed row — so that's reported as
+// a 200 with zeroed processing counts, not an error.
 func TriggerFioSync(pool *pgxpool.Pool, fioAPIURL, encryptionKey string, disableFioSync, debug bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseBankAccountID(r)
@@ -268,11 +280,106 @@ func TriggerFioSync(pool *pgxpool.Pool, fioAPIURL, encryptionKey string, disable
 			return
 		}
 
-		writeJSON(w, http.StatusOK, syncResultResponse{
+		response := syncResultResponse{
 			BankAccountID:        result.BankAccountID,
 			TransactionsFetched:  result.TransactionsFetched,
 			TransactionsInserted: result.TransactionsInserted,
-		})
+		}
+		if processingResult, err := processing.Run(r.Context(), pool); err != nil {
+			log.Printf("sync: bank_account_id=%d: transaction processing failed, left for the next scheduled cycle: %v", id, err)
+		} else {
+			response.TransactionsProcessed = processingResult.TransactionsProcessed
+			response.TransactionsFailed = processingResult.TransactionsFailed
+		}
+
+		writeJSON(w, http.StatusOK, response)
+	}
+}
+
+type backfillRequest struct {
+	From string `json:"from"` // YYYY-MM-DD, inclusive
+	To   string `json:"to"`   // YYYY-MM-DD, inclusive
+}
+
+// BackfillAccount handles POST /account/{id}/backfill — a one-off historical
+// pull via Fio's /periods/ endpoint (syncjob.BackfillAccount), for
+// transactions predating an account's first cursor-based sync. Data older
+// than 90 days needs a manual strong-authorization (SCA) unlock done first in
+// Fio's own Internet Banking (see docs/fio-api.md) — without it, Fio itself
+// returns an error for that range, surfaced here as a 502 same as any other
+// Fio failure.
+//
+// Unlike TriggerFioSync, this also runs transaction processing/matching
+// synchronously afterward: a backfill is meant to be reviewed right away
+// (typically right after creating the account, before it starts riding the
+// daily cursor-based sync), not left uncategorized until the next 3am cycle.
+// If processing fails, the already-committed backfilled rows aren't lost —
+// they're just left for the next scheduled cycle to pick up, same as any
+// other unprocessed raw_transactions row — so that failure is reported as a
+// 200 with zeroed processing counts, not an error, to avoid implying the
+// backfill itself failed.
+func BackfillAccount(pool *pgxpool.Pool, fioAPIURL, encryptionKey string, disableFioSync, debug bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseBankAccountID(r)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid id")
+			return
+		}
+		if disableFioSync {
+			writeError(w, http.StatusConflict, "fio sync is disabled (DISABLE_FIO_SYNC)")
+			return
+		}
+
+		var request backfillRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		from, err := time.Parse("2006-01-02", request.From)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "from must be YYYY-MM-DD")
+			return
+		}
+		to, err := time.Parse("2006-01-02", request.To)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "to must be YYYY-MM-DD")
+			return
+		}
+		if to.Before(from) {
+			writeError(w, http.StatusBadRequest, "to must not be before from")
+			return
+		}
+		if to.After(time.Now()) {
+			writeError(w, http.StatusBadRequest, "to must not be in the future")
+			return
+		}
+
+		result, err := syncjob.BackfillAccount(r.Context(), pool, fioAPIURL, encryptionKey, id, from, to, debug)
+		switch {
+		case errors.Is(err, syncjob.ErrAccountNotFound):
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		case errors.Is(err, syncjob.ErrAccountInactive), errors.Is(err, syncjob.ErrNoToken):
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		case err != nil:
+			writeError(w, http.StatusBadGateway, "fio backfill failed: "+err.Error())
+			return
+		}
+
+		response := syncResultResponse{
+			BankAccountID:        result.BankAccountID,
+			TransactionsFetched:  result.TransactionsFetched,
+			TransactionsInserted: result.TransactionsInserted,
+		}
+		if processingResult, err := processing.Run(r.Context(), pool); err != nil {
+			log.Printf("backfill: bank_account_id=%d: transaction processing failed, left for the next scheduled cycle: %v", id, err)
+		} else {
+			response.TransactionsProcessed = processingResult.TransactionsProcessed
+			response.TransactionsFailed = processingResult.TransactionsFailed
+		}
+
+		writeJSON(w, http.StatusOK, response)
 	}
 }
 

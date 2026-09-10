@@ -192,6 +192,16 @@ entirely. Production, with `DEBUG=false`, uses the real cursor-based
 `/last/` and would need the manual 90-day unlock done once for any initial
 backfill older than that window.
 
+**Backfill endpoint** (`POST /account/{id}/backfill`, [`syncjob.BackfillAccount`](../internal/syncjob/fio.go))
+covers this properly: an admin-triggered `/periods/` pull for an arbitrary
+date range, independent of `/last/`'s cursor entirely (see "date range"
+above) — safe to run before, after, or interleaved with the regular
+cursor-based sync, any number of times, since it never touches the cursor and
+`raw_transactions`' unique constraint on `(bank_account_id,
+fio_transaction_id)` dedupes any overlap. Data older than 90 days still needs
+the manual SCA unlock done first in Fio's IB; without it this returns the
+same `422` `/periods/` always would.
+
 ## Transaction type list
 
 Full ordinal type list ("Typy pohybů na účtu", 45 entries, e.g. "Bezhotovostní

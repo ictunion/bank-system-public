@@ -54,14 +54,32 @@ test: db-test-init migrate-test
 test's setup pointing at the wrong database should never be able to touch dev data by
 sharing a variable name.
 
-**Isolation: one transaction per test, rolled back, not truncate-between-tests.** This
-project already has the right primitive for this — `db.DBTX` (see
-`internal/db/db.go`, sqlc-generated) is satisfied by both `*pgxpool.Pool` and `pgx.Tx`,
-which is exactly how `AssignTransaction`/`UnassignTransaction` already build a
+**Isolation: one transaction per test, rolled back, not truncate-between-tests — with
+one exception.** This project already has the right primitive for this — `db.DBTX`
+(see `internal/db/db.go`, sqlc-generated) is satisfied by both `*pgxpool.Pool` and
+`pgx.Tx`, which is exactly how `AssignTransaction`/`UnassignTransaction` already build a
 tx-scoped `*db.Queries` today. Tests do the same: `pool.Begin(ctx)`, `db.New(tx)`,
 register `t.Cleanup(func() { tx.Rollback(ctx) })`. Every test starts from a clean,
 migrated-but-empty schema and its writes vanish on rollback — no truncation step, no
-test-ordering dependency, safe to run `-parallel`.
+test-ordering dependency, safe to run `-parallel`. This is `dbtest.Tx(t)`.
+
+The exception: `AssignTransaction`, `UnassignTransaction`, `TriggerFioSync`, and
+`internal/syncjob` all take the concrete `*pgxpool.Pool` and open their *own* nested
+transaction on it — handing them `dbtest.Tx`'s already-open `pgx.Tx` in place of a pool
+isn't possible (wrong type, and a transaction can't nest another `Begin` the way a pool
+can). For these, `dbtest.Pool(t)` returns the shared pool itself and registers a
+`t.Cleanup` that `TRUNCATE`s every app table except `transaction_categories` (whose four
+mandatory seeded rows must survive every test). Tests using `dbtest.Pool` must not
+`t.Parallel()` against each other — the truncation is shared, unlike `dbtest.Tx`'s
+per-test rollback.
+
+This also means package test binaries can't run concurrently: `go test ./...` runs each
+package as its own binary, in parallel, by default — fine for `dbtest.Tx` (an
+uncommitted, per-test transaction is invisible to every other connection), not fine for
+`dbtest.Pool` (its `TRUNCATE` commits immediately against the one shared test database
+every package connects to, so one package's cleanup can wipe rows a *different*
+package's test is still using mid-run). `make test` passes `go test -p 1 ./...` for
+exactly this reason — see the Makefile comment above `test:`.
 
 **Skip gracefully, don't fail, when `TEST_DATABASE_URL` is unset.** A shared test helper
 (new package, `internal/dbtest`) exposes `dbtest.Tx(t *testing.T) *db.Queries`, calling
@@ -113,25 +131,48 @@ through a fake Keycloak:
 context actually gets `withClaims`-populated correctly and role rejection produces the
 right status/body — this is the one place both layers meet.
 
-## What's not built yet
+## Status
 
-Still just the plan for actual test coverage — nothing under `_test.go` exists yet. One
-prerequisite from the original version of this doc is already done: `fio.NewClient`
-now takes `baseURL` as a param, sourced from the required `FIO_API_URL` env var (see
-`internal/config`) — no default baked into Go code, same single-source-of-truth
-treatment as `ORCA_API_URL`. Matches `orca.NewClient`'s existing shape, so both Fio and
-Orca sync tests can point at an `httptest.NewServer` with no further client changes;
-tests just pass the test server's URL as `baseURL` directly, same as production passes
-the real one.
+Built:
 
-What's left, in the order I'd actually build it:
+- `fio.NewClient` takes `baseURL` as a param, sourced from the required `FIO_API_URL`
+  env var (see `internal/config`) — no default baked into Go code, same
+  single-source-of-truth treatment as `ORCA_API_URL`. Matches `orca.NewClient`'s
+  existing shape, so both Fio and Orca sync tests can point at an `httptest.NewServer`
+  with no further client changes.
+- Makefile targets `db-test-init`, `migrate-test`, `test` (see Makefile).
+- `internal/dbtest` — `dbtest.Tx(t)` and `dbtest.Pool(t)` per "Isolation" above. Between
+  the two, every handler in `internal/handler` has a path to a real DB.
+- `internal/keycloaktest` — fake Keycloak (JWKS + Account API) backing a real
+  `*keycloak.Provider`, per "Testing the auth layer".
+- `internal/keycloak`, `internal/handler` (auth middleware, categories, event logs,
+  bank accounts CRUD, transactions list/detail/category-summary,
+  `AssignTransaction`/`UnassignTransaction`, `TriggerFioSync`, missing-payments
+  admin + workplace routes, payment-history admin + workplace + self-service routes) —
+  covered.
 
-1. Makefile targets (`db-test-init`, `migrate-test`, `test`) and `internal/dbtest`
-   helper package — nothing runs without these.
-2. Test coverage itself, package by package per the table above. `internal/handler` is
-   both the largest and the actual point of "test everything in the API," so it's the
-   one worth starting with.
+- `internal/syncjob` (`RunFioSync`, `RunOrcaSync`, `FailStaleRuns`), `internal/processing`
+  (`Run`/`processOne` — variable-symbol match, `mzda` salary detection, directional
+  default, idempotency), `internal/orca` and `internal/fio` (pure client/parsing tests,
+  no DB) — covered.
+
+Not built: nothing left in the package-by-package table above.
+
+The `*pgxpool.Pool` isolation question above is resolved: truncate-based cleanup
+(`dbtest.Pool`), not a `db.DBTX`-interface refactor — kept production code shape
+untouched, which mattered more than avoiding a `TRUNCATE` in test cleanup.
 
 Both DB setup (`db-test-init`, `migrate-test`) and running the suite (`make test`) need
 `nix develop` — same restriction as every other `goose`/`psql`/`go` command in this
 repo (see root `CLAUDE.md`). I can write every test file; running them is on you.
+
+## CI
+
+`.github/workflows/test.yml` runs the exact same `make db-init && make test` through
+`cachix/install-nix-action`, not a Postgres service container or a bare
+`actions/setup-go` — deliberately, so CI runs the identical `go`/`goose`/`postgresql`
+versions `flake.lock` pins, matching local dev and the NixOS production server rather
+than whatever `ubuntu-latest` happens to ship. `internal/db/*.go` (sqlc-generated) is
+committed, so CI never needs `sqlc` — codegen isn't a test-time dependency, only
+`goose`+`postgresql`+`go` are. Frontend is untouched by this workflow — no FE tests
+exist yet (see top of this doc).

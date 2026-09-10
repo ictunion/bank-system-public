@@ -1,0 +1,36 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Everything below runs through the same nix devShell (flake.nix) local
+      # dev and the NixOS production server both use — go/goose/postgresql
+      # versions here are exactly the ones flake.lock pins, not
+      # whatever ubuntu-latest happens to ship. See docs/testing.md and
+      # root CLAUDE.md ("Nix dev shell").
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # A fresh runner has no PGDATA yet — db-init (initdb) has to run once
+      # before `make test`'s db-test-init can pg_ctl start against it. Local
+      # dev only needs this once ever; CI needs it every run since the
+      # checkout is fresh each time.
+      - name: Initialize local Postgres cluster
+        run: nix develop --command make db-init
+
+      # make test: starts Postgres (db-test-init), creates + migrates
+      # bank_system_test (migrate-test), then `go test ./...` with
+      # TEST_DATABASE_URL pointed at it. Same target you run locally.
+      - name: Run tests
+        run: nix develop --command make test

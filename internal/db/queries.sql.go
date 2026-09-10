@@ -1042,7 +1042,7 @@ func (q *Queries) ListEventLogs(ctx context.Context, arg ListEventLogsParams) ([
 }
 
 const listMembersMissingPayment = `-- name: ListMembersMissingPayment :many
-SELECT ma.member_number, ma.total_missed_months
+SELECT ma.member_number, ma.total_missed_months, ma.has_ever_paid
 FROM member_arrears ma
 JOIN members m ON m.member_number = ma.member_number
 WHERE date_trunc('month', m.fee_start_date::timestamp)
@@ -1071,6 +1071,9 @@ type ListMembersMissingPaymentParams struct {
 // total_missed_months comes from the member_arrears view: a total-arrears figure
 // independent of the queried month (every unpaid month across the member's full
 // liability window). Always >= 1 here, since the queried month is one of them.
+// has_ever_paid (also from member_arrears) is false for a member with zero
+// payment_coverage rows ever — distinguishes "never started paying" from
+// "usually pays, missed a month" for follow-up prioritization.
 // Rows are ordered by it descending ("top offenders first"), member_number
 // breaking ties. See docs/logic-design.md "Missed Payment Detection".
 func (q *Queries) ListMembersMissingPayment(ctx context.Context, arg ListMembersMissingPaymentParams) ([]MemberArrear, error) {
@@ -1082,7 +1085,7 @@ func (q *Queries) ListMembersMissingPayment(ctx context.Context, arg ListMembers
 	var items []MemberArrear
 	for rows.Next() {
 		var i MemberArrear
-		if err := rows.Scan(&i.MemberNumber, &i.TotalMissedMonths); err != nil {
+		if err := rows.Scan(&i.MemberNumber, &i.TotalMissedMonths, &i.HasEverPaid); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1094,7 +1097,7 @@ func (q *Queries) ListMembersMissingPayment(ctx context.Context, arg ListMembers
 }
 
 const listMembersMissingPaymentForWorkplace = `-- name: ListMembersMissingPaymentForWorkplace :many
-SELECT ma.member_number, ma.total_missed_months
+SELECT ma.member_number, ma.total_missed_months, ma.has_ever_paid
 FROM member_arrears ma
 JOIN members m ON m.member_number = ma.member_number
 WHERE m.workplace_executive_committee_sub = ANY($1::uuid[])
@@ -1129,7 +1132,7 @@ func (q *Queries) ListMembersMissingPaymentForWorkplace(ctx context.Context, arg
 	var items []MemberArrear
 	for rows.Next() {
 		var i MemberArrear
-		if err := rows.Scan(&i.MemberNumber, &i.TotalMissedMonths); err != nil {
+		if err := rows.Scan(&i.MemberNumber, &i.TotalMissedMonths, &i.HasEverPaid); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1141,7 +1144,7 @@ func (q *Queries) ListMembersMissingPaymentForWorkplace(ctx context.Context, arg
 }
 
 const listMembersMissingPaymentInYear = `-- name: ListMembersMissingPaymentInYear :many
-SELECT ma.member_number, ma.total_missed_months
+SELECT ma.member_number, ma.total_missed_months, ma.has_ever_paid
 FROM member_arrears ma
 JOIN members m ON m.member_number = ma.member_number
 WHERE EXISTS (
@@ -1169,9 +1172,10 @@ ORDER BY ma.total_missed_months DESC, ma.member_number
 
 // Members who missed at least one liable month during the given calendar year —
 // the whole-year counterpart of ListMembersMissingPayment. Same
-// {member_number, total_missed_months} shape and ordering; total_missed_months
-// is still the full-liability-window arrears count (member_arrears view), not
-// scoped to the year. See docs/logic-design.md "Missed Payment Detection".
+// {member_number, total_missed_months, has_ever_paid} shape and ordering;
+// total_missed_months/has_ever_paid are still the full-liability-window
+// figures (member_arrears view), not scoped to the year. See
+// docs/logic-design.md "Missed Payment Detection".
 func (q *Queries) ListMembersMissingPaymentInYear(ctx context.Context, year int32) ([]MemberArrear, error) {
 	rows, err := q.db.Query(ctx, listMembersMissingPaymentInYear, year)
 	if err != nil {
@@ -1181,7 +1185,7 @@ func (q *Queries) ListMembersMissingPaymentInYear(ctx context.Context, year int3
 	var items []MemberArrear
 	for rows.Next() {
 		var i MemberArrear
-		if err := rows.Scan(&i.MemberNumber, &i.TotalMissedMonths); err != nil {
+		if err := rows.Scan(&i.MemberNumber, &i.TotalMissedMonths, &i.HasEverPaid); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1193,7 +1197,7 @@ func (q *Queries) ListMembersMissingPaymentInYear(ctx context.Context, year int3
 }
 
 const listMembersMissingPaymentInYearForWorkplace = `-- name: ListMembersMissingPaymentInYearForWorkplace :many
-SELECT ma.member_number, ma.total_missed_months
+SELECT ma.member_number, ma.total_missed_months, ma.has_ever_paid
 FROM member_arrears ma
 JOIN members m ON m.member_number = ma.member_number
 WHERE m.workplace_executive_committee_sub = ANY($1::uuid[])
@@ -1236,7 +1240,7 @@ func (q *Queries) ListMembersMissingPaymentInYearForWorkplace(ctx context.Contex
 	var items []MemberArrear
 	for rows.Next() {
 		var i MemberArrear
-		if err := rows.Scan(&i.MemberNumber, &i.TotalMissedMonths); err != nil {
+		if err := rows.Scan(&i.MemberNumber, &i.TotalMissedMonths, &i.HasEverPaid); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

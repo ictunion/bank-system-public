@@ -34,6 +34,7 @@ type Member struct {
 type MemberArrear struct {
 	MemberNumber      int32 `json:"member_number"`
 	TotalMissedMonths int32 `json:"total_missed_months"`
+	HasEverPaid       bool  `json:"has_ever_paid"`
 }
 
 type MemberPaymentIdentifier struct {

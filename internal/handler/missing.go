@@ -16,6 +16,13 @@ type missingPaymentMember struct {
 	// Always >= 1 for a member in this list; rows come pre-sorted by it,
 	// descending (top offenders first).
 	TotalMissedMonths int32 `json:"total_missed_months"`
+	// HasEverPaid is false when the member has no payment_coverage row at
+	// all — never made a single matched payment, as opposed to usually
+	// paying and missing one month. In practice a common, distinct case
+	// (e.g. a member who never received/actioned their bank details) that
+	// needs different follow-up than an occasional miss, so callers can
+	// filter on it instead of inferring it from total_missed_months alone.
+	HasEverPaid bool `json:"has_ever_paid"`
 }
 
 // MissingPayments handles GET /payments/{year}/{month}/missing — the members
@@ -49,6 +56,7 @@ func MissingPayments(queries *db.Queries) http.HandlerFunc {
 			out = append(out, missingPaymentMember{
 				MemberNumber:      row.MemberNumber,
 				TotalMissedMonths: row.TotalMissedMonths,
+				HasEverPaid:       row.HasEverPaid,
 			})
 		}
 
@@ -58,9 +66,10 @@ func MissingPayments(queries *db.Queries) http.HandlerFunc {
 
 // MissingPaymentsInYear handles GET /payments/{year}/missing — every member who
 // missed at least one liable month during that calendar year. Same
-// {member_number, total_missed_months} response and top-offenders-first ordering
-// as MissingPayments; total_missed_months is still the full-liability-window
-// arrears count, not scoped to the year.
+// {member_number, total_missed_months, has_ever_paid} response and
+// top-offenders-first ordering as MissingPayments; total_missed_months/
+// has_ever_paid are still the full-liability-window figures, not scoped to
+// the year.
 func MissingPaymentsInYear(queries *db.Queries) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		year, err := strconv.Atoi(r.PathValue("year"))
@@ -80,6 +89,7 @@ func MissingPaymentsInYear(queries *db.Queries) http.HandlerFunc {
 			out = append(out, missingPaymentMember{
 				MemberNumber:      row.MemberNumber,
 				TotalMissedMonths: row.TotalMissedMonths,
+				HasEverPaid:       row.HasEverPaid,
 			})
 		}
 
@@ -138,6 +148,7 @@ func WorkplaceMissingPayments(provider *keycloak.Provider, queries *db.Queries) 
 			out = append(out, missingPaymentMember{
 				MemberNumber:      row.MemberNumber,
 				TotalMissedMonths: row.TotalMissedMonths,
+				HasEverPaid:       row.HasEverPaid,
 			})
 		}
 
@@ -187,6 +198,7 @@ func WorkplaceMissingPaymentsInYear(provider *keycloak.Provider, queries *db.Que
 			out = append(out, missingPaymentMember{
 				MemberNumber:      row.MemberNumber,
 				TotalMissedMonths: row.TotalMissedMonths,
+				HasEverPaid:       row.HasEverPaid,
 			})
 		}
 

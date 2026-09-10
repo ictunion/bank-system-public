@@ -110,6 +110,88 @@ func SyncOneAccount(requestContext context.Context, pool *pgxpool.Pool, fioAPIUR
 	return syncAccount(requestContext, pool, queries, client, account.ID, debug)
 }
 
+// BackfillAccount pulls transactions for one bank account across an explicit
+// date range via Fio's /periods/ endpoint — for history that predates an
+// account's first cursor-based sync (see docs/fio-api.md "The 90-day
+// strong-authorization (SCA) rule": data older than 90 days needs a manual
+// SCA unlock in Fio's own Internet Banking before this will return anything
+// for it). Unlike SyncOneAccount's FetchNew path, /periods/ never touches
+// Fio's server-side cursor, so this is safe to call before, after, or
+// interleaved with the regular daily sync — raw_transactions' unique
+// constraint on (bank_account_id, fio_transaction_id) makes any overlap
+// between a backfill range and the cursor-based history idempotent, not a
+// duplicate insert. No rewind-on-failure logic here (unlike syncAccount):
+// there's no cursor to rewind, since /periods/ never advanced one.
+func BackfillAccount(requestContext context.Context, pool *pgxpool.Pool, fioAPIURL, encryptionKey string, bankAccountID int32, from, to time.Time, debug bool) (result Result, err error) {
+	queries := db.New(pool)
+
+	account, err := queries.GetBankAccountWithToken(requestContext, db.GetBankAccountWithTokenParams{
+		ID:            bankAccountID,
+		EncryptionKey: encryptionKey,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Result{}, ErrAccountNotFound
+	} else if err != nil {
+		return Result{}, fmt.Errorf("loading bank account: %w", err)
+	}
+	if !account.IsActive {
+		return Result{}, ErrAccountInactive
+	}
+	if account.FioToken == "" {
+		return Result{}, ErrNoToken
+	}
+
+	client := fio.NewClient(fioAPIURL, account.FioToken, debug)
+
+	run, err := queries.CreateSyncFioRun(requestContext, bankAccountID)
+	if err != nil {
+		return Result{}, fmt.Errorf("creating sync_fio_runs row: %w", err)
+	}
+
+	// See syncAccount's identical comment: a panic here would otherwise crash
+	// the whole process and leave this row stuck at status='running' forever.
+	var fetched, inserted int
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic: %v", r)
+			finishRun(requestContext, queries, run.ID, "failed", fetched, inserted, err)
+			result = Result{}
+			log.Printf("fio backfill: bank_account_id=%d: recovered from panic: %v", bankAccountID, r)
+		}
+	}()
+
+	response, err := client.FetchPeriod(requestContext, from, to)
+	if err != nil {
+		finishRun(requestContext, queries, run.ID, "failed", 0, 0, err)
+		return Result{}, fmt.Errorf("fetching from fio: %w", err)
+	}
+
+	txs, err := response.Transactions()
+	if err != nil {
+		finishRun(requestContext, queries, run.ID, "failed", 0, 0, err)
+		return Result{}, fmt.Errorf("parsing fio response: %w", err)
+	}
+	fetched = len(txs)
+
+	if len(txs) == 0 {
+		finishRun(requestContext, queries, run.ID, "success", 0, 0, nil)
+		return Result{BankAccountID: bankAccountID}, nil
+	}
+
+	inserted, err = insertTransactions(requestContext, pool, bankAccountID, txs)
+	if err != nil {
+		finishRun(requestContext, queries, run.ID, "failed", len(txs), 0, err)
+		return Result{}, fmt.Errorf("inserting raw_transactions: %w", err)
+	}
+
+	finishRun(requestContext, queries, run.ID, "success", len(txs), inserted, nil)
+	return Result{
+		BankAccountID:        bankAccountID,
+		TransactionsFetched:  len(txs),
+		TransactionsInserted: inserted,
+	}, nil
+}
+
 func syncAccount(requestContext context.Context, pool *pgxpool.Pool, queries *db.Queries, client *fio.FioClient, bankAccountID int32, debug bool) (result Result, err error) {
 	run, err := queries.CreateSyncFioRun(requestContext, bankAccountID)
 	if err != nil {

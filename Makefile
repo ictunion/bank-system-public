@@ -1,10 +1,11 @@
 # Run these from inside `nix develop` (postgresql/goose/sqlc binaries come from the flake devShell).
 
-DB_NAME     ?= bank_system
-DB_USER     ?= bank_system
-DB_PASSWORD ?= bank_system
-DB_PORT     ?= 5433
-PGDATA      := $(CURDIR)/.pgdata
+DB_NAME      ?= bank_system
+DB_USER      ?= bank_system
+DB_PASSWORD  ?= bank_system
+DB_PORT      ?= 5433
+DB_TEST_NAME ?= bank_system_test
+PGDATA       := $(CURDIR)/.pgdata
 
 .PHONY: db-init
 db-init:
@@ -42,6 +43,28 @@ migrate:
 .PHONY: sqlc
 sqlc:
 	sqlc generate
+
+.PHONY: db-test-init
+db-test-init:
+	@pg_ctl -D "$(PGDATA)" status >/dev/null 2>&1 || $(MAKE) db-start
+	@psql -h localhost -p $(DB_PORT) -U postgres -tc "SELECT 1 FROM pg_database WHERE datname='$(DB_TEST_NAME)'" | grep -q 1 \
+		|| psql -h localhost -p $(DB_PORT) -U postgres -c "CREATE DATABASE $(DB_TEST_NAME) OWNER $(DB_USER)"
+
+.PHONY: migrate-test
+migrate-test:
+	goose -dir migrations postgres "postgres://$(DB_USER):$(DB_PASSWORD)@localhost:$(DB_PORT)/$(DB_TEST_NAME)?sslmode=disable" up
+
+# See docs/testing.md — TEST_DATABASE_URL is deliberately separate from
+# DATABASE_URL so a test-setup bug can never point at dev data by sharing a
+# variable name. -p 1 forces package test binaries to run one at a time:
+# `go test ./...` otherwise runs them concurrently, and every package shares
+# this one physical test database — dbtest.Tx (per-test rollback) tolerates
+# that fine, but dbtest.Pool's TRUNCATE-based cleanup does not (a truncate
+# from one package's cleanup can wipe rows a different package's test is
+# still using), so all packages sharing this DB must run serially.
+.PHONY: test
+test: db-test-init migrate-test
+	TEST_DATABASE_URL="postgres://$(DB_USER):$(DB_PASSWORD)@localhost:$(DB_PORT)/$(DB_TEST_NAME)?sslmode=disable" go test -p 1 ./...
 
 .PHONY: start
 start:

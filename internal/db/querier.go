@@ -118,6 +118,9 @@ type Querier interface {
 	// total_missed_months comes from the member_arrears view: a total-arrears figure
 	// independent of the queried month (every unpaid month across the member's full
 	// liability window). Always >= 1 here, since the queried month is one of them.
+	// has_ever_paid (also from member_arrears) is false for a member with zero
+	// payment_coverage rows ever — distinguishes "never started paying" from
+	// "usually pays, missed a month" for follow-up prioritization.
 	// Rows are ordered by it descending ("top offenders first"), member_number
 	// breaking ties. See docs/logic-design.md "Missed Payment Detection".
 	ListMembersMissingPayment(ctx context.Context, arg ListMembersMissingPaymentParams) ([]MemberArrear, error)
@@ -127,9 +130,10 @@ type Querier interface {
 	ListMembersMissingPaymentForWorkplace(ctx context.Context, arg ListMembersMissingPaymentForWorkplaceParams) ([]MemberArrear, error)
 	// Members who missed at least one liable month during the given calendar year —
 	// the whole-year counterpart of ListMembersMissingPayment. Same
-	// {member_number, total_missed_months} shape and ordering; total_missed_months
-	// is still the full-liability-window arrears count (member_arrears view), not
-	// scoped to the year. See docs/logic-design.md "Missed Payment Detection".
+	// {member_number, total_missed_months, has_ever_paid} shape and ordering;
+	// total_missed_months/has_ever_paid are still the full-liability-window
+	// figures (member_arrears view), not scoped to the year. See
+	// docs/logic-design.md "Missed Payment Detection".
 	ListMembersMissingPaymentInYear(ctx context.Context, year int32) ([]MemberArrear, error)
 	// Workplace-rep counterpart to ListMembersMissingPaymentInYear — same shape
 	// and logic, scoped to members in any of the caller's workplace groups.

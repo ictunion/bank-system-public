@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { errMessage } from './api/client'
 import {
   type BankAccount,
+  backfillAccount,
   createBankAccount,
   deleteBankAccount,
   fetchBankAccounts,
@@ -16,6 +17,7 @@ const COLUMNS = ['Fio account', 'Name', 'Currency', 'IBAN', 'Token', 'Created', 
 export function BankAccountsPage() {
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<BankAccount | null>(null)
+  const [backfilling, setBackfilling] = useState<BankAccount | null>(null)
 
   const { data, isPending, isError, error } = useQuery({
     queryKey: ['bank-accounts'],
@@ -47,7 +49,12 @@ export function BankAccountsPage() {
             </thead>
             <tbody>
               {data.map((a) => (
-                <BankAccountRow key={a.id} account={a} onEdit={() => setEditing(a)} />
+                <BankAccountRow
+                  key={a.id}
+                  account={a}
+                  onEdit={() => setEditing(a)}
+                  onBackfill={() => setBackfilling(a)}
+                />
               ))}
             </tbody>
           </table>
@@ -56,11 +63,20 @@ export function BankAccountsPage() {
 
       {adding && <AddBankAccountDialog onClose={() => setAdding(false)} />}
       {editing && <EditBankAccountDialog account={editing} onClose={() => setEditing(null)} />}
+      {backfilling && <BackfillDialog account={backfilling} onClose={() => setBackfilling(null)} />}
     </section>
   )
 }
 
-function BankAccountRow({ account, onEdit }: { account: BankAccount; onEdit: () => void }) {
+function BankAccountRow({
+  account,
+  onEdit,
+  onBackfill,
+}: {
+  account: BankAccount
+  onEdit: () => void
+  onBackfill: () => void
+}) {
   const qc = useQueryClient()
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [syncMessage, setSyncMessage] = useState<{ text: string; isError: boolean } | null>(null)
@@ -75,7 +91,7 @@ function BankAccountRow({ account, onEdit }: { account: BankAccount; onEdit: () 
     mutationFn: () => triggerFioSync(account.id),
     onSuccess: (result) =>
       setSyncMessage({
-        text: `Synced: ${result.transactions_fetched} fetched, ${result.transactions_inserted} new`,
+        text: `Synced: ${result.transactions_fetched} fetched, ${result.transactions_inserted} new, ${result.transactions_processed} processed`,
         isError: false,
       }),
     onError: (err) => setSyncMessage({ text: errMessage(err), isError: true }),
@@ -118,6 +134,17 @@ function BankAccountRow({ account, onEdit }: { account: BankAccount; onEdit: () 
             >
               {sync.isPending ? 'Syncing…' : 'Sync now'}
             </button>
+            <button
+              disabled={!account.has_token}
+              title={
+                account.has_token
+                  ? 'Pull a historical date range — for transactions predating this account’s first daily sync'
+                  : 'No Fio token configured'
+              }
+              onClick={onBackfill}
+            >
+              Backfill…
+            </button>
             {deleteError && <span style={{ color: '#b00' }}>{deleteError}</span>}
             {syncMessage && (
               <span style={{ color: syncMessage.isError ? '#b00' : '#080' }}>{syncMessage.text}</span>
@@ -128,6 +155,69 @@ function BankAccountRow({ account, onEdit }: { account: BankAccount; onEdit: () 
         )}
       </td>
     </tr>
+  )
+}
+
+// Backfills a historical date range via Fio's /periods/ endpoint (never
+// touches the daily sync's cursor — see api/bankAccounts.ts). Meant for the
+// gap before an account's first cursor-based sync: data older than 90 days
+// needs a manual SCA unlock in Fio's own Internet Banking first, or the
+// backend call below fails with that explained in the error message.
+function BackfillDialog({ account, onClose }: { account: BankAccount; onClose: () => void }) {
+  const today = new Date().toISOString().slice(0, 10)
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState(today)
+
+  const backfill = useMutation({
+    mutationFn: () => backfillAccount(account.id, from, to),
+  })
+
+  const canRun = from !== '' && to !== '' && !backfill.isPending
+
+  return (
+    <Overlay onClose={onClose}>
+      <h2 style={{ marginTop: 0 }}>Backfill {account.display_name}</h2>
+      <p style={{ color: '#666', fontSize: '0.875rem', marginTop: 0, maxWidth: 420 }}>
+        Pulls transactions in this date range from Fio, independent of the daily sync — safe to
+        run any time, overlap with already-synced transactions is skipped automatically. Data
+        older than 90 days needs a strong-authorization (SCA) unlock done first in Fio's own
+        Internet Banking.
+      </p>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (canRun) backfill.mutate()
+        }}
+      >
+        <label style={field}>
+          From
+          <input type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} autoFocus />
+        </label>
+
+        <label style={field}>
+          To
+          <input type="date" value={to} min={from || undefined} max={today} onChange={(e) => setTo(e.target.value)} />
+        </label>
+
+        {backfill.error && <p style={{ color: '#b00' }}>{errMessage(backfill.error)}</p>}
+        {backfill.data && (
+          <p style={{ color: '#080' }}>
+            Fetched {backfill.data.transactions_fetched}, inserted {backfill.data.transactions_inserted} new,
+            processed {backfill.data.transactions_processed}
+            {backfill.data.transactions_failed > 0 ? ` (${backfill.data.transactions_failed} failed)` : ''}.
+          </p>
+        )}
+
+        <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem' }}>
+          <button type="submit" disabled={!canRun}>
+            {backfill.isPending ? 'Running…' : 'Run backfill'}
+          </button>
+          <button type="button" onClick={onClose}>
+            {backfill.isSuccess ? 'Close' : 'Cancel'}
+          </button>
+        </div>
+      </form>
+    </Overlay>
   )
 }
 
