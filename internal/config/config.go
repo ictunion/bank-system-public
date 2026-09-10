@@ -49,6 +49,13 @@ type Config struct {
 	// DISABLE_FIO_SYNC env var (any of "1", "true", "yes", case-insensitive).
 	DisableFioSync bool
 
+	// FioAPIURL is the base URL the Fio sync job builds every request against
+	// (see internal/fio.NewClient), e.g. https://fioapi.fio.cz/v1/rest in
+	// production. No default baked into the Go code — this env var is the
+	// single source of truth, same as OrcaAPIURL below. Tests point it at an
+	// httptest.NewServer instead.
+	FioAPIURL string
+
 	// OrcaAPIURL is Orca's base URL, e.g. https://api.ictunion.cz or
 	// http://127.0.0.1:8000 for local dev. Used by the daily member sync job to
 	// call `GET {OrcaAPIURL}/sync/bank/members` (see docs/orca-sync-members.md).
@@ -92,6 +99,11 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("BANK_TOKEN_ENCRYPTION_KEY environment variable is required")
 	}
 
+	fioAPIURL := os.Getenv("FIO_API_URL")
+	if fioAPIURL == "" {
+		return Config{}, fmt.Errorf("FIO_API_URL environment variable is required")
+	}
+
 	orcaAPIURL := os.Getenv("ORCA_API_URL")
 	if orcaAPIURL == "" {
 		return Config{}, fmt.Errorf("ORCA_API_URL environment variable is required")
@@ -123,6 +135,7 @@ func Load() (Config, error) {
 		BankTokenEncryptionKey: bankTokenEncryptionKey,
 		Debug:                  envBool("DEBUG"),
 		DisableFioSync:         envBool("DISABLE_FIO_SYNC"),
+		FioAPIURL:              fioAPIURL,
 		OrcaAPIURL:             orcaAPIURL,
 		OrcaSyncToken:          orcaSyncToken,
 		KeycloakHost:           keycloakHost,

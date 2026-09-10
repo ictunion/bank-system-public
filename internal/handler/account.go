@@ -243,7 +243,7 @@ type syncResultResponse struct {
 // DISABLE_FIO_SYNC is set, same local-dev safety net as the scheduled job
 // (see config.DisableFioSync) — nothing here bypasses it, so flipping that env
 // var back off later re-enables this button with no code change.
-func TriggerFioSync(pool *pgxpool.Pool, encryptionKey string, disableFioSync, debug bool) http.HandlerFunc {
+func TriggerFioSync(pool *pgxpool.Pool, fioAPIURL, encryptionKey string, disableFioSync, debug bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseBankAccountID(r)
 		if !ok {
@@ -255,7 +255,7 @@ func TriggerFioSync(pool *pgxpool.Pool, encryptionKey string, disableFioSync, de
 			return
 		}
 
-		result, err := syncjob.SyncOneAccount(r.Context(), pool, encryptionKey, id, debug)
+		result, err := syncjob.SyncOneAccount(r.Context(), pool, fioAPIURL, encryptionKey, id, debug)
 		switch {
 		case errors.Is(err, syncjob.ErrAccountNotFound):
 			writeError(w, http.StatusNotFound, err.Error())

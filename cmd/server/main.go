@@ -64,7 +64,7 @@ func main() {
 		fioOK := true
 		if appConfig.DisableFioSync {
 			log.Print("fio sync: disabled via DISABLE_FIO_SYNC, skipping")
-		} else if results, err := syncjob.RunFioSync(runContext, pool, appConfig.BankTokenEncryptionKey, appConfig.Debug); err != nil {
+		} else if results, err := syncjob.RunFioSync(runContext, pool, appConfig.FioAPIURL, appConfig.BankTokenEncryptionKey, appConfig.Debug); err != nil {
 			fioOK = false
 			log.Printf("fio sync: %v", err)
 		} else {
@@ -105,7 +105,7 @@ func main() {
 	api.HandleFunc("POST /account", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.CreateBankAccount(db.New(pool), appConfig.BankTokenEncryptionKey)))
 	api.HandleFunc("PATCH /account/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.UpdateBankAccount(db.New(pool), appConfig.BankTokenEncryptionKey)))
 	api.HandleFunc("DELETE /account/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.DeleteBankAccount(db.New(pool))))
-	api.HandleFunc("POST /account/{id}/sync", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.TriggerFioSync(pool, appConfig.BankTokenEncryptionKey, appConfig.DisableFioSync, appConfig.Debug)))
+	api.HandleFunc("POST /account/{id}/sync", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.TriggerFioSync(pool, appConfig.FioAPIURL, appConfig.BankTokenEncryptionKey, appConfig.DisableFioSync, appConfig.Debug)))
 
 	api.HandleFunc("GET /event-logs", handler.RequireRole(keycloakProvider, keycloak.RoleViewEventLogs, handler.ListEventLogs(db.New(pool))))
 

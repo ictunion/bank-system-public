@@ -11,18 +11,21 @@ import (
 	"time"
 )
 
-const baseURL = "https://fioapi.fio.cz/v1/rest"
-
 // FioClient calls Fio's classic export API. One FioClient is scoped to a single bank
 // account's token — Fio's cursor state ("last downloaded transaction") lives
 // server-side per token, not per request.
 type FioClient struct {
 	httpClient *http.Client
+	baseURL    string
 	token      string
 	debug      bool
 }
 
-func NewClient(token string, debug bool) *FioClient {
+// NewClient builds a client against baseURL. No default/fallback here — the
+// single source of truth for Fio's real URL is the required FIO_API_URL env
+// var (see internal/config), not a value baked into this package; tests pass
+// an httptest.NewServer URL instead.
+func NewClient(baseURL, token string, debug bool) *FioClient {
 	return &FioClient{
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
@@ -35,8 +38,9 @@ func NewClient(token string, debug bool) *FioClient {
 				return fmt.Errorf("unexpected redirect to %s", request.URL)
 			},
 		},
-		token: token,
-		debug: debug,
+		baseURL: strings.TrimRight(baseURL, "/"),
+		token:   token,
+		debug:   debug,
 	}
 }
 
@@ -68,7 +72,7 @@ func (c *FioClient) logResponse(response *http.Response, body []byte) {
 // call). Prefer this over date-range queries for the daily sync — it can't
 // re-fetch old data and doesn't require us to track our own "since" watermark.
 func (c *FioClient) FetchNew(requestContext context.Context) (*TransactionsResponse, error) {
-	url := fmt.Sprintf("%s/last/%s/transactions.json", baseURL, c.token)
+	url := fmt.Sprintf("%s/last/%s/transactions.json", c.baseURL, c.token)
 	return c.get(requestContext, url)
 }
 
@@ -77,7 +81,7 @@ func (c *FioClient) FetchNew(requestContext context.Context) (*TransactionsRespo
 // authorization (SCA, done in Fio's own Internet Banking UI) to serve a range
 // older than 90 days — keep the range within that to avoid it.
 func (c *FioClient) FetchPeriod(requestContext context.Context, from, to time.Time) (*TransactionsResponse, error) {
-	url := fmt.Sprintf("%s/periods/%s/%s/%s/transactions.json", baseURL, c.token, from.Format("2006-01-02"), to.Format("2006-01-02"))
+	url := fmt.Sprintf("%s/periods/%s/%s/%s/transactions.json", c.baseURL, c.token, from.Format("2006-01-02"), to.Format("2006-01-02"))
 	return c.get(requestContext, url)
 }
 
@@ -88,7 +92,7 @@ func (c *FioClient) FetchPeriod(requestContext context.Context, from, to time.Ti
 // unique constraint on raw_transactions only guards against re-inserting rows we
 // already have, not rows we never received.
 func (c *FioClient) RewindTo(requestContext context.Context, fioTransactionID int64) error {
-	url := fmt.Sprintf("%s/set-last-id/%s/%d/", baseURL, c.token, fioTransactionID)
+	url := fmt.Sprintf("%s/set-last-id/%s/%d/", c.baseURL, c.token, fioTransactionID)
 	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, url, nil)
 	if err != nil {
 		return err

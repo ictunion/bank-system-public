@@ -49,7 +49,7 @@ type Result struct {
 // logic instead of a storage-layer concern. An active account with no token
 // yet (not backfilled after the token moved from env var to DB) is skipped
 // too, not failed.
-func RunFioSync(requestContext context.Context, pool *pgxpool.Pool, encryptionKey string, debug bool) ([]Result, error) {
+func RunFioSync(requestContext context.Context, pool *pgxpool.Pool, fioAPIURL, encryptionKey string, debug bool) ([]Result, error) {
 	queries := db.New(pool)
 
 	accounts, err := queries.ListBankAccountsWithToken(requestContext, encryptionKey)
@@ -70,7 +70,7 @@ func RunFioSync(requestContext context.Context, pool *pgxpool.Pool, encryptionKe
 			log.Printf("fio sync: bank_account_id=%d has no token configured, skipping", account.ID)
 			continue
 		}
-		client := fio.NewClient(account.FioToken, debug)
+		client := fio.NewClient(fioAPIURL, account.FioToken, debug)
 		result, err := syncAccount(requestContext, pool, queries, client, account.ID, debug)
 		if err != nil {
 			log.Printf("fio sync: bank_account_id=%d failed: %v", account.ID, err)
@@ -87,7 +87,7 @@ func RunFioSync(requestContext context.Context, pool *pgxpool.Pool, encryptionKe
 // are responsible for checking DISABLE_FIO_SYNC before calling this (see
 // config.DisableFioSync) — unlike the scheduled job, this has no scheduler
 // wrapper to do that check for it.
-func SyncOneAccount(requestContext context.Context, pool *pgxpool.Pool, encryptionKey string, bankAccountID int32, debug bool) (Result, error) {
+func SyncOneAccount(requestContext context.Context, pool *pgxpool.Pool, fioAPIURL, encryptionKey string, bankAccountID int32, debug bool) (Result, error) {
 	queries := db.New(pool)
 
 	account, err := queries.GetBankAccountWithToken(requestContext, db.GetBankAccountWithTokenParams{
@@ -106,7 +106,7 @@ func SyncOneAccount(requestContext context.Context, pool *pgxpool.Pool, encrypti
 		return Result{}, ErrNoToken
 	}
 
-	client := fio.NewClient(account.FioToken, debug)
+	client := fio.NewClient(fioAPIURL, account.FioToken, debug)
 	return syncAccount(requestContext, pool, queries, client, account.ID, debug)
 }
 
