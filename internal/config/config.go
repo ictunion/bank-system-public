@@ -77,8 +77,8 @@ func envBool(name string) bool {
 func Load() (Config, error) {
 	_ = godotenv.Load()
 
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL environment variable is required")
 	}
 
@@ -118,7 +118,7 @@ func Load() (Config, error) {
 	}
 
 	return Config{
-		DatabaseURL:            dbURL,
+		DatabaseURL:            databaseURL,
 		Addr:                   ":" + port,
 		BankTokenEncryptionKey: bankTokenEncryptionKey,
 		Debug:                  envBool("DEBUG"),

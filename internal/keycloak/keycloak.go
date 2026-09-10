@@ -130,18 +130,18 @@ type jwk struct {
 func NewProvider(host, realm, clientID string) (*Provider, error) {
 	issuer := fmt.Sprintf("%s/realms/%s", strings.TrimRight(host, "/"), realm)
 
-	resp, err := http.Get(issuer + "/protocol/openid-connect/certs")
+	response, err := http.Get(issuer + "/protocol/openid-connect/certs")
 	if err != nil {
 		return nil, fmt.Errorf("fetching keycloak JWKS: %w", err)
 	}
-	defer resp.Body.Close()
+	defer response.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetching keycloak JWKS: unexpected status %d", resp.StatusCode)
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetching keycloak JWKS: unexpected status %d", response.StatusCode)
 	}
 
 	var jwks jwksResponse
-	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
+	if err := json.NewDecoder(response.Body).Decode(&jwks); err != nil {
 		return nil, fmt.Errorf("decoding keycloak JWKS: %w", err)
 	}
 

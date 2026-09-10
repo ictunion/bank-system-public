@@ -224,8 +224,8 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
   )
 }
 
-function replace<T>(arr: T[], i: number, value: T): T[] {
-  const next = arr.slice()
+function replace<T>(array: T[], i: number, value: T): T[] {
+  const next = array.slice()
   next[i] = value
   return next
 }

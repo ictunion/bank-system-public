@@ -59,14 +59,14 @@ type transactionListItem struct {
 // member_number, from, to (YYYY-MM-DD), limit (<=500, default 100), offset.
 func ListTransactions(queries *db.Queries) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
+		queryParams := r.URL.Query()
 
 		params := db.ListTransactionsParams{
 			Lim: transactionsDefaultLimit,
 			Off: 0,
 		}
 
-		switch q.Get("assigned") {
+		switch queryParams.Get("assigned") {
 		case "":
 		case "true":
 			t := true
@@ -80,20 +80,20 @@ func ListTransactions(queries *db.Queries) http.HandlerFunc {
 		}
 
 		var ok bool
-		if params.Direction, ok = enumParam(q.Get("direction"), validDirections); !ok {
+		if params.Direction, ok = enumParam(queryParams.Get("direction"), validDirections); !ok {
 			writeError(w, http.StatusBadRequest, "invalid direction")
 			return
 		}
-		if params.Category, ok = enumParam(q.Get("category"), validCategories); !ok {
+		if params.Category, ok = enumParam(queryParams.Get("category"), validCategories); !ok {
 			writeError(w, http.StatusBadRequest, "invalid category")
 			return
 		}
-		if params.MatchedBy, ok = enumParam(q.Get("matched_by"), validMatchedBy); !ok {
+		if params.MatchedBy, ok = enumParam(queryParams.Get("matched_by"), validMatchedBy); !ok {
 			writeError(w, http.StatusBadRequest, "invalid matched_by")
 			return
 		}
 
-		if s := q.Get("member_number"); s != "" {
+		if s := queryParams.Get("member_number"); s != "" {
 			n, err := strconv.ParseInt(s, 10, 32)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, "invalid member_number")
@@ -103,16 +103,16 @@ func ListTransactions(queries *db.Queries) http.HandlerFunc {
 			params.MemberNumber = &v
 		}
 
-		if params.DateFrom, ok = dateParam(q.Get("from")); !ok {
+		if params.DateFrom, ok = dateParam(queryParams.Get("from")); !ok {
 			writeError(w, http.StatusBadRequest, "from must be YYYY-MM-DD")
 			return
 		}
-		if params.DateTo, ok = dateParam(q.Get("to")); !ok {
+		if params.DateTo, ok = dateParam(queryParams.Get("to")); !ok {
 			writeError(w, http.StatusBadRequest, "to must be YYYY-MM-DD")
 			return
 		}
 
-		if s := q.Get("limit"); s != "" {
+		if s := queryParams.Get("limit"); s != "" {
 			n, err := strconv.Atoi(s)
 			if err != nil || n < 1 {
 				writeError(w, http.StatusBadRequest, "limit must be a positive integer")
@@ -123,7 +123,7 @@ func ListTransactions(queries *db.Queries) http.HandlerFunc {
 			}
 			params.Lim = int32(n)
 		}
-		if s := q.Get("offset"); s != "" {
+		if s := queryParams.Get("offset"); s != "" {
 			n, err := strconv.Atoi(s)
 			if err != nil || n < 0 {
 				writeError(w, http.StatusBadRequest, "offset must be a non-negative integer")
@@ -138,16 +138,16 @@ func ListTransactions(queries *db.Queries) http.HandlerFunc {
 			return
 		}
 
-		resp := transactionsResponse{
+		response := transactionsResponse{
 			Limit:        params.Lim,
 			Offset:       params.Off,
 			Transactions: make([]transactionListItem, 0, len(rows)),
 		}
 		if len(rows) > 0 {
-			resp.Total = rows[0].TotalCount
+			response.Total = rows[0].TotalCount
 		}
 		for _, row := range rows {
-			resp.Transactions = append(resp.Transactions, transactionListItem{
+			response.Transactions = append(response.Transactions, transactionListItem{
 				ID:                   row.ID,
 				TransactionDate:      row.TransactionDate.Format("2006-01-02"),
 				Amount:               row.Amount,
@@ -168,7 +168,7 @@ func ListTransactions(queries *db.Queries) http.HandlerFunc {
 			})
 		}
 
-		writeJSON(w, http.StatusOK, resp)
+		writeJSON(w, http.StatusOK, response)
 	}
 }
 
@@ -302,31 +302,31 @@ func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		var req assignTransactionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var request assignTransactionRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
-		if req.MemberNumber < 1 {
+		if request.MemberNumber < 1 {
 			writeError(w, http.StatusBadRequest, "member_number is required")
 			return
 		}
 
 		category := "membership_fee"
-		if req.Category != nil {
-			category = *req.Category
+		if request.Category != nil {
+			category = *request.Category
 		}
 		if !slices.Contains(validCategories, category) {
 			writeError(w, http.StatusBadRequest, "invalid category")
 			return
 		}
 		coverable := category == "membership_fee"
-		if !coverable && len(req.Covers) > 0 {
+		if !coverable && len(request.Covers) > 0 {
 			writeError(w, http.StatusBadRequest, "covers is only valid for category membership_fee")
 			return
 		}
 		maxYear := time.Now().Year() + 1
-		for _, m := range req.Covers {
+		for _, m := range request.Covers {
 			if m.Month < 1 || m.Month > 12 || m.Year < 2000 || m.Year > maxYear {
 				writeError(w, http.StatusBadRequest, "invalid covers entry")
 				return
@@ -335,7 +335,7 @@ func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 
 		queries := db.New(pool)
 
-		exists, err := queries.MemberExists(r.Context(), req.MemberNumber)
+		exists, err := queries.MemberExists(r.Context(), request.MemberNumber)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to check member")
 			return
@@ -356,8 +356,8 @@ func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 
 		var months []monthRef
 		if coverable {
-			if len(req.Covers) > 0 {
-				months = req.Covers
+			if len(request.Covers) > 0 {
+				months = request.Covers
 			} else {
 				months = []monthRef{{Year: detail.TransactionDate.Year(), Month: int(detail.TransactionDate.Month())}}
 			}
@@ -369,11 +369,11 @@ func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 		defer tx.Rollback(r.Context())
-		q := db.New(tx)
+		txQueries := db.New(tx)
 
-		if _, err := q.AssignTransactionToMember(r.Context(), db.AssignTransactionToMemberParams{
+		if _, err := txQueries.AssignTransactionToMember(r.Context(), db.AssignTransactionToMemberParams{
 			ID:           id,
-			MemberNumber: &req.MemberNumber,
+			MemberNumber: &request.MemberNumber,
 			Category:     category,
 		}); errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "transaction not found")
@@ -383,16 +383,16 @@ func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		if err := q.DeleteCoverageForTransaction(r.Context(), id); err != nil {
+		if err := txQueries.DeleteCoverageForTransaction(r.Context(), id); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to clear coverage")
 			return
 		}
 
 		var conflicts []monthRef
 		for _, m := range months {
-			n, err := q.InsertCoverageRow(r.Context(), db.InsertCoverageRowParams{
+			n, err := txQueries.InsertCoverageRow(r.Context(), db.InsertCoverageRowParams{
 				ProcessedTransactionID: id,
-				MemberNumber:           req.MemberNumber,
+				MemberNumber:           request.MemberNumber,
 				CoversYear:             int32(m.Year),
 				CoversMonth:            int16(m.Month),
 			})
@@ -454,13 +454,13 @@ func UnassignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 		defer tx.Rollback(r.Context())
-		q := db.New(tx)
+		txQueries := db.New(tx)
 
-		if err := q.DeleteCoverageForTransaction(r.Context(), id); err != nil {
+		if err := txQueries.DeleteCoverageForTransaction(r.Context(), id); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to clear coverage")
 			return
 		}
-		if _, err := q.UnassignTransaction(r.Context(), db.UnassignTransactionParams{
+		if _, err := txQueries.UnassignTransaction(r.Context(), db.UnassignTransactionParams{
 			ID:       id,
 			Category: category,
 		}); errors.Is(err, pgx.ErrNoRows) {

@@ -16,15 +16,15 @@ import (
 // creating the row and finishing it — see RunOrcaSync/syncAccount's
 // defer/recover, which covers panics within a live process but not a kill
 // or OOM.
-func FailStaleRuns(ctx context.Context, pool *pgxpool.Pool) (fioCount, orcaCount int64, err error) {
+func FailStaleRuns(requestContext context.Context, pool *pgxpool.Pool) (fioCount, orcaCount int64, err error) {
 	queries := db.New(pool)
 
-	fioCount, err = queries.FailStaleSyncFioRuns(ctx)
+	fioCount, err = queries.FailStaleSyncFioRuns(requestContext)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failing stale sync_fio_runs: %w", err)
 	}
 
-	orcaCount, err = queries.FailStaleSyncOrcaRuns(ctx)
+	orcaCount, err = queries.FailStaleSyncOrcaRuns(requestContext)
 	if err != nil {
 		return fioCount, 0, fmt.Errorf("failing stale sync_orca_runs: %w", err)
 	}

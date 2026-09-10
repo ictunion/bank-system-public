@@ -9,19 +9,19 @@ import (
 )
 
 // RunImmediatellyAndThenDaily calls fn once immediately, then again every day at hour:min in the
-// local timezone, until ctx is canceled. fn is responsible for its own error
+// local timezone, until requestContext is canceled. fn is responsible for its own error
 // handling/logging — a failed run doesn't stop future runs.
-func RunImmediatellyAndThenDaily(ctx context.Context, hour, min int, fn func(context.Context)) {
-	fn(ctx)
+func RunImmediatellyAndThenDaily(requestContext context.Context, hour, min int, fn func(context.Context)) {
+	fn(requestContext)
 
 	for {
 		timer := time.NewTimer(time.Until(nextRun(time.Now(), hour, min)))
 		select {
-		case <-ctx.Done():
+		case <-requestContext.Done():
 			timer.Stop()
 			return
 		case <-timer.C:
-			fn(ctx)
+			fn(requestContext)
 		}
 	}
 }

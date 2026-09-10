@@ -31,8 +31,8 @@ func NewClient(token string, debug bool) *FioClient {
 			// request (e.g. rejecting it based on User-Agent) and sending back
 			// its homepage instead of an error — which would otherwise surface
 			// confusingly as a JSON decode failure once the client follows it.
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return fmt.Errorf("unexpected redirect to %s", req.URL)
+			CheckRedirect: func(request *http.Request, via []*http.Request) error {
+				return fmt.Errorf("unexpected redirect to %s", request.URL)
 			},
 		},
 		token: token,
@@ -49,36 +49,36 @@ func (c *FioClient) redactToken(url string) string {
 	return strings.ReplaceAll(url, c.token, "***REDACTED***")
 }
 
-func (c *FioClient) logRequest(req *http.Request) {
+func (c *FioClient) logRequest(request *http.Request) {
 	if !c.debug {
 		return
 	}
-	log.Printf("fio debug: request %s %s headers=%v", req.Method, c.redactToken(req.URL.String()), req.Header)
+	log.Printf("fio debug: request %s %s headers=%v", request.Method, c.redactToken(request.URL.String()), request.Header)
 }
 
-func (c *FioClient) logResponse(resp *http.Response, body []byte) {
+func (c *FioClient) logResponse(response *http.Response, body []byte) {
 	if !c.debug {
 		return
 	}
-	log.Printf("fio debug: response status=%d headers=%v body=%s", resp.StatusCode, resp.Header, body)
+	log.Printf("fio debug: response status=%d headers=%v body=%s", response.StatusCode, response.Header, body)
 }
 
 // FetchNew returns transactions since the last successful FetchNew call for this
 // token (Fio advances its server-side cursor as a side effect of a successful
 // call). Prefer this over date-range queries for the daily sync — it can't
 // re-fetch old data and doesn't require us to track our own "since" watermark.
-func (c *FioClient) FetchNew(ctx context.Context) (*TransactionsResponse, error) {
+func (c *FioClient) FetchNew(requestContext context.Context) (*TransactionsResponse, error) {
 	url := fmt.Sprintf("%s/last/%s/transactions.json", baseURL, c.token)
-	return c.get(ctx, url)
+	return c.get(requestContext, url)
 }
 
 // FetchPeriod returns transactions in [from, to], inclusive. Unlike FetchNew,
 // this does not touch Fio's server-side cursor. Fio requires strong
 // authorization (SCA, done in Fio's own Internet Banking UI) to serve a range
 // older than 90 days — keep the range within that to avoid it.
-func (c *FioClient) FetchPeriod(ctx context.Context, from, to time.Time) (*TransactionsResponse, error) {
+func (c *FioClient) FetchPeriod(requestContext context.Context, from, to time.Time) (*TransactionsResponse, error) {
 	url := fmt.Sprintf("%s/periods/%s/%s/%s/transactions.json", baseURL, c.token, from.Format("2006-01-02"), to.Format("2006-01-02"))
-	return c.get(ctx, url)
+	return c.get(requestContext, url)
 }
 
 // RewindTo resets the server-side cursor to just after fioTransactionID, so the
@@ -87,56 +87,56 @@ func (c *FioClient) FetchPeriod(ctx context.Context, from, to time.Time) (*Trans
 // failed — without this, that batch would be permanently skipped since the
 // unique constraint on raw_transactions only guards against re-inserting rows we
 // already have, not rows we never received.
-func (c *FioClient) RewindTo(ctx context.Context, fioTransactionID int64) error {
+func (c *FioClient) RewindTo(requestContext context.Context, fioTransactionID int64) error {
 	url := fmt.Sprintf("%s/set-last-id/%s/%d/", baseURL, c.token, fioTransactionID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "bank-system/1.0")
-	c.logRequest(req)
-	resp, err := c.httpClient.Do(req)
+	request.Header.Set("User-Agent", "bank-system/1.0")
+	c.logRequest(request)
+	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return fmt.Errorf("fio set-last-id: %w", err)
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		return fmt.Errorf("reading fio response: %w", err)
 	}
-	c.logResponse(resp, body)
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("fio set-last-id: unexpected status %d", resp.StatusCode)
+	c.logResponse(response, body)
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("fio set-last-id: unexpected status %d", response.StatusCode)
 	}
 	return nil
 }
 
-func (c *FioClient) get(ctx context.Context, url string) (*TransactionsResponse, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func (c *FioClient) get(requestContext context.Context, url string) (*TransactionsResponse, error) {
+	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "bank-system/1.0")
-	c.logRequest(req)
-	resp, err := c.httpClient.Do(req)
+	request.Header.Set("User-Agent", "bank-system/1.0")
+	c.logRequest(request)
+	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("fio request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer response.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, fmt.Errorf("reading fio response: %w", err)
 	}
-	c.logResponse(resp, body)
+	c.logResponse(response, body)
 
 	// Fio returns 409 with an empty body when there's nothing new since the last
 	// download — not an error, just zero transactions.
-	if resp.StatusCode == http.StatusConflict {
+	if response.StatusCode == http.StatusConflict {
 		return &TransactionsResponse{}, nil
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fio request: unexpected status %d: %s", resp.StatusCode, body)
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fio request: unexpected status %d: %s", response.StatusCode, body)
 	}
 
 	var out TransactionsResponse

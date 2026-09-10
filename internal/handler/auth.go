@@ -58,7 +58,7 @@ func RequireAuth(provider *keycloak.Provider, next http.HandlerFunc) http.Handle
 }
 
 // ClaimsFromContext returns the Keycloak claims attached by RequireAuth.
-func ClaimsFromContext(ctx context.Context) (*keycloak.Claims, bool) {
-	claims, ok := ctx.Value(claimsContextKey).(*keycloak.Claims)
+func ClaimsFromContext(requestContext context.Context) (*keycloak.Claims, bool) {
+	claims, ok := requestContext.Value(claimsContextKey).(*keycloak.Claims)
 	return claims, ok
 }

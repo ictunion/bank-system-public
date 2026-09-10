@@ -29,17 +29,17 @@ type Result struct {
 // row yet — idempotent by construction (ListUnprocessedTransactions only
 // returns unprocessed rows), so it's safe to call on every daily cycle without
 // double-processing already-handled transactions.
-func Run(ctx context.Context, pool *pgxpool.Pool) (Result, error) {
+func Run(requestContext context.Context, pool *pgxpool.Pool) (Result, error) {
 	queries := db.New(pool)
 
-	rows, err := queries.ListUnprocessedTransactions(ctx)
+	rows, err := queries.ListUnprocessedTransactions(requestContext)
 	if err != nil {
 		return Result{}, fmt.Errorf("listing unprocessed transactions: %w", err)
 	}
 
 	var result Result
 	for _, rt := range rows {
-		if err := processOne(ctx, pool, queries, rt); err != nil {
+		if err := processOne(requestContext, pool, queries, rt); err != nil {
 			result.TransactionsFailed++
 			log.Printf("processing: raw_transaction_id=%d: %v", rt.ID, err)
 			continue
@@ -56,7 +56,7 @@ func Run(ctx context.Context, pool *pgxpool.Pool) (Result, error) {
 // committed processed_transactions row would silently and permanently drop
 // that month's coverage, since the row would no longer show up as
 // unprocessed on the next run.
-func processOne(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, rt db.RawTransaction) error {
+func processOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.Queries, rt db.RawTransaction) error {
 	direction := "incoming"
 	if strings.HasPrefix(rt.Amount, "-") {
 		direction = "outgoing"
@@ -67,7 +67,7 @@ func processOne(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, rt
 	category := ""
 
 	if rt.VariableSymbol != nil && *rt.VariableSymbol != "" {
-		member, err := queries.FindMemberByVariableSymbol(ctx, db.FindMemberByVariableSymbolParams{
+		member, err := queries.FindMemberByVariableSymbol(requestContext, db.FindMemberByVariableSymbolParams{
 			VariableSymbol:  *rt.VariableSymbol,
 			TransactionDate: rt.TransactionDate,
 		})
@@ -102,14 +102,14 @@ func processOne(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, rt
 		}
 	}
 
-	tx, err := pool.Begin(ctx)
+	tx, err := pool.Begin(requestContext)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(requestContext)
 	txQueries := db.New(tx)
 
-	pt, err := txQueries.CreateProcessedTransaction(ctx, db.CreateProcessedTransactionParams{
+	pt, err := txQueries.CreateProcessedTransaction(requestContext, db.CreateProcessedTransactionParams{
 		RawTransactionID: rt.ID,
 		MemberNumber:     memberNumber,
 		Category:         category,
@@ -121,7 +121,7 @@ func processOne(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, rt
 	}
 
 	if category == "membership_fee" && memberNumber != nil {
-		if err := txQueries.CreatePaymentCoverage(ctx, db.CreatePaymentCoverageParams{
+		if err := txQueries.CreatePaymentCoverage(requestContext, db.CreatePaymentCoverageParams{
 			ProcessedTransactionID: pt.ID,
 			MemberNumber:           *memberNumber,
 			CoversYear:             int32(rt.TransactionDate.Year()),
@@ -131,7 +131,7 @@ func processOne(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, rt
 		}
 	}
 
-	return tx.Commit(ctx)
+	return tx.Commit(requestContext)
 }
 
 func containsMzda(field *string) bool {

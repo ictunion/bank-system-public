@@ -32,8 +32,8 @@ func NewClient(baseURL, token string, debug bool) *OrcaClient {
 			// This route never legitimately redirects — treat one as an error
 			// instead of silently following it (see internal/fio/client.go for
 			// the same pattern and why it matters).
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return fmt.Errorf("unexpected redirect to %s", req.URL)
+			CheckRedirect: func(request *http.Request, via []*http.Request) error {
+				return fmt.Errorf("unexpected redirect to %s", request.URL)
 			},
 		},
 		baseURL: strings.TrimRight(baseURL, "/"),
@@ -65,29 +65,29 @@ type membersResponse struct {
 // FetchMembers pulls the full member list. Orca has no incremental/cursor
 // mode for this route (see docs/orca-sync-members.md) — every call is a full
 // pull, upserted idempotently on our side.
-func (c *OrcaClient) FetchMembers(ctx context.Context) ([]Member, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/sync/bank/members", nil)
+func (c *OrcaClient) FetchMembers(requestContext context.Context) ([]Member, error) {
+	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, c.baseURL+"/sync/bank/members", nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("User-Agent", "bank-system/1.0")
-	c.logRequest(req)
+	request.Header.Set("Authorization", "Bearer "+c.token)
+	request.Header.Set("User-Agent", "bank-system/1.0")
+	c.logRequest(request)
 
-	resp, err := c.httpClient.Do(req)
+	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("orca request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer response.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, fmt.Errorf("reading orca response: %w", err)
 	}
-	c.logResponse(resp, body)
+	c.logResponse(response, body)
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("orca request: unexpected status %d: %s", resp.StatusCode, body)
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("orca request: unexpected status %d: %s", response.StatusCode, body)
 	}
 
 	var out membersResponse
@@ -123,20 +123,20 @@ func (c *OrcaClient) FetchMembers(ctx context.Context) ([]Member, error) {
 	return members, nil
 }
 
-func (c *OrcaClient) logRequest(req *http.Request) {
+func (c *OrcaClient) logRequest(request *http.Request) {
 	if !c.debug {
 		return
 	}
-	headers := req.Header.Clone()
+	headers := request.Header.Clone()
 	if headers.Get("Authorization") != "" {
 		headers.Set("Authorization", "Bearer ***REDACTED***")
 	}
-	log.Printf("orca debug: request %s %s headers=%v", req.Method, req.URL.String(), headers)
+	log.Printf("orca debug: request %s %s headers=%v", request.Method, request.URL.String(), headers)
 }
 
-func (c *OrcaClient) logResponse(resp *http.Response, body []byte) {
+func (c *OrcaClient) logResponse(response *http.Response, body []byte) {
 	if !c.debug {
 		return
 	}
-	log.Printf("orca debug: response status=%d headers=%v body=%s", resp.StatusCode, resp.Header, body)
+	log.Printf("orca debug: response status=%d headers=%v body=%s", response.StatusCode, response.Header, body)
 }

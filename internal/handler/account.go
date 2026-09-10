@@ -59,9 +59,9 @@ func ListBankAccounts(queries *db.Queries) http.HandlerFunc {
 			return
 		}
 
-		resp := make([]bankAccountResponse, len(accounts))
+		response := make([]bankAccountResponse, len(accounts))
 		for i, account := range accounts {
-			resp[i] = bankAccountResponse{
+			response[i] = bankAccountResponse{
 				ID:           account.ID,
 				FioAccountID: account.FioAccountID,
 				IBAN:         account.Iban,
@@ -72,7 +72,7 @@ func ListBankAccounts(queries *db.Queries) http.HandlerFunc {
 				IsActive:     account.IsActive,
 			}
 		}
-		writeJSON(w, http.StatusOK, resp)
+		writeJSON(w, http.StatusOK, response)
 	}
 }
 
@@ -82,43 +82,43 @@ func ListBankAccounts(queries *db.Queries) http.HandlerFunc {
 // a one-time-per-account setup call, not part of the daily sync flow.
 func CreateBankAccount(queries *db.Queries, encryptionKey string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req createBankAccountRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var request createBankAccountRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
 
-		req.FioAccountID = strings.TrimSpace(req.FioAccountID)
-		req.DisplayName = strings.TrimSpace(req.DisplayName)
-		req.Currency = strings.ToUpper(strings.TrimSpace(req.Currency))
-		req.FioToken = strings.TrimSpace(req.FioToken)
-		if req.Currency == "" {
-			req.Currency = "CZK"
+		request.FioAccountID = strings.TrimSpace(request.FioAccountID)
+		request.DisplayName = strings.TrimSpace(request.DisplayName)
+		request.Currency = strings.ToUpper(strings.TrimSpace(request.Currency))
+		request.FioToken = strings.TrimSpace(request.FioToken)
+		if request.Currency == "" {
+			request.Currency = "CZK"
 		}
 
-		if req.FioAccountID == "" {
+		if request.FioAccountID == "" {
 			writeError(w, http.StatusBadRequest, "fio_account_id is required")
 			return
 		}
-		if req.DisplayName == "" {
+		if request.DisplayName == "" {
 			writeError(w, http.StatusBadRequest, "display_name is required")
 			return
 		}
-		if len(req.Currency) != 3 {
+		if len(request.Currency) != 3 {
 			writeError(w, http.StatusBadRequest, "currency must be a 3-letter code")
 			return
 		}
-		if req.FioToken == "" {
+		if request.FioToken == "" {
 			writeError(w, http.StatusBadRequest, "fio_token is required")
 			return
 		}
 
 		account, err := queries.CreateBankAccount(r.Context(), db.CreateBankAccountParams{
-			FioAccountID:  req.FioAccountID,
-			Iban:          req.IBAN,
-			Currency:      req.Currency,
-			DisplayName:   req.DisplayName,
-			FioToken:      req.FioToken,
+			FioAccountID:  request.FioAccountID,
+			Iban:          request.IBAN,
+			Currency:      request.Currency,
+			DisplayName:   request.DisplayName,
+			FioToken:      request.FioToken,
 			EncryptionKey: encryptionKey,
 		})
 		if err != nil {
@@ -155,21 +155,21 @@ func UpdateBankAccount(queries *db.Queries, encryptionKey string) http.HandlerFu
 			return
 		}
 
-		var req updateBankAccountRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var request updateBankAccountRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
 
-		req.DisplayName = strings.TrimSpace(req.DisplayName)
-		if req.DisplayName == "" {
+		request.DisplayName = strings.TrimSpace(request.DisplayName)
+		if request.DisplayName == "" {
 			writeError(w, http.StatusBadRequest, "display_name is required")
 			return
 		}
 
 		var fioToken *string
-		if req.FioToken != nil {
-			trimmed := strings.TrimSpace(*req.FioToken)
+		if request.FioToken != nil {
+			trimmed := strings.TrimSpace(*request.FioToken)
 			if trimmed == "" {
 				writeError(w, http.StatusBadRequest, "fio_token cannot be blank")
 				return
@@ -179,7 +179,7 @@ func UpdateBankAccount(queries *db.Queries, encryptionKey string) http.HandlerFu
 
 		account, err := queries.UpdateBankAccount(r.Context(), db.UpdateBankAccountParams{
 			ID:            id,
-			DisplayName:   req.DisplayName,
+			DisplayName:   request.DisplayName,
 			FioToken:      fioToken,
 			EncryptionKey: encryptionKey,
 		})
@@ -290,6 +290,6 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
 }

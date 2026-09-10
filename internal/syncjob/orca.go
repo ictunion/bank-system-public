@@ -23,10 +23,10 @@ type OrcaResult struct {
 // `members`, recording the attempt in sync_orca_runs. Same idempotent-pull
 // shape as RunFioSync — see docs/orca-sync-members.md for why this is a full
 // pull every time rather than incremental.
-func RunOrcaSync(ctx context.Context, pool *pgxpool.Pool, client *orca.OrcaClient) (result OrcaResult, err error) {
+func RunOrcaSync(requestContext context.Context, pool *pgxpool.Pool, client *orca.OrcaClient) (result OrcaResult, err error) {
 	queries := db.New(pool)
 
-	run, err := queries.CreateSyncOrcaRun(ctx)
+	run, err := queries.CreateSyncOrcaRun(requestContext)
 	if err != nil {
 		return OrcaResult{}, fmt.Errorf("creating sync_orca_runs row: %w", err)
 	}
@@ -39,15 +39,15 @@ func RunOrcaSync(ctx context.Context, pool *pgxpool.Pool, client *orca.OrcaClien
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic: %v", r)
-			finishOrcaRun(ctx, queries, run.ID, "failed", fetched, upserted, err)
+			finishOrcaRun(requestContext, queries, run.ID, "failed", fetched, upserted, err)
 			result = OrcaResult{}
 			log.Printf("orca sync: recovered from panic: %v", r)
 		}
 	}()
 
-	members, err := client.FetchMembers(ctx)
+	members, err := client.FetchMembers(requestContext)
 	if err != nil {
-		finishOrcaRun(ctx, queries, run.ID, "failed", 0, 0, err)
+		finishOrcaRun(requestContext, queries, run.ID, "failed", 0, 0, err)
 		return OrcaResult{}, fmt.Errorf("fetching from orca: %w", err)
 	}
 	fetched = len(members)
@@ -64,18 +64,18 @@ func RunOrcaSync(ctx context.Context, pool *pgxpool.Pool, client *orca.OrcaClien
 		var sub pgtype.UUID
 		if m.Sub != nil {
 			if err := sub.Scan(*m.Sub); err != nil {
-				finishOrcaRun(ctx, queries, run.ID, "failed", len(members), upserted, err)
+				finishOrcaRun(requestContext, queries, run.ID, "failed", len(members), upserted, err)
 				return OrcaResult{}, fmt.Errorf("member_number=%d: parsing sub %q: %w", m.MemberNumber, *m.Sub, err)
 			}
 		}
-		if err := queries.UpsertMember(ctx, db.UpsertMemberParams{
+		if err := queries.UpsertMember(requestContext, db.UpsertMemberParams{
 			MemberNumber: m.MemberNumber,
 			FeeStartDate: feeStartDate,
 			FeeStopDate:  feeStopDate,
 			Active:       m.Active,
 			Sub:          sub,
 		}); err != nil {
-			finishOrcaRun(ctx, queries, run.ID, "failed", len(members), upserted, err)
+			finishOrcaRun(requestContext, queries, run.ID, "failed", len(members), upserted, err)
 			return OrcaResult{}, fmt.Errorf("upserting member_number=%d: %w", m.MemberNumber, err)
 		}
 
@@ -85,12 +85,12 @@ func RunOrcaSync(ctx context.Context, pool *pgxpool.Pool, client *orca.OrcaClien
 		// isn't liable yet and valid_from is NOT NULL.
 		vs := strconv.Itoa(int(m.MemberNumber))
 		if m.FeeStartDate != nil {
-			if err := queries.EnsureDefaultPaymentIdentifier(ctx, db.EnsureDefaultPaymentIdentifierParams{
+			if err := queries.EnsureDefaultPaymentIdentifier(requestContext, db.EnsureDefaultPaymentIdentifierParams{
 				MemberNumber:   m.MemberNumber,
 				VariableSymbol: vs,
 				ValidFrom:      *m.FeeStartDate,
 			}); err != nil {
-				finishOrcaRun(ctx, queries, run.ID, "failed", len(members), upserted, err)
+				finishOrcaRun(requestContext, queries, run.ID, "failed", len(members), upserted, err)
 				return OrcaResult{}, fmt.Errorf("seeding payment identifier for member_number=%d: %w", m.MemberNumber, err)
 			}
 		}
@@ -98,35 +98,35 @@ func RunOrcaSync(ctx context.Context, pool *pgxpool.Pool, client *orca.OrcaClien
 		// Mirror fee_stop_date onto that default identifier's valid_to: fee
 		// liability ended -> row closed with that date; fee_stop_date cleared ->
 		// row reopened (valid_to = NULL). No-op for members with no default row.
-		if err := queries.SyncDefaultPaymentIdentifierValidTo(ctx, db.SyncDefaultPaymentIdentifierValidToParams{
+		if err := queries.SyncDefaultPaymentIdentifierValidTo(requestContext, db.SyncDefaultPaymentIdentifierValidToParams{
 			MemberNumber:   m.MemberNumber,
 			VariableSymbol: vs,
 			ValidTo:        feeStopDate,
 		}); err != nil {
-			finishOrcaRun(ctx, queries, run.ID, "failed", len(members), upserted, err)
+			finishOrcaRun(requestContext, queries, run.ID, "failed", len(members), upserted, err)
 			return OrcaResult{}, fmt.Errorf("updating payment identifier validity for member_number=%d: %w", m.MemberNumber, err)
 		}
 		upserted++
 	}
 
-	finishOrcaRun(ctx, queries, run.ID, "success", len(members), upserted, nil)
+	finishOrcaRun(requestContext, queries, run.ID, "success", len(members), upserted, nil)
 	return OrcaResult{MembersFetched: len(members), MembersUpserted: upserted}, nil
 }
 
-func finishOrcaRun(ctx context.Context, queries *db.Queries, runID int64, status string, fetched, upserted int, runErr error) {
-	var errMsg *string
+func finishOrcaRun(requestContext context.Context, queries *db.Queries, runID int64, status string, fetched, upserted int, runErr error) {
+	var errorMessage *string
 	if runErr != nil {
-		msg := runErr.Error()
-		errMsg = &msg
+		message := runErr.Error()
+		errorMessage = &message
 	}
 	fetched32 := int32(fetched)
 	upserted32 := int32(upserted)
-	if err := queries.FinishSyncOrcaRun(ctx, db.FinishSyncOrcaRunParams{
+	if err := queries.FinishSyncOrcaRun(requestContext, db.FinishSyncOrcaRunParams{
 		ID:              runID,
 		Status:          status,
 		MembersFetched:  &fetched32,
 		MembersUpserted: &upserted32,
-		ErrorMessage:    errMsg,
+		ErrorMessage:    errorMessage,
 	}); err != nil {
 		log.Printf("orca sync: recording sync_orca_runs id=%d failed: %v", runID, err)
 	}

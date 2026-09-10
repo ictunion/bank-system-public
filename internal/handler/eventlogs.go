@@ -37,14 +37,14 @@ type eventLogItem struct {
 // limit/offset paging (same defaults/cap as ListTransactions).
 func ListEventLogs(queries *db.Queries) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
+		queryParams := r.URL.Query()
 
 		params := db.ListEventLogsParams{
 			Lim: eventLogsDefaultLimit,
 			Off: 0,
 		}
 
-		if s := q.Get("limit"); s != "" {
+		if s := queryParams.Get("limit"); s != "" {
 			n, err := strconv.Atoi(s)
 			if err != nil || n < 1 {
 				writeError(w, http.StatusBadRequest, "limit must be a positive integer")
@@ -55,7 +55,7 @@ func ListEventLogs(queries *db.Queries) http.HandlerFunc {
 			}
 			params.Lim = int32(n)
 		}
-		if s := q.Get("offset"); s != "" {
+		if s := queryParams.Get("offset"); s != "" {
 			n, err := strconv.Atoi(s)
 			if err != nil || n < 0 {
 				writeError(w, http.StatusBadRequest, "offset must be a non-negative integer")
@@ -70,20 +70,20 @@ func ListEventLogs(queries *db.Queries) http.HandlerFunc {
 			return
 		}
 
-		resp := eventLogsResponse{
+		response := eventLogsResponse{
 			Limit:  params.Lim,
 			Offset: params.Off,
 			Events: make([]eventLogItem, 0, len(rows)),
 		}
 		if len(rows) > 0 {
-			resp.Total = rows[0].TotalCount
+			response.Total = rows[0].TotalCount
 		}
 		for _, row := range rows {
 			var finishedAt *time.Time
 			if row.FinishedAt.Valid {
 				finishedAt = &row.FinishedAt.Time
 			}
-			resp.Events = append(resp.Events, eventLogItem{
+			response.Events = append(response.Events, eventLogItem{
 				EventType:    row.EventType,
 				ID:           row.ID,
 				StartedAt:    row.StartedAt,
@@ -96,6 +96,6 @@ func ListEventLogs(queries *db.Queries) http.HandlerFunc {
 			})
 		}
 
-		writeJSON(w, http.StatusOK, resp)
+		writeJSON(w, http.StatusOK, response)
 	}
 }

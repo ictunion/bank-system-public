@@ -22,27 +22,27 @@ import (
 )
 
 func main() {
-	cfg, err := config.Load()
+	appConfig, err := config.Load()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	requestContext, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	pool, err := pgxpool.New(requestContext, appConfig.DatabaseURL)
 	if err != nil {
 		log.Fatalf("db pool: %v", err)
 	}
 	defer pool.Close()
 
-	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	pingContext, cancel := context.WithTimeout(requestContext, 5*time.Second)
 	defer cancel()
-	if err := pool.Ping(pingCtx); err != nil {
+	if err := pool.Ping(pingContext); err != nil {
 		log.Fatalf("db ping: %v", err)
 	}
 
-	if fioCount, orcaCount, err := syncjob.FailStaleRuns(ctx, pool); err != nil {
+	if fioCount, orcaCount, err := syncjob.FailStaleRuns(requestContext, pool); err != nil {
 		log.Printf("failing stale sync runs: %v", err)
 	} else if fioCount > 0 || orcaCount > 0 {
 		log.Printf("failed stale sync runs from a previous process: sync_fio_runs=%d sync_orca_runs=%d", fioCount, orcaCount)
@@ -51,10 +51,10 @@ func main() {
 	// One daily job, run in order: Orca (members) before Fio (transactions) —
 	// transaction processing (member payment matching, not built yet) needs
 	// both done first, so it can't run as two independently-scheduled jobs.
-	orcaClient := orca.NewClient(cfg.OrcaAPIURL, cfg.OrcaSyncToken, cfg.Debug)
-	go scheduler.RunImmediatellyAndThenDaily(ctx, 3, 0, func(runCtx context.Context) {
+	orcaClient := orca.NewClient(appConfig.OrcaAPIURL, appConfig.OrcaSyncToken, appConfig.Debug)
+	go scheduler.RunImmediatellyAndThenDaily(requestContext, 3, 0, func(runContext context.Context) {
 		orcaOK := true
-		if result, err := syncjob.RunOrcaSync(runCtx, pool, orcaClient); err != nil {
+		if result, err := syncjob.RunOrcaSync(runContext, pool, orcaClient); err != nil {
 			orcaOK = false
 			log.Printf("orca sync: %v", err)
 		} else {
@@ -62,9 +62,9 @@ func main() {
 		}
 
 		fioOK := true
-		if cfg.DisableFioSync {
+		if appConfig.DisableFioSync {
 			log.Print("fio sync: disabled via DISABLE_FIO_SYNC, skipping")
-		} else if results, err := syncjob.RunFioSync(runCtx, pool, cfg.BankTokenEncryptionKey, cfg.Debug); err != nil {
+		} else if results, err := syncjob.RunFioSync(runContext, pool, appConfig.BankTokenEncryptionKey, appConfig.Debug); err != nil {
 			fioOK = false
 			log.Printf("fio sync: %v", err)
 		} else {
@@ -78,7 +78,7 @@ func main() {
 			return
 		}
 
-		result, err := processing.Run(runCtx, pool)
+		result, err := processing.Run(runContext, pool)
 		if err != nil {
 			log.Printf("transaction processing: %v", err)
 			return
@@ -86,7 +86,7 @@ func main() {
 		log.Printf("transaction processing: processed=%d failed=%d", result.TransactionsProcessed, result.TransactionsFailed)
 	})
 
-	keycloakProvider, err := keycloak.NewProvider(cfg.KeycloakHost, cfg.KeycloakRealm, cfg.KeycloakClientID)
+	keycloakProvider, err := keycloak.NewProvider(appConfig.KeycloakHost, appConfig.KeycloakRealm, appConfig.KeycloakClientID)
 	if err != nil {
 		log.Fatalf("keycloak: %v", err)
 	}
@@ -102,10 +102,10 @@ func main() {
 	})
 
 	api.HandleFunc("GET /account", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.ListBankAccounts(db.New(pool))))
-	api.HandleFunc("POST /account", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.CreateBankAccount(db.New(pool), cfg.BankTokenEncryptionKey)))
-	api.HandleFunc("PATCH /account/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.UpdateBankAccount(db.New(pool), cfg.BankTokenEncryptionKey)))
+	api.HandleFunc("POST /account", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.CreateBankAccount(db.New(pool), appConfig.BankTokenEncryptionKey)))
+	api.HandleFunc("PATCH /account/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.UpdateBankAccount(db.New(pool), appConfig.BankTokenEncryptionKey)))
 	api.HandleFunc("DELETE /account/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.DeleteBankAccount(db.New(pool))))
-	api.HandleFunc("POST /account/{id}/sync", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.TriggerFioSync(pool, cfg.BankTokenEncryptionKey, cfg.DisableFioSync, cfg.Debug)))
+	api.HandleFunc("POST /account/{id}/sync", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.TriggerFioSync(pool, appConfig.BankTokenEncryptionKey, appConfig.DisableFioSync, appConfig.Debug)))
 
 	api.HandleFunc("GET /event-logs", handler.RequireRole(keycloakProvider, keycloak.RoleViewEventLogs, handler.ListEventLogs(db.New(pool))))
 
@@ -122,20 +122,20 @@ func main() {
 	mux.Handle("/api/", http.StripPrefix("/api", api))
 
 	server := &http.Server{
-		Addr:    cfg.Addr,
+		Addr:    appConfig.Addr,
 		Handler: handler.Recover(mux),
 	}
 
 	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		<-requestContext.Done()
+		shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
+		if err := server.Shutdown(shutdownContext); err != nil {
 			log.Printf("shutdown: %v", err)
 		}
 	}()
 
-	log.Printf("listening on %s", cfg.Addr)
+	log.Printf("listening on %s", appConfig.Addr)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}

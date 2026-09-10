@@ -49,10 +49,10 @@ type Result struct {
 // logic instead of a storage-layer concern. An active account with no token
 // yet (not backfilled after the token moved from env var to DB) is skipped
 // too, not failed.
-func RunFioSync(ctx context.Context, pool *pgxpool.Pool, encryptionKey string, debug bool) ([]Result, error) {
+func RunFioSync(requestContext context.Context, pool *pgxpool.Pool, encryptionKey string, debug bool) ([]Result, error) {
 	queries := db.New(pool)
 
-	accounts, err := queries.ListBankAccountsWithToken(ctx, encryptionKey)
+	accounts, err := queries.ListBankAccountsWithToken(requestContext, encryptionKey)
 	if err != nil {
 		return nil, fmt.Errorf("listing bank accounts: %w", err)
 	}
@@ -71,12 +71,12 @@ func RunFioSync(ctx context.Context, pool *pgxpool.Pool, encryptionKey string, d
 			continue
 		}
 		client := fio.NewClient(account.FioToken, debug)
-		res, err := syncAccount(ctx, pool, queries, client, account.ID, debug)
+		result, err := syncAccount(requestContext, pool, queries, client, account.ID, debug)
 		if err != nil {
 			log.Printf("fio sync: bank_account_id=%d failed: %v", account.ID, err)
 			continue
 		}
-		results = append(results, res)
+		results = append(results, result)
 	}
 	return results, nil
 }
@@ -87,10 +87,10 @@ func RunFioSync(ctx context.Context, pool *pgxpool.Pool, encryptionKey string, d
 // are responsible for checking DISABLE_FIO_SYNC before calling this (see
 // config.DisableFioSync) — unlike the scheduled job, this has no scheduler
 // wrapper to do that check for it.
-func SyncOneAccount(ctx context.Context, pool *pgxpool.Pool, encryptionKey string, bankAccountID int32, debug bool) (Result, error) {
+func SyncOneAccount(requestContext context.Context, pool *pgxpool.Pool, encryptionKey string, bankAccountID int32, debug bool) (Result, error) {
 	queries := db.New(pool)
 
-	account, err := queries.GetBankAccountWithToken(ctx, db.GetBankAccountWithTokenParams{
+	account, err := queries.GetBankAccountWithToken(requestContext, db.GetBankAccountWithTokenParams{
 		ID:            bankAccountID,
 		EncryptionKey: encryptionKey,
 	})
@@ -107,11 +107,11 @@ func SyncOneAccount(ctx context.Context, pool *pgxpool.Pool, encryptionKey strin
 	}
 
 	client := fio.NewClient(account.FioToken, debug)
-	return syncAccount(ctx, pool, queries, client, account.ID, debug)
+	return syncAccount(requestContext, pool, queries, client, account.ID, debug)
 }
 
-func syncAccount(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, client *fio.FioClient, bankAccountID int32, debug bool) (result Result, err error) {
-	run, err := queries.CreateSyncFioRun(ctx, bankAccountID)
+func syncAccount(requestContext context.Context, pool *pgxpool.Pool, queries *db.Queries, client *fio.FioClient, bankAccountID int32, debug bool) (result Result, err error) {
+	run, err := queries.CreateSyncFioRun(requestContext, bankAccountID)
 	if err != nil {
 		return Result{}, fmt.Errorf("creating sync_fio_runs row: %w", err)
 	}
@@ -124,7 +124,7 @@ func syncAccount(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, c
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic: %v", r)
-			finishRun(ctx, queries, run.ID, "failed", fetched, inserted, err)
+			finishRun(requestContext, queries, run.ID, "failed", fetched, inserted, err)
 			result = Result{}
 			log.Printf("fio sync: bank_account_id=%d: recovered from panic: %v", bankAccountID, r)
 		}
@@ -136,27 +136,27 @@ func syncAccount(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, c
 	// local dev. This never advances Fio's server-side cursor, so there's
 	// nothing to rewind on a failed insert below, and production (non-debug)
 	// keeps doing a full cursor-based sync.
-	var resp *fio.TransactionsResponse
+	var response *fio.TransactionsResponse
 	if debug {
 		now := time.Now()
-		resp, err = client.FetchPeriod(ctx, now.Add(-fioSCAWindow+24*time.Hour), now)
+		response, err = client.FetchPeriod(requestContext, now.Add(-fioSCAWindow+24*time.Hour), now)
 	} else {
-		resp, err = client.FetchNew(ctx)
+		response, err = client.FetchNew(requestContext)
 	}
 	if err != nil {
-		finishRun(ctx, queries, run.ID, "failed", 0, 0, err)
+		finishRun(requestContext, queries, run.ID, "failed", 0, 0, err)
 		return Result{}, fmt.Errorf("fetching from fio: %w", err)
 	}
 
-	txs, err := resp.Transactions()
+	txs, err := response.Transactions()
 	if err != nil {
-		finishRun(ctx, queries, run.ID, "failed", 0, 0, err)
+		finishRun(requestContext, queries, run.ID, "failed", 0, 0, err)
 		return Result{}, fmt.Errorf("parsing fio response: %w", err)
 	}
 	fetched = len(txs)
 
 	if len(txs) == 0 {
-		finishRun(ctx, queries, run.ID, "success", 0, 0, nil)
+		finishRun(requestContext, queries, run.ID, "success", 0, 0, nil)
 		return Result{BankAccountID: bankAccountID}, nil
 	}
 
@@ -169,25 +169,25 @@ func syncAccount(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, c
 	// path above since that never advanced any cursor.
 	var previousMaxID int64
 	if !debug {
-		previousMaxID, err = queries.GetMaxFioTransactionID(ctx, bankAccountID)
+		previousMaxID, err = queries.GetMaxFioTransactionID(requestContext, bankAccountID)
 		if err != nil {
-			finishRun(ctx, queries, run.ID, "failed", len(txs), 0, err)
+			finishRun(requestContext, queries, run.ID, "failed", len(txs), 0, err)
 			return Result{}, fmt.Errorf("reading previous max fio_transaction_id: %w", err)
 		}
 	}
 
-	inserted, insertErr := insertTransactions(ctx, pool, bankAccountID, txs)
+	inserted, insertErr := insertTransactions(requestContext, pool, bankAccountID, txs)
 	if insertErr != nil {
 		if !debug {
-			if rewindErr := client.RewindTo(ctx, previousMaxID); rewindErr != nil {
+			if rewindErr := client.RewindTo(requestContext, previousMaxID); rewindErr != nil {
 				log.Printf("fio sync: bank_account_id=%d: rewind after failed insert also failed: %v", bankAccountID, rewindErr)
 			}
 		}
-		finishRun(ctx, queries, run.ID, "failed", len(txs), 0, insertErr)
+		finishRun(requestContext, queries, run.ID, "failed", len(txs), 0, insertErr)
 		return Result{}, fmt.Errorf("inserting raw_transactions: %w", insertErr)
 	}
 
-	finishRun(ctx, queries, run.ID, "success", len(txs), inserted, nil)
+	finishRun(requestContext, queries, run.ID, "success", len(txs), inserted, nil)
 	return Result{
 		BankAccountID:        bankAccountID,
 		TransactionsFetched:  len(txs),
@@ -198,24 +198,24 @@ func syncAccount(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, c
 // insertTransactions runs the whole batch in one DB transaction, per
 // db-design.md ("Wrap each run in a DB transaction") — a partially-applied
 // batch never gets committed.
-func insertTransactions(ctx context.Context, pool *pgxpool.Pool, bankAccountID int32, txs []fio.Transaction) (int, error) {
-	tx, err := pool.Begin(ctx)
+func insertTransactions(requestContext context.Context, pool *pgxpool.Pool, bankAccountID int32, txs []fio.Transaction) (int, error) {
+	tx, err := pool.Begin(requestContext)
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(requestContext)
 
 	queries := db.New(tx)
 	inserted := 0
 	for _, t := range txs {
-		rows, err := queries.InsertRawTransaction(ctx, toInsertParams(bankAccountID, t))
+		rows, err := queries.InsertRawTransaction(requestContext, toInsertParams(bankAccountID, t))
 		if err != nil {
 			return 0, fmt.Errorf("fio_transaction_id=%d: %w", t.FioTransactionID, err)
 		}
 		inserted += int(rows)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(requestContext); err != nil {
 		return 0, err
 	}
 	return inserted, nil
@@ -247,20 +247,20 @@ func toInsertParams(bankAccountID int32, t fio.Transaction) db.InsertRawTransact
 	}
 }
 
-func finishRun(ctx context.Context, queries *db.Queries, runID int64, status string, fetched, inserted int, runErr error) {
-	var errMsg *string
+func finishRun(requestContext context.Context, queries *db.Queries, runID int64, status string, fetched, inserted int, runErr error) {
+	var errorMessage *string
 	if runErr != nil {
-		msg := runErr.Error()
-		errMsg = &msg
+		message := runErr.Error()
+		errorMessage = &message
 	}
 	fetched32 := int32(fetched)
 	inserted32 := int32(inserted)
-	if err := queries.FinishSyncFioRun(ctx, db.FinishSyncFioRunParams{
+	if err := queries.FinishSyncFioRun(requestContext, db.FinishSyncFioRunParams{
 		ID:                   runID,
 		Status:               status,
 		TransactionsFetched:  &fetched32,
 		TransactionsInserted: &inserted32,
-		ErrorMessage:         errMsg,
+		ErrorMessage:         errorMessage,
 	}); err != nil {
 		log.Printf("fio sync: recording sync_fio_runs id=%d failed: %v", runID, err)
 	}

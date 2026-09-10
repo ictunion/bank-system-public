@@ -24,8 +24,8 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
     headers.set('Authorization', `Bearer ${user.access_token}`)
   }
 
-  const res = await fetch(path, { ...init, headers })
-  if (res.status !== 401) return res
+  const response = await fetch(path, { ...init, headers })
+  if (response.status !== 401) return response
 
   try {
     const renewed = await userManager.signinSilent()
@@ -37,7 +37,7 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
     // fall through to full re-auth
   }
   await userManager.signinRedirect()
-  return res
+  return response
 }
 
 // JSON request/response helper. Returns the parsed body (or undefined for 204),
@@ -49,10 +49,10 @@ export async function apiSend<T>(method: string, path: string, body?: unknown): 
     init.headers = { 'Content-Type': 'application/json' }
   }
 
-  const res = await apiFetch(path, init)
-  if (res.status === 204) return undefined as T
+  const response = await apiFetch(path, init)
+  if (response.status === 204) return undefined as T
 
-  const text = await res.text()
+  const text = await response.text()
   let parsed: unknown = null
   if (text) {
     try {
@@ -62,8 +62,8 @@ export async function apiSend<T>(method: string, path: string, body?: unknown): 
     }
   }
 
-  if (!res.ok) {
-    throw new ApiError(res.status, parsed, `${method} ${path} → ${res.status}`)
+  if (!response.ok) {
+    throw new ApiError(response.status, parsed, `${method} ${path} → ${response.status}`)
   }
   return parsed as T
 }
