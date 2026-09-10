@@ -37,26 +37,49 @@ func (q *Queries) AssignTransactionToMember(ctx context.Context, arg AssignTrans
 }
 
 const createBankAccount = `-- name: CreateBankAccount :one
-INSERT INTO bank_accounts (fio_account_id, iban, currency, display_name)
-VALUES ($1, $2, $3, $4)
+INSERT INTO bank_accounts (fio_account_id, iban, currency, display_name, fio_token_encrypted)
+VALUES (
+    $1,
+    $2,
+    $3,
+    $4,
+    pgp_sym_encrypt($5::text, $6::text)
+)
 RETURNING id, fio_account_id, iban, currency, display_name, created_at
 `
 
 type CreateBankAccountParams struct {
-	FioAccountID string  `json:"fio_account_id"`
-	Iban         *string `json:"iban"`
-	Currency     string  `json:"currency"`
-	DisplayName  string  `json:"display_name"`
+	FioAccountID  string  `json:"fio_account_id"`
+	Iban          *string `json:"iban"`
+	Currency      string  `json:"currency"`
+	DisplayName   string  `json:"display_name"`
+	FioToken      string  `json:"fio_token"`
+	EncryptionKey string  `json:"encryption_key"`
 }
 
-func (q *Queries) CreateBankAccount(ctx context.Context, arg CreateBankAccountParams) (BankAccount, error) {
+type CreateBankAccountRow struct {
+	ID           int32     `json:"id"`
+	FioAccountID string    `json:"fio_account_id"`
+	Iban         *string   `json:"iban"`
+	Currency     string    `json:"currency"`
+	DisplayName  string    `json:"display_name"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// fio_token is encrypted at rest via pgcrypto (pgp_sym_encrypt) using
+// encryption_key (BANK_TOKEN_ENCRYPTION_KEY env var) — never stored in the DB
+// itself. RETURNING list explicitly excludes fio_token_encrypted so the
+// ciphertext (and a fortiori the token) is never echoed back to the caller.
+func (q *Queries) CreateBankAccount(ctx context.Context, arg CreateBankAccountParams) (CreateBankAccountRow, error) {
 	row := q.db.QueryRow(ctx, createBankAccount,
 		arg.FioAccountID,
 		arg.Iban,
 		arg.Currency,
 		arg.DisplayName,
+		arg.FioToken,
+		arg.EncryptionKey,
 	)
-	var i BankAccount
+	var i CreateBankAccountRow
 	err := row.Scan(
 		&i.ID,
 		&i.FioAccountID,
@@ -170,6 +193,26 @@ func (q *Queries) CreateSyncOrcaRun(ctx context.Context) (SyncOrcaRun, error) {
 	return i, err
 }
 
+const deleteBankAccount = `-- name: DeleteBankAccount :execrows
+UPDATE bank_accounts SET deleted_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+`
+
+// Soft delete: raw_transactions/sync_fio_runs reference bank_accounts.id with
+// no ON DELETE clause (see initial_schema.sql), so a hard delete would fail
+// once an account has synced history — and the row also needs to stick around
+// for admins to see it used to exist (see ListBankAccounts). deleted_at IS
+// NULL in the WHERE guards against re-timestamping an already-deleted row;
+// :execrows lets handler.DeleteBankAccount tell "already gone" (0 rows) from
+// "deleted just now" (1 row) and return 404 vs 204 accordingly.
+func (q *Queries) DeleteBankAccount(ctx context.Context, id int32) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteBankAccount, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteCoverageForTransaction = `-- name: DeleteCoverageForTransaction :exec
 DELETE FROM payment_coverage WHERE processed_transaction_id = $1
 `
@@ -198,6 +241,43 @@ type EnsureDefaultPaymentIdentifierParams struct {
 func (q *Queries) EnsureDefaultPaymentIdentifier(ctx context.Context, arg EnsureDefaultPaymentIdentifierParams) error {
 	_, err := q.db.Exec(ctx, ensureDefaultPaymentIdentifier, arg.MemberNumber, arg.VariableSymbol, arg.ValidFrom)
 	return err
+}
+
+const failStaleSyncFioRuns = `-- name: FailStaleSyncFioRuns :execrows
+UPDATE sync_fio_runs
+SET finished_at = now(),
+    status = 'failed',
+    error_message = 'interrupted: server restarted mid-run'
+WHERE status = 'running'
+`
+
+// Run once at server startup, before the scheduler starts: any row still
+// 'running' predates this process (a single instance drives all syncs, so a
+// 'running' row at boot means the prior process died — crash, panic, kill —
+// between CreateSyncFioRun and FinishSyncFioRun and never got to close it).
+func (q *Queries) FailStaleSyncFioRuns(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, failStaleSyncFioRuns)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const failStaleSyncOrcaRuns = `-- name: FailStaleSyncOrcaRuns :execrows
+UPDATE sync_orca_runs
+SET finished_at = now(),
+    status = 'failed',
+    error_message = 'interrupted: server restarted mid-run'
+WHERE status = 'running'
+`
+
+// See FailStaleSyncFioRuns — same reasoning, run at startup.
+func (q *Queries) FailStaleSyncOrcaRuns(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, failStaleSyncOrcaRuns)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const findMemberByVariableSymbol = `-- name: FindMemberByVariableSymbol :one
@@ -277,6 +357,48 @@ func (q *Queries) FinishSyncOrcaRun(ctx context.Context, arg FinishSyncOrcaRunPa
 		arg.ID,
 	)
 	return err
+}
+
+const getBankAccountWithToken = `-- name: GetBankAccountWithToken :one
+SELECT id, fio_account_id, iban, currency, display_name, created_at,
+       pgp_sym_decrypt(fio_token_encrypted, $1::text) AS fio_token,
+       (deleted_at IS NULL)::boolean AS is_active
+FROM bank_accounts WHERE id = $2
+`
+
+type GetBankAccountWithTokenParams struct {
+	EncryptionKey string `json:"encryption_key"`
+	ID            int32  `json:"id"`
+}
+
+type GetBankAccountWithTokenRow struct {
+	ID           int32     `json:"id"`
+	FioAccountID string    `json:"fio_account_id"`
+	Iban         *string   `json:"iban"`
+	Currency     string    `json:"currency"`
+	DisplayName  string    `json:"display_name"`
+	CreatedAt    time.Time `json:"created_at"`
+	FioToken     string    `json:"fio_token"`
+	IsActive     bool      `json:"is_active"`
+}
+
+// Internal use only (the manual "sync now" trigger — see
+// syncjob.SyncOneAccount) — single-row counterpart of
+// ListBankAccountsWithToken, same never-expose-over-HTTP caveat.
+func (q *Queries) GetBankAccountWithToken(ctx context.Context, arg GetBankAccountWithTokenParams) (GetBankAccountWithTokenRow, error) {
+	row := q.db.QueryRow(ctx, getBankAccountWithToken, arg.EncryptionKey, arg.ID)
+	var i GetBankAccountWithTokenRow
+	err := row.Scan(
+		&i.ID,
+		&i.FioAccountID,
+		&i.Iban,
+		&i.Currency,
+		&i.DisplayName,
+		&i.CreatedAt,
+		&i.FioToken,
+		&i.IsActive,
+	)
+	return i, err
 }
 
 const getMaxFioTransactionID = `-- name: GetMaxFioTransactionID :one
@@ -539,18 +661,36 @@ func (q *Queries) InsertRawTransaction(ctx context.Context, arg InsertRawTransac
 }
 
 const listBankAccounts = `-- name: ListBankAccounts :many
-SELECT id, fio_account_id, iban, currency, display_name, created_at FROM bank_accounts ORDER BY id
+SELECT id, fio_account_id, iban, currency, display_name, created_at,
+       (fio_token_encrypted IS NOT NULL)::boolean AS has_token,
+       (deleted_at IS NULL)::boolean AS is_active
+FROM bank_accounts ORDER BY id
 `
 
-func (q *Queries) ListBankAccounts(ctx context.Context) ([]BankAccount, error) {
+type ListBankAccountsRow struct {
+	ID           int32     `json:"id"`
+	FioAccountID string    `json:"fio_account_id"`
+	Iban         *string   `json:"iban"`
+	Currency     string    `json:"currency"`
+	DisplayName  string    `json:"display_name"`
+	CreatedAt    time.Time `json:"created_at"`
+	HasToken     bool      `json:"has_token"`
+	IsActive     bool      `json:"is_active"`
+}
+
+// Admin-facing list (GET /account) — deliberately excludes the Fio token.
+// Includes soft-deleted accounts (is_active = false) so admins still see them
+// in the UI, crossed out, as a record that the account used to exist. For the
+// token itself, see ListBankAccountsWithToken (internal use only).
+func (q *Queries) ListBankAccounts(ctx context.Context) ([]ListBankAccountsRow, error) {
 	rows, err := q.db.Query(ctx, listBankAccounts)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []BankAccount
+	var items []ListBankAccountsRow
 	for rows.Next() {
-		var i BankAccount
+		var i ListBankAccountsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.FioAccountID,
@@ -558,6 +698,62 @@ func (q *Queries) ListBankAccounts(ctx context.Context) ([]BankAccount, error) {
 			&i.Currency,
 			&i.DisplayName,
 			&i.CreatedAt,
+			&i.HasToken,
+			&i.IsActive,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBankAccountsWithToken = `-- name: ListBankAccountsWithToken :many
+SELECT id, fio_account_id, iban, currency, display_name, created_at,
+       pgp_sym_decrypt(fio_token_encrypted, $1::text) AS fio_token,
+       (deleted_at IS NULL)::boolean AS is_active
+FROM bank_accounts ORDER BY id
+`
+
+type ListBankAccountsWithTokenRow struct {
+	ID           int32     `json:"id"`
+	FioAccountID string    `json:"fio_account_id"`
+	Iban         *string   `json:"iban"`
+	Currency     string    `json:"currency"`
+	DisplayName  string    `json:"display_name"`
+	CreatedAt    time.Time `json:"created_at"`
+	FioToken     string    `json:"fio_token"`
+	IsActive     bool      `json:"is_active"`
+}
+
+// Internal use only (the Fio sync job) — includes the decrypted Fio token.
+// Includes soft-deleted accounts (is_active = false); the sync job itself is
+// responsible for skipping those rather than filtering here, since "should
+// this account sync" is business logic, not a storage-layer concern. Never
+// expose this query's result over HTTP. encryption_key is bound as a query
+// parameter via pgp_sym_decrypt, never interpolated into SQL text. fio_token
+// is NULL for any account not yet backfilled with a token.
+func (q *Queries) ListBankAccountsWithToken(ctx context.Context, encryptionKey string) ([]ListBankAccountsWithTokenRow, error) {
+	rows, err := q.db.Query(ctx, listBankAccountsWithToken, encryptionKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListBankAccountsWithTokenRow
+	for rows.Next() {
+		var i ListBankAccountsWithTokenRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.FioAccountID,
+			&i.Iban,
+			&i.Currency,
+			&i.DisplayName,
+			&i.CreatedAt,
+			&i.FioToken,
+			&i.IsActive,
 		); err != nil {
 			return nil, err
 		}
@@ -601,26 +797,81 @@ func (q *Queries) ListCoverageForTransaction(ctx context.Context, processedTrans
 	return items, nil
 }
 
-const listMembers = `-- name: ListMembers :many
-SELECT member_number, fee_start_date, active, created_at, sub, fee_stop_date FROM members ORDER BY member_number
+const listEventLogs = `-- name: ListEventLogs :many
+SELECT event_type, id, started_at, finished_at, status, detail, fetched, processed, error_message, count(*) OVER () AS total_count
+FROM (
+    SELECT
+        'fio_sync'::text AS event_type,
+        sfr.id,
+        sfr.started_at,
+        sfr.finished_at,
+        sfr.status,
+        ba.display_name AS detail,
+        sfr.transactions_fetched AS fetched,
+        sfr.transactions_inserted AS processed,
+        sfr.error_message
+    FROM sync_fio_runs sfr
+    LEFT JOIN bank_accounts ba ON ba.id = sfr.bank_account_id
+    UNION ALL
+    SELECT
+        'orca_sync'::text AS event_type,
+        sor.id,
+        sor.started_at,
+        sor.finished_at,
+        sor.status,
+        NULL::text AS detail,
+        sor.members_fetched AS fetched,
+        sor.members_upserted AS processed,
+        sor.error_message
+    FROM sync_orca_runs sor
+) events
+ORDER BY started_at DESC, id DESC
+LIMIT $2::int OFFSET $1::int
 `
 
-func (q *Queries) ListMembers(ctx context.Context) ([]Member, error) {
-	rows, err := q.db.Query(ctx, listMembers)
+type ListEventLogsParams struct {
+	Off int32 `json:"off"`
+	Lim int32 `json:"lim"`
+}
+
+type ListEventLogsRow struct {
+	EventType    string             `json:"event_type"`
+	ID           int64              `json:"id"`
+	StartedAt    time.Time          `json:"started_at"`
+	FinishedAt   pgtype.Timestamptz `json:"finished_at"`
+	Status       string             `json:"status"`
+	Detail       *string            `json:"detail"`
+	Fetched      *int32             `json:"fetched"`
+	Processed    *int32             `json:"processed"`
+	ErrorMessage *string            `json:"error_message"`
+	TotalCount   int64              `json:"total_count"`
+}
+
+// Admin event log (GET /event-logs): sync_fio_runs and sync_orca_runs merged
+// into one feed, newest first. No filters — just a simple paged log, same
+// limit/offset + count(*) OVER () pagination pattern as ListTransactions.
+// detail is the bank account's display name for a fio_sync row, NULL for
+// orca_sync (there's no per-account breakdown for the member sync).
+func (q *Queries) ListEventLogs(ctx context.Context, arg ListEventLogsParams) ([]ListEventLogsRow, error) {
+	rows, err := q.db.Query(ctx, listEventLogs, arg.Off, arg.Lim)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Member
+	var items []ListEventLogsRow
 	for rows.Next() {
-		var i Member
+		var i ListEventLogsRow
 		if err := rows.Scan(
-			&i.MemberNumber,
-			&i.FeeStartDate,
-			&i.Active,
-			&i.CreatedAt,
-			&i.Sub,
-			&i.FeeStopDate,
+			&i.EventType,
+			&i.ID,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.Status,
+			&i.Detail,
+			&i.Fetched,
+			&i.Processed,
+			&i.ErrorMessage,
+			&i.TotalCount,
 		); err != nil {
 			return nil, err
 		}
@@ -967,6 +1218,64 @@ func (q *Queries) UnassignTransaction(ctx context.Context, arg UnassignTransacti
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const updateBankAccount = `-- name: UpdateBankAccount :one
+UPDATE bank_accounts
+SET display_name = $1,
+    fio_token_encrypted = CASE
+        WHEN $2::text IS NOT NULL
+        THEN pgp_sym_encrypt($2::text, $3::text)
+        ELSE fio_token_encrypted
+    END
+WHERE id = $4 AND deleted_at IS NULL
+RETURNING id, fio_account_id, iban, currency, display_name, created_at,
+          (fio_token_encrypted IS NOT NULL)::boolean AS has_token
+`
+
+type UpdateBankAccountParams struct {
+	DisplayName   string  `json:"display_name"`
+	FioToken      *string `json:"fio_token"`
+	EncryptionKey string  `json:"encryption_key"`
+	ID            int32   `json:"id"`
+}
+
+type UpdateBankAccountRow struct {
+	ID           int32     `json:"id"`
+	FioAccountID string    `json:"fio_account_id"`
+	Iban         *string   `json:"iban"`
+	Currency     string    `json:"currency"`
+	DisplayName  string    `json:"display_name"`
+	CreatedAt    time.Time `json:"created_at"`
+	HasToken     bool      `json:"has_token"`
+}
+
+// fio_account_id/iban/currency are properties of the real Fio account, not
+// editable metadata — only our own display_name and the sync token can change
+// here. fio_token is sqlc.narg: NULL means "leave the existing token
+// untouched", any non-NULL value re-encrypts and replaces it (see
+// CreateBankAccount for the same pgp_sym_encrypt pattern).
+// Only touches active accounts (deleted_at IS NULL) — a soft-deleted account
+// is a historical record, not something to edit; 0 rows affected reads as
+// "not found" either way (missing id or soft-deleted id).
+func (q *Queries) UpdateBankAccount(ctx context.Context, arg UpdateBankAccountParams) (UpdateBankAccountRow, error) {
+	row := q.db.QueryRow(ctx, updateBankAccount,
+		arg.DisplayName,
+		arg.FioToken,
+		arg.EncryptionKey,
+		arg.ID,
+	)
+	var i UpdateBankAccountRow
+	err := row.Scan(
+		&i.ID,
+		&i.FioAccountID,
+		&i.Iban,
+		&i.Currency,
+		&i.DisplayName,
+		&i.CreatedAt,
+		&i.HasToken,
+	)
+	return i, err
 }
 
 const upsertMember = `-- name: UpsertMember :exec

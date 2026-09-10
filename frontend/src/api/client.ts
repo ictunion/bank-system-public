@@ -71,3 +71,16 @@ export async function apiSend<T>(method: string, path: string, body?: unknown): 
 export function apiGet<T>(path: string): Promise<T> {
   return apiSend<T>('GET', path)
 }
+
+// Pull the backend's { "error": "..." } message out of an ApiError, else fall back.
+export function errMessage(err: unknown): string {
+  if (
+    err instanceof ApiError &&
+    err.body != null &&
+    typeof err.body === 'object' &&
+    'error' in err.body
+  ) {
+    return String((err.body as { error: unknown }).error)
+  }
+  return String(err)
+}

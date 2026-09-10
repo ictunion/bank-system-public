@@ -15,8 +15,9 @@ npm install
 npm run dev      # http://localhost:5173, proxies /api -> http://127.0.0.1:25987
 ```
 
-Run the backend separately (`make start` in the repo root). Override the proxy
-target with `BACKEND_URL` if it runs elsewhere.
+Run the backend separately (`make start` in the repo root). The dev proxy
+targets `http://127.0.0.1:25987` (`vite.config.ts`) — edit that if the backend
+runs elsewhere.
 
 All API calls use same-origin relative URLs (`/api/...`) — the Vite dev proxy and
 the production nginx config both route `/api/` to the Go service, so no
@@ -29,8 +30,9 @@ Keycloak, Authorization Code + PKCE, tokens in memory only. Full setup (the
 `../docs/frontend-auth.md`. Config comes from `VITE_KEYCLOAK_*` env vars —
 `.env.development` has working local defaults; override in `.env.local`.
 
-You need a Keycloak user with the `payment-history` / `list-members` client roles
-on the `bank-system` client to get past sign-in usefully.
+You need a Keycloak user with the `payment-history` client role
+on the `bank-system` client to get past sign-in usefully. The `manage-bank-accounts`
+role additionally shows the "Bank accounts" admin page.
 
 ## Build
 

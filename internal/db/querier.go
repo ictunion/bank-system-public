@@ -14,20 +14,43 @@ type Querier interface {
 	// Manual member match (see docs/logic-design.md "Manual Assignment & Coverage").
 	// Coverage rows are managed separately by the caller in the same DB transaction.
 	AssignTransactionToMember(ctx context.Context, arg AssignTransactionToMemberParams) (int64, error)
-	CreateBankAccount(ctx context.Context, arg CreateBankAccountParams) (BankAccount, error)
+	// fio_token is encrypted at rest via pgcrypto (pgp_sym_encrypt) using
+	// encryption_key (BANK_TOKEN_ENCRYPTION_KEY env var) — never stored in the DB
+	// itself. RETURNING list explicitly excludes fio_token_encrypted so the
+	// ciphertext (and a fortiori the token) is never echoed back to the caller.
+	CreateBankAccount(ctx context.Context, arg CreateBankAccountParams) (CreateBankAccountRow, error)
 	CreatePaymentCoverage(ctx context.Context, arg CreatePaymentCoverageParams) error
 	CreateProcessedTransaction(ctx context.Context, arg CreateProcessedTransactionParams) (ProcessedTransaction, error)
 	CreateSyncFioRun(ctx context.Context, bankAccountID int32) (SyncFioRun, error)
 	CreateSyncOrcaRun(ctx context.Context) (SyncOrcaRun, error)
+	// Soft delete: raw_transactions/sync_fio_runs reference bank_accounts.id with
+	// no ON DELETE clause (see initial_schema.sql), so a hard delete would fail
+	// once an account has synced history — and the row also needs to stick around
+	// for admins to see it used to exist (see ListBankAccounts). deleted_at IS
+	// NULL in the WHERE guards against re-timestamping an already-deleted row;
+	// :execrows lets handler.DeleteBankAccount tell "already gone" (0 rows) from
+	// "deleted just now" (1 row) and return 404 vs 204 accordingly.
+	DeleteBankAccount(ctx context.Context, id int32) (int64, error)
 	DeleteCoverageForTransaction(ctx context.Context, processedTransactionID int64) error
 	// Seeds the auto-generated "default" payment identifier for a member: variable
 	// symbol == member_number, valid from their fee_start_date. Runs on every Orca
 	// sync. DO NOTHING on conflict so a re-run is a no-op. Skipped by the caller when
 	// fee_start_date is null (member not yet liable, and valid_from is NOT NULL).
 	EnsureDefaultPaymentIdentifier(ctx context.Context, arg EnsureDefaultPaymentIdentifierParams) error
+	// Run once at server startup, before the scheduler starts: any row still
+	// 'running' predates this process (a single instance drives all syncs, so a
+	// 'running' row at boot means the prior process died — crash, panic, kill —
+	// between CreateSyncFioRun and FinishSyncFioRun and never got to close it).
+	FailStaleSyncFioRuns(ctx context.Context) (int64, error)
+	// See FailStaleSyncFioRuns — same reasoning, run at startup.
+	FailStaleSyncOrcaRuns(ctx context.Context) (int64, error)
 	FindMemberByVariableSymbol(ctx context.Context, arg FindMemberByVariableSymbolParams) (int32, error)
 	FinishSyncFioRun(ctx context.Context, arg FinishSyncFioRunParams) error
 	FinishSyncOrcaRun(ctx context.Context, arg FinishSyncOrcaRunParams) error
+	// Internal use only (the manual "sync now" trigger — see
+	// syncjob.SyncOneAccount) — single-row counterpart of
+	// ListBankAccountsWithToken, same never-expose-over-HTTP caveat.
+	GetBankAccountWithToken(ctx context.Context, arg GetBankAccountWithTokenParams) (GetBankAccountWithTokenRow, error)
 	GetMaxFioTransactionID(ctx context.Context, bankAccountID int32) (int64, error)
 	GetMemberNumberBySub(ctx context.Context, sub pgtype.UUID) (int32, error)
 	GetPaymentHistory(ctx context.Context, memberNumber int32) ([]GetPaymentHistoryRow, error)
@@ -40,9 +63,26 @@ type Querier interface {
 	// report it, rather than silently dropping it.
 	InsertCoverageRow(ctx context.Context, arg InsertCoverageRowParams) (int64, error)
 	InsertRawTransaction(ctx context.Context, arg InsertRawTransactionParams) (int64, error)
-	ListBankAccounts(ctx context.Context) ([]BankAccount, error)
+	// Admin-facing list (GET /account) — deliberately excludes the Fio token.
+	// Includes soft-deleted accounts (is_active = false) so admins still see them
+	// in the UI, crossed out, as a record that the account used to exist. For the
+	// token itself, see ListBankAccountsWithToken (internal use only).
+	ListBankAccounts(ctx context.Context) ([]ListBankAccountsRow, error)
+	// Internal use only (the Fio sync job) — includes the decrypted Fio token.
+	// Includes soft-deleted accounts (is_active = false); the sync job itself is
+	// responsible for skipping those rather than filtering here, since "should
+	// this account sync" is business logic, not a storage-layer concern. Never
+	// expose this query's result over HTTP. encryption_key is bound as a query
+	// parameter via pgp_sym_decrypt, never interpolated into SQL text. fio_token
+	// is NULL for any account not yet backfilled with a token.
+	ListBankAccountsWithToken(ctx context.Context, encryptionKey string) ([]ListBankAccountsWithTokenRow, error)
 	ListCoverageForTransaction(ctx context.Context, processedTransactionID int64) ([]ListCoverageForTransactionRow, error)
-	ListMembers(ctx context.Context) ([]Member, error)
+	// Admin event log (GET /event-logs): sync_fio_runs and sync_orca_runs merged
+	// into one feed, newest first. No filters — just a simple paged log, same
+	// limit/offset + count(*) OVER () pagination pattern as ListTransactions.
+	// detail is the bank account's display name for a fio_sync row, NULL for
+	// orca_sync (there's no per-account breakdown for the member sync).
+	ListEventLogs(ctx context.Context, arg ListEventLogsParams) ([]ListEventLogsRow, error)
 	// Members who were liable for the membership fee in the given year/month but
 	// have no payment_coverage row for it. "Liable" = fee_start_date is set (the
 	// member_arrears view enforces this) and the target month falls within
@@ -80,6 +120,15 @@ type Querier interface {
 	// Reverts a manual (or automatic) match: clears the member and matched_by, and
 	// resets category to the direction-based default the caller passes in.
 	UnassignTransaction(ctx context.Context, arg UnassignTransactionParams) (int64, error)
+	// fio_account_id/iban/currency are properties of the real Fio account, not
+	// editable metadata — only our own display_name and the sync token can change
+	// here. fio_token is sqlc.narg: NULL means "leave the existing token
+	// untouched", any non-NULL value re-encrypts and replaces it (see
+	// CreateBankAccount for the same pgp_sym_encrypt pattern).
+	// Only touches active accounts (deleted_at IS NULL) — a soft-deleted account
+	// is a historical record, not something to edit; 0 rows affected reads as
+	// "not found" either way (missing id or soft-deleted id).
+	UpdateBankAccount(ctx context.Context, arg UpdateBankAccountParams) (UpdateBankAccountRow, error)
 	UpsertMember(ctx context.Context, arg UpsertMemberParams) error
 }
 

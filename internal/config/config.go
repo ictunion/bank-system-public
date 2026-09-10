@@ -28,9 +28,14 @@ type Config struct {
 	// Addr is the address the HTTP server listens on, e.g. ":8080".
 	Addr string
 
-	// FioToken authenticates the daily Fio Bank sync job against the classic
-	// "výpisy" export API (token in URL, not the AISP v2/PSD2 API).
-	FioToken string
+	// BankTokenEncryptionKey is the symmetric passphrase used to encrypt/decrypt
+	// each bank_accounts row's Fio API token at rest via pgcrypto
+	// (pgp_sym_encrypt/pgp_sym_decrypt — see migrations and internal/db/queries.sql).
+	// Never stored in the DB itself. Losing this key makes every already-encrypted
+	// token unrecoverable until re-entered per account through the admin UI;
+	// rotating it requires decrypting every row with the old key and re-encrypting
+	// with the new one (not automated — no bulk key-rotation tooling yet).
+	BankTokenEncryptionKey string
 
 	// Debug enables verbose logging of outgoing requests and incoming responses
 	// (method, URL, headers, bodies) for external calls, e.g. to Fio's API.
@@ -82,9 +87,9 @@ func Load() (Config, error) {
 		port = "8080"
 	}
 
-	fioToken := os.Getenv("FIO_TOKEN")
-	if fioToken == "" {
-		return Config{}, fmt.Errorf("FIO_TOKEN environment variable is required")
+	bankTokenEncryptionKey := os.Getenv("BANK_TOKEN_ENCRYPTION_KEY")
+	if bankTokenEncryptionKey == "" {
+		return Config{}, fmt.Errorf("BANK_TOKEN_ENCRYPTION_KEY environment variable is required")
 	}
 
 	orcaAPIURL := os.Getenv("ORCA_API_URL")
@@ -113,10 +118,10 @@ func Load() (Config, error) {
 	}
 
 	return Config{
-		DatabaseURL:      dbURL,
-		Addr:             ":" + port,
-		FioToken:         fioToken,
-		Debug:            envBool("DEBUG"),
+		DatabaseURL:            dbURL,
+		Addr:                   ":" + port,
+		BankTokenEncryptionKey: bankTokenEncryptionKey,
+		Debug:                  envBool("DEBUG"),
 		DisableFioSync:   envBool("DISABLE_FIO_SYNC"),
 		OrcaAPIURL:       orcaAPIURL,
 		OrcaSyncToken:    orcaSyncToken,

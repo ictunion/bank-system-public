@@ -23,7 +23,7 @@ type OrcaResult struct {
 // `members`, recording the attempt in sync_orca_runs. Same idempotent-pull
 // shape as RunFioSync — see docs/orca-sync-members.md for why this is a full
 // pull every time rather than incremental.
-func RunOrcaSync(ctx context.Context, pool *pgxpool.Pool, client *orca.OrcaClient) (OrcaResult, error) {
+func RunOrcaSync(ctx context.Context, pool *pgxpool.Pool, client *orca.OrcaClient) (result OrcaResult, err error) {
 	queries := db.New(pool)
 
 	run, err := queries.CreateSyncOrcaRun(ctx)
@@ -31,13 +31,27 @@ func RunOrcaSync(ctx context.Context, pool *pgxpool.Pool, client *orca.OrcaClien
 		return OrcaResult{}, fmt.Errorf("creating sync_orca_runs row: %w", err)
 	}
 
+	// A panic anywhere below would otherwise crash the whole process (an
+	// unrecovered panic kills the program, not just this goroutine) and leave
+	// this row stuck at status='running' forever — recover it into a normal
+	// failed run instead.
+	var fetched, upserted int
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic: %v", r)
+			finishOrcaRun(ctx, queries, run.ID, "failed", fetched, upserted, err)
+			result = OrcaResult{}
+			log.Printf("orca sync: recovered from panic: %v", r)
+		}
+	}()
+
 	members, err := client.FetchMembers(ctx)
 	if err != nil {
 		finishOrcaRun(ctx, queries, run.ID, "failed", 0, 0, err)
 		return OrcaResult{}, fmt.Errorf("fetching from orca: %w", err)
 	}
+	fetched = len(members)
 
-	upserted := 0
 	for _, m := range members {
 		var feeStartDate pgtype.Date
 		if m.FeeStartDate != nil {

@@ -35,8 +35,8 @@ Caching is not automatic anywhere in this stack — it's implemented explicitly 
 
 ## Auth
 - **Keycloak** (same realm as the rest of ictunion's stack). Bearer tokens verified in
-  `internal/keycloak`; role-gated routes via `handler.RequireRole` (`list-members`,
-  `payment-history`). Machine-to-machine sync routes use a static shared secret instead
+  `internal/keycloak`; role-gated routes via `handler.RequireRole` (`payment-history`,
+  `list-transactions`, `manage-transactions`, `manage-bank-accounts`, `view-event-logs`). Machine-to-machine sync routes use a static shared secret instead
   (see `logic-design.md` "Orca Member Sync").
 - Frontend logs in with Authorization Code + PKCE against the same `bank-system` client
   (public), tokens held in memory only. Full setup — including the **required audience

@@ -1,6 +1,7 @@
-import { type CSSProperties, type ReactNode, useEffect, useState } from 'react'
+import { type CSSProperties, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ApiError } from './api/client'
+import { ApiError, errMessage } from './api/client'
+import { Overlay } from './Overlay'
 import {
   assignTransaction,
   type Category,
@@ -26,19 +27,6 @@ const CATEGORIES: [Category, string][] = [
 function monthOf(isoDate: string): MonthRef {
   const [y, m] = isoDate.split('-')
   return { year: Number(y), month: Number(m) }
-}
-
-// Pull the backend's { "error": "..." } message out of an ApiError, else fall back.
-function errMessage(err: unknown): string {
-  if (
-    err instanceof ApiError &&
-    err.body != null &&
-    typeof err.body === 'object' &&
-    'error' in err.body
-  ) {
-    return String((err.body as { error: unknown }).error)
-  }
-  return String(err)
 }
 
 export function AssignDialog({
@@ -240,46 +228,6 @@ function replace<T>(arr: T[], i: number, value: T): T[] {
   const next = arr.slice()
   next[i] = value
   return next
-}
-
-function Overlay({ children, onClose }: { children: ReactNode; onClose: () => void }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
-
-  return (
-    <div onClick={onClose} style={backdrop}>
-      <div onClick={(e) => e.stopPropagation()} style={modal}>
-        {children}
-      </div>
-    </div>
-  )
-}
-
-const backdrop: CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  background: 'rgba(0, 0, 0, 0.4)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  padding: '1rem',
-  zIndex: 1000,
-}
-
-const modal: CSSProperties = {
-  background: '#fff',
-  borderRadius: 8,
-  padding: '1.5rem',
-  width: '100%',
-  maxWidth: 560,
-  maxHeight: '90vh',
-  overflowY: 'auto',
-  fontFamily: 'system-ui, sans-serif',
 }
 
 const summary: CSSProperties = {

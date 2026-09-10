@@ -70,17 +70,33 @@ all derived data (categories, matches) without re-hitting the bank API.
 ### 1. `bank_accounts`
 
 Supports multiple bank accounts even though we start with one — avoids a migration later,
-and the Fio sync cursor is naturally per-account anyway.
+and the Fio sync cursor is naturally per-account anyway. Each account carries its own Fio
+API token, encrypted at rest via pgcrypto (`pgp_sym_encrypt`/`pgp_sym_decrypt`, keyed by
+`BANK_TOKEN_ENCRYPTION_KEY`, never stored in the DB) — added via the admin UI
+(`POST /account`, `manage-bank-accounts` role) rather than `psql`.
+
+Deletion (`DELETE /account/{id}`) is a soft delete (`deleted_at`), not a row removal:
+`raw_transactions`/`sync_fio_runs` reference `bank_accounts.id` with no `ON DELETE` clause,
+so a hard delete would fail once an account has synced history, and admins should still see
+that a deleted account used to exist. The sync job (`internal/syncjob`) skips
+`deleted_at IS NOT NULL` accounts in Go, not via a query filter — "should this account
+sync" is job logic, not storage. `fio_account_id`'s uniqueness is a partial index
+(`WHERE deleted_at IS NULL`) rather than a plain column constraint, so a new account can
+reuse a deleted one's Fio account number.
 
 ```sql
 CREATE TABLE bank_accounts (
-    id              SERIAL PRIMARY KEY,
-    fio_account_id  TEXT NOT NULL UNIQUE,   -- Fio account number
-    iban            TEXT,
-    currency        CHAR(3) NOT NULL DEFAULT 'CZK',
-    display_name    TEXT NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                   SERIAL PRIMARY KEY,
+    fio_account_id       TEXT NOT NULL,          -- Fio account number; unique among active rows only
+    iban                 TEXT,
+    currency             CHAR(3) NOT NULL DEFAULT 'CZK',
+    display_name         TEXT NOT NULL,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    fio_token_encrypted  BYTEA,                  -- pgp_sym_encrypt'd Fio API token
+    deleted_at           TIMESTAMPTZ             -- soft delete; NULL = active
 );
+CREATE UNIQUE INDEX bank_accounts_fio_account_id_active_key
+    ON bank_accounts (fio_account_id) WHERE deleted_at IS NULL;
 ```
 
 ### 2. `raw_transactions` — 1:1 mirror of Fio API

@@ -11,12 +11,14 @@ import (
 )
 
 type BankAccount struct {
-	ID           int32     `json:"id"`
-	FioAccountID string    `json:"fio_account_id"`
-	Iban         *string   `json:"iban"`
-	Currency     string    `json:"currency"`
-	DisplayName  string    `json:"display_name"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID                int32              `json:"id"`
+	FioAccountID      string             `json:"fio_account_id"`
+	Iban              *string            `json:"iban"`
+	Currency          string             `json:"currency"`
+	DisplayName       string             `json:"display_name"`
+	CreatedAt         time.Time          `json:"created_at"`
+	FioTokenEncrypted []byte             `json:"fio_token_encrypted"`
+	DeletedAt         pgtype.Timestamptz `json:"deleted_at"`
 }
 
 type Member struct {

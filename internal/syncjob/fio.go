@@ -5,11 +5,13 @@ package syncjob
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kubik/bank-system/internal/db"
@@ -20,6 +22,14 @@ import (
 // requiring strong customer authorization (SCA) in Fio's own Internet Banking.
 const fioSCAWindow = 90 * 24 * time.Hour
 
+// Sentinel errors from SyncOneAccount — distinct from a Fio-API/DB failure so
+// handler.TriggerFioSync can map them to 404/400 instead of a generic 502.
+var (
+	ErrAccountNotFound = errors.New("bank account not found")
+	ErrAccountInactive = errors.New("bank account is deleted")
+	ErrNoToken         = errors.New("bank account has no fio token configured")
+)
+
 // Result summarizes one bank account's sync attempt.
 type Result struct {
 	BankAccountID         int32
@@ -27,16 +37,22 @@ type Result struct {
 	TransactionsInserted  int
 }
 
-// RunFioSync fetches new transactions for every bank account and upserts them
-// into raw_transactions, recording each attempt in sync_fio_runs. One client
-// (one Fio token) covers one bank account; today there's exactly one
-// bank_accounts row, but the loop already generalizes since the schema supports
-// more (see db-design.md) — it just doesn't yet have anywhere to look up a
-// second account's token.
-func RunFioSync(ctx context.Context, pool *pgxpool.Pool, client *fio.FioClient, debug bool) ([]Result, error) {
+// RunFioSync fetches new transactions for every active bank account and
+// upserts them into raw_transactions, recording each attempt in
+// sync_fio_runs. Each account carries its own encrypted Fio token (see
+// queries.sql), decrypted here with encryptionKey (BANK_TOKEN_ENCRYPTION_KEY)
+// and used to build a client scoped to just that account — Fio's cursor state
+// lives server-side per token, not per request (see internal/fio.NewClient).
+// ListBankAccountsWithToken returns soft-deleted accounts too (so the admin
+// UI can still show them); skipping IsActive == false here, rather than
+// filtering in SQL, keeps "should this account sync" as sync-job business
+// logic instead of a storage-layer concern. An active account with no token
+// yet (not backfilled after the token moved from env var to DB) is skipped
+// too, not failed.
+func RunFioSync(ctx context.Context, pool *pgxpool.Pool, encryptionKey string, debug bool) ([]Result, error) {
 	queries := db.New(pool)
 
-	accounts, err := queries.ListBankAccounts(ctx)
+	accounts, err := queries.ListBankAccountsWithToken(ctx, encryptionKey)
 	if err != nil {
 		return nil, fmt.Errorf("listing bank accounts: %w", err)
 	}
@@ -46,6 +62,15 @@ func RunFioSync(ctx context.Context, pool *pgxpool.Pool, client *fio.FioClient, 
 
 	var results []Result
 	for _, account := range accounts {
+		if !account.IsActive {
+			log.Printf("fio sync: bank_account_id=%d is deleted, skipping", account.ID)
+			continue
+		}
+		if account.FioToken == "" {
+			log.Printf("fio sync: bank_account_id=%d has no token configured, skipping", account.ID)
+			continue
+		}
+		client := fio.NewClient(account.FioToken, debug)
 		res, err := syncAccount(ctx, pool, queries, client, account.ID, debug)
 		if err != nil {
 			log.Printf("fio sync: bank_account_id=%d failed: %v", account.ID, err)
@@ -56,11 +81,54 @@ func RunFioSync(ctx context.Context, pool *pgxpool.Pool, client *fio.FioClient, 
 	return results, nil
 }
 
-func syncAccount(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, client *fio.FioClient, bankAccountID int32, debug bool) (Result, error) {
+// SyncOneAccount runs the same sync as one RunFioSync loop iteration, but for
+// a single account on demand — the admin "sync now" button (see
+// handler.TriggerFioSync), on top of the scheduled daily RunFioSync. Callers
+// are responsible for checking DISABLE_FIO_SYNC before calling this (see
+// config.DisableFioSync) — unlike the scheduled job, this has no scheduler
+// wrapper to do that check for it.
+func SyncOneAccount(ctx context.Context, pool *pgxpool.Pool, encryptionKey string, bankAccountID int32, debug bool) (Result, error) {
+	queries := db.New(pool)
+
+	account, err := queries.GetBankAccountWithToken(ctx, db.GetBankAccountWithTokenParams{
+		ID:            bankAccountID,
+		EncryptionKey: encryptionKey,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Result{}, ErrAccountNotFound
+	} else if err != nil {
+		return Result{}, fmt.Errorf("loading bank account: %w", err)
+	}
+	if !account.IsActive {
+		return Result{}, ErrAccountInactive
+	}
+	if account.FioToken == "" {
+		return Result{}, ErrNoToken
+	}
+
+	client := fio.NewClient(account.FioToken, debug)
+	return syncAccount(ctx, pool, queries, client, account.ID, debug)
+}
+
+func syncAccount(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, client *fio.FioClient, bankAccountID int32, debug bool) (result Result, err error) {
 	run, err := queries.CreateSyncFioRun(ctx, bankAccountID)
 	if err != nil {
 		return Result{}, fmt.Errorf("creating sync_fio_runs row: %w", err)
 	}
+
+	// A panic anywhere below would otherwise crash the whole process (an
+	// unrecovered panic kills the program, not just this goroutine) and leave
+	// this row stuck at status='running' forever — recover it into a normal
+	// failed run instead.
+	var fetched, inserted int
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic: %v", r)
+			finishRun(ctx, queries, run.ID, "failed", fetched, inserted, err)
+			result = Result{}
+			log.Printf("fio sync: bank_account_id=%d: recovered from panic: %v", bankAccountID, r)
+		}
+	}()
 
 	// In debug/dev mode, fetch only the last 90 days via /periods/ instead of
 	// the cursor-based /last/ — Fio requires strong authorization (SCA) in its
@@ -85,6 +153,7 @@ func syncAccount(ctx context.Context, pool *pgxpool.Pool, queries *db.Queries, c
 		finishRun(ctx, queries, run.ID, "failed", 0, 0, err)
 		return Result{}, fmt.Errorf("parsing fio response: %w", err)
 	}
+	fetched = len(txs)
 
 	if len(txs) == 0 {
 		finishRun(ctx, queries, run.ID, "success", 0, 0, nil)

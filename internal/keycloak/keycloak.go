@@ -31,10 +31,6 @@ import (
 type Role string
 
 const (
-	// RoleListMembers gates GET /members (see handler.ListMembers) — debug
-	// prototype only, not meant to survive to production as-is.
-	RoleListMembers Role = "list-members"
-
 	// RolePaymentHistory gates the admin payment routes:
 	//   GET /payments/{member_number}/history  (see handler.PaymentHistory)
 	//   GET /payments/{year}/{month}/missing   (see handler.MissingPayments)
@@ -60,6 +56,26 @@ const (
 	// editing. Separate from RoleListTransactions so a read-only auditor can
 	// hold the browser role without being able to change matches.
 	RoleManageTransactions Role = "manage-transactions"
+
+	// RoleManageBankAccounts gates the bank account admin routes:
+	//   GET /account            (see handler.ListBankAccounts)
+	//   POST /account           (see handler.CreateBankAccount)
+	//   PATCH /account/{id}     (see handler.UpdateBankAccount)
+	//   DELETE /account/{id}    (see handler.DeleteBankAccount)
+	//   POST /account/{id}/sync (see handler.TriggerFioSync)
+	// for admins provisioning/viewing bank_accounts rows — this replaces direct
+	// psql access as the way new accounts get added, including each account's
+	// own Fio API token. Kept separate from RoleManageTransactions: creating a
+	// bank account and configuring its Fio token is a different, higher-trust
+	// action than editing a member match.
+	RoleManageBankAccounts Role = "manage-bank-accounts"
+
+	// RoleViewEventLogs gates GET /event-logs (see handler.ListEventLogs): the
+	// merged sync_fio_runs/sync_orca_runs admin log. Read-only and covers both
+	// sync jobs, so it doesn't naturally belong under RoleManageBankAccounts
+	// (Fio-specific, write-capable) or RoleListTransactions (unrelated data) —
+	// its own role, same as the other distinct admin views.
+	RoleViewEventLogs Role = "view-event-logs"
 )
 
 // Claims is the subset of a Keycloak access token we care about.

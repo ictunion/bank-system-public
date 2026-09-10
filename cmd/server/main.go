@@ -13,7 +13,6 @@ import (
 
 	"github.com/kubik/bank-system/internal/config"
 	"github.com/kubik/bank-system/internal/db"
-	"github.com/kubik/bank-system/internal/fio"
 	"github.com/kubik/bank-system/internal/handler"
 	"github.com/kubik/bank-system/internal/keycloak"
 	"github.com/kubik/bank-system/internal/orca"
@@ -43,11 +42,16 @@ func main() {
 		log.Fatalf("db ping: %v", err)
 	}
 
+	if fioCount, orcaCount, err := syncjob.FailStaleRuns(ctx, pool); err != nil {
+		log.Printf("failing stale sync runs: %v", err)
+	} else if fioCount > 0 || orcaCount > 0 {
+		log.Printf("failed stale sync runs from a previous process: sync_fio_runs=%d sync_orca_runs=%d", fioCount, orcaCount)
+	}
+
 	// One daily job, run in order: Orca (members) before Fio (transactions) —
 	// transaction processing (member payment matching, not built yet) needs
 	// both done first, so it can't run as two independently-scheduled jobs.
 	orcaClient := orca.NewClient(cfg.OrcaAPIURL, cfg.OrcaSyncToken, cfg.Debug)
-	fioClient := fio.NewClient(cfg.FioToken, cfg.Debug)
 	go scheduler.RunImmediatellyAndThenDaily(ctx, 3, 0, func(runCtx context.Context) {
 		orcaOK := true
 		if result, err := syncjob.RunOrcaSync(runCtx, pool, orcaClient); err != nil {
@@ -60,7 +64,7 @@ func main() {
 		fioOK := true
 		if cfg.DisableFioSync {
 			log.Print("fio sync: disabled via DISABLE_FIO_SYNC, skipping")
-		} else if results, err := syncjob.RunFioSync(runCtx, pool, fioClient, cfg.Debug); err != nil {
+		} else if results, err := syncjob.RunFioSync(runCtx, pool, cfg.BankTokenEncryptionKey, cfg.Debug); err != nil {
 			fioOK = false
 			log.Printf("fio sync: %v", err)
 		} else {
@@ -97,11 +101,14 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 
-	api.HandleFunc("POST /account", handler.CreateBankAccount(db.New(pool)))
+	api.HandleFunc("GET /account", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.ListBankAccounts(db.New(pool))))
+	api.HandleFunc("POST /account", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.CreateBankAccount(db.New(pool), cfg.BankTokenEncryptionKey)))
+	api.HandleFunc("PATCH /account/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.UpdateBankAccount(db.New(pool), cfg.BankTokenEncryptionKey)))
+	api.HandleFunc("DELETE /account/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.DeleteBankAccount(db.New(pool))))
+	api.HandleFunc("POST /account/{id}/sync", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.TriggerFioSync(pool, cfg.BankTokenEncryptionKey, cfg.DisableFioSync, cfg.Debug)))
 
-	// Debug prototype for Keycloak-authenticated read endpoints — not meant to
-	// survive to production as-is. See internal/keycloak and handler/auth.go.
-	api.HandleFunc("GET /members", handler.RequireRole(keycloakProvider, keycloak.RoleListMembers, handler.ListMembers(db.New(pool))))
+	api.HandleFunc("GET /event-logs", handler.RequireRole(keycloakProvider, keycloak.RoleViewEventLogs, handler.ListEventLogs(db.New(pool))))
+
 	api.HandleFunc("GET /transactions", handler.RequireRole(keycloakProvider, keycloak.RoleListTransactions, handler.ListTransactions(db.New(pool))))
 	api.HandleFunc("GET /transactions/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleListTransactions, handler.GetTransaction(db.New(pool))))
 	api.HandleFunc("PUT /transactions/{id}/assignment", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.AssignTransaction(pool)))
@@ -114,22 +121,22 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/api/", http.StripPrefix("/api", api))
 
-	srv := &http.Server{
+	server := &http.Server{
 		Addr:    cfg.Addr,
-		Handler: mux,
+		Handler: handler.Recover(mux),
 	}
 
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
+		if err := server.Shutdown(shutdownCtx); err != nil {
 			log.Printf("shutdown: %v", err)
 		}
 	}()
 
 	log.Printf("listening on %s", cfg.Addr)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 }

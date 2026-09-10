@@ -71,8 +71,8 @@ Verify: decode an access token (jwt.io) and confirm `aud` contains
 
 ### Roles
 
-Client roles on `bank-system`: `list-members`, `payment-history`,
-`list-transactions`, `manage-transactions` (see
+Client roles on `bank-system`: `payment-history`,
+`list-transactions`, `manage-transactions`, `manage-bank-accounts`, `view-event-logs` (see
 `internal/keycloak/keycloak.go`). Assign to the admin users who should reach
 those endpoints — `manage-transactions` is the write role for editing member
 matches / coverage and should be granted more narrowly than `list-transactions`.

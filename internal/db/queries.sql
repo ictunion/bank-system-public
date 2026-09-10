@@ -1,10 +1,116 @@
 -- name: ListBankAccounts :many
-SELECT * FROM bank_accounts ORDER BY id;
+-- Admin-facing list (GET /account) — deliberately excludes the Fio token.
+-- Includes soft-deleted accounts (is_active = false) so admins still see them
+-- in the UI, crossed out, as a record that the account used to exist. For the
+-- token itself, see ListBankAccountsWithToken (internal use only).
+SELECT id, fio_account_id, iban, currency, display_name, created_at,
+       (fio_token_encrypted IS NOT NULL)::boolean AS has_token,
+       (deleted_at IS NULL)::boolean AS is_active
+FROM bank_accounts ORDER BY id;
+
+-- name: ListBankAccountsWithToken :many
+-- Internal use only (the Fio sync job) — includes the decrypted Fio token.
+-- Includes soft-deleted accounts (is_active = false); the sync job itself is
+-- responsible for skipping those rather than filtering here, since "should
+-- this account sync" is business logic, not a storage-layer concern. Never
+-- expose this query's result over HTTP. encryption_key is bound as a query
+-- parameter via pgp_sym_decrypt, never interpolated into SQL text. fio_token
+-- is NULL for any account not yet backfilled with a token.
+SELECT id, fio_account_id, iban, currency, display_name, created_at,
+       pgp_sym_decrypt(fio_token_encrypted, sqlc.arg(encryption_key)::text) AS fio_token,
+       (deleted_at IS NULL)::boolean AS is_active
+FROM bank_accounts ORDER BY id;
+
+-- name: GetBankAccountWithToken :one
+-- Internal use only (the manual "sync now" trigger — see
+-- syncjob.SyncOneAccount) — single-row counterpart of
+-- ListBankAccountsWithToken, same never-expose-over-HTTP caveat.
+SELECT id, fio_account_id, iban, currency, display_name, created_at,
+       pgp_sym_decrypt(fio_token_encrypted, sqlc.arg(encryption_key)::text) AS fio_token,
+       (deleted_at IS NULL)::boolean AS is_active
+FROM bank_accounts WHERE id = sqlc.arg(id);
 
 -- name: CreateBankAccount :one
-INSERT INTO bank_accounts (fio_account_id, iban, currency, display_name)
-VALUES (sqlc.arg(fio_account_id), sqlc.narg(iban), sqlc.arg(currency), sqlc.arg(display_name))
-RETURNING *;
+-- fio_token is encrypted at rest via pgcrypto (pgp_sym_encrypt) using
+-- encryption_key (BANK_TOKEN_ENCRYPTION_KEY env var) — never stored in the DB
+-- itself. RETURNING list explicitly excludes fio_token_encrypted so the
+-- ciphertext (and a fortiori the token) is never echoed back to the caller.
+INSERT INTO bank_accounts (fio_account_id, iban, currency, display_name, fio_token_encrypted)
+VALUES (
+    sqlc.arg(fio_account_id),
+    sqlc.narg(iban),
+    sqlc.arg(currency),
+    sqlc.arg(display_name),
+    pgp_sym_encrypt(sqlc.arg(fio_token)::text, sqlc.arg(encryption_key)::text)
+)
+RETURNING id, fio_account_id, iban, currency, display_name, created_at;
+
+-- name: UpdateBankAccount :one
+-- fio_account_id/iban/currency are properties of the real Fio account, not
+-- editable metadata — only our own display_name and the sync token can change
+-- here. fio_token is sqlc.narg: NULL means "leave the existing token
+-- untouched", any non-NULL value re-encrypts and replaces it (see
+-- CreateBankAccount for the same pgp_sym_encrypt pattern).
+-- Only touches active accounts (deleted_at IS NULL) — a soft-deleted account
+-- is a historical record, not something to edit; 0 rows affected reads as
+-- "not found" either way (missing id or soft-deleted id).
+UPDATE bank_accounts
+SET display_name = sqlc.arg(display_name),
+    fio_token_encrypted = CASE
+        WHEN sqlc.narg(fio_token)::text IS NOT NULL
+        THEN pgp_sym_encrypt(sqlc.narg(fio_token)::text, sqlc.arg(encryption_key)::text)
+        ELSE fio_token_encrypted
+    END
+WHERE id = sqlc.arg(id) AND deleted_at IS NULL
+RETURNING id, fio_account_id, iban, currency, display_name, created_at,
+          (fio_token_encrypted IS NOT NULL)::boolean AS has_token;
+
+-- name: DeleteBankAccount :execrows
+-- Soft delete: raw_transactions/sync_fio_runs reference bank_accounts.id with
+-- no ON DELETE clause (see initial_schema.sql), so a hard delete would fail
+-- once an account has synced history — and the row also needs to stick around
+-- for admins to see it used to exist (see ListBankAccounts). deleted_at IS
+-- NULL in the WHERE guards against re-timestamping an already-deleted row;
+-- :execrows lets handler.DeleteBankAccount tell "already gone" (0 rows) from
+-- "deleted just now" (1 row) and return 404 vs 204 accordingly.
+UPDATE bank_accounts SET deleted_at = now()
+WHERE id = sqlc.arg(id) AND deleted_at IS NULL;
+
+-- name: ListEventLogs :many
+-- Admin event log (GET /event-logs): sync_fio_runs and sync_orca_runs merged
+-- into one feed, newest first. No filters — just a simple paged log, same
+-- limit/offset + count(*) OVER () pagination pattern as ListTransactions.
+-- detail is the bank account's display name for a fio_sync row, NULL for
+-- orca_sync (there's no per-account breakdown for the member sync).
+SELECT *, count(*) OVER () AS total_count
+FROM (
+    SELECT
+        'fio_sync'::text AS event_type,
+        sfr.id,
+        sfr.started_at,
+        sfr.finished_at,
+        sfr.status,
+        ba.display_name AS detail,
+        sfr.transactions_fetched AS fetched,
+        sfr.transactions_inserted AS processed,
+        sfr.error_message
+    FROM sync_fio_runs sfr
+    LEFT JOIN bank_accounts ba ON ba.id = sfr.bank_account_id
+    UNION ALL
+    SELECT
+        'orca_sync'::text AS event_type,
+        sor.id,
+        sor.started_at,
+        sor.finished_at,
+        sor.status,
+        NULL::text AS detail,
+        sor.members_fetched AS fetched,
+        sor.members_upserted AS processed,
+        sor.error_message
+    FROM sync_orca_runs sor
+) events
+ORDER BY started_at DESC, id DESC
+LIMIT sqlc.arg(lim)::int OFFSET sqlc.arg(off)::int;
 
 -- name: GetMaxFioTransactionID :one
 SELECT COALESCE(MAX(fio_transaction_id), 0)::bigint AS max_id
@@ -24,6 +130,17 @@ SET finished_at = now(),
     transactions_inserted = sqlc.arg(transactions_inserted),
     error_message = sqlc.narg(error_message)
 WHERE id = sqlc.arg(id);
+
+-- name: FailStaleSyncFioRuns :execrows
+-- Run once at server startup, before the scheduler starts: any row still
+-- 'running' predates this process (a single instance drives all syncs, so a
+-- 'running' row at boot means the prior process died — crash, panic, kill —
+-- between CreateSyncFioRun and FinishSyncFioRun and never got to close it).
+UPDATE sync_fio_runs
+SET finished_at = now(),
+    status = 'failed',
+    error_message = 'interrupted: server restarted mid-run'
+WHERE status = 'running';
 
 -- name: InsertRawTransaction :execrows
 INSERT INTO raw_transactions (
@@ -56,9 +173,6 @@ INSERT INTO raw_transactions (
     sqlc.arg(raw_payload)
 )
 ON CONFLICT (bank_account_id, fio_transaction_id) DO NOTHING;
-
--- name: ListMembers :many
-SELECT * FROM members ORDER BY member_number;
 
 -- name: UpsertMember :exec
 INSERT INTO members (member_number, fee_start_date, fee_stop_date, active, sub)
@@ -176,6 +290,14 @@ SET finished_at = now(),
     members_upserted = sqlc.arg(members_upserted),
     error_message = sqlc.narg(error_message)
 WHERE id = sqlc.arg(id);
+
+-- name: FailStaleSyncOrcaRuns :execrows
+-- See FailStaleSyncFioRuns — same reasoning, run at startup.
+UPDATE sync_orca_runs
+SET finished_at = now(),
+    status = 'failed',
+    error_message = 'interrupted: server restarted mid-run'
+WHERE status = 'running';
 
 -- name: ListUnprocessedTransactions :many
 SELECT rt.* FROM raw_transactions rt
