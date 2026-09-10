@@ -22,12 +22,13 @@ type BankAccount struct {
 }
 
 type Member struct {
-	MemberNumber int32       `json:"member_number"`
-	FeeStartDate pgtype.Date `json:"fee_start_date"`
-	Active       bool        `json:"active"`
-	CreatedAt    time.Time   `json:"created_at"`
-	Sub          pgtype.UUID `json:"sub"`
-	FeeStopDate  pgtype.Date `json:"fee_stop_date"`
+	MemberNumber                   int32       `json:"member_number"`
+	FeeStartDate                   pgtype.Date `json:"fee_start_date"`
+	Active                         bool        `json:"active"`
+	CreatedAt                      time.Time   `json:"created_at"`
+	Sub                            pgtype.UUID `json:"sub"`
+	FeeStopDate                    pgtype.Date `json:"fee_stop_date"`
+	WorkplaceExecutiveCommitteeSub pgtype.UUID `json:"workplace_executive_committee_sub"`
 }
 
 type MemberArrear struct {
@@ -107,4 +108,10 @@ type SyncOrcaRun struct {
 	MembersFetched  *int32             `json:"members_fetched"`
 	MembersUpserted *int32             `json:"members_upserted"`
 	ErrorMessage    *string            `json:"error_message"`
+}
+
+type TransactionCategory struct {
+	Name        string    `json:"name"`
+	IsMandatory bool      `json:"is_mandatory"`
+	CreatedAt   time.Time `json:"created_at"`
 }

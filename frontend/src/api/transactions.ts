@@ -1,7 +1,9 @@
 import { apiGet, apiSend } from './client'
 
 export type Direction = 'incoming' | 'outgoing'
-export type Category = 'membership_fee' | 'salary' | 'other_income' | 'other_expense'
+// Categories are DB-backed and admin-editable (see api/categories.ts) — no
+// longer a fixed set of literal values here.
+export type Category = string
 
 export interface TransactionListItem {
   id: number
@@ -72,9 +74,10 @@ export interface TransactionDetail extends TransactionListItem {
 }
 
 export interface AssignPayload {
-  member_number: number
+  /** omit for a category-only edit — not every transaction has a member to match */
+  member_number?: number
   category?: Category
-  /** only for category === 'membership_fee'; empty = the transaction's own month */
+  /** only for category === 'membership_fee' with a member_number; empty = the transaction's own month */
   covers?: MonthRef[]
 }
 

@@ -68,12 +68,20 @@ func RunOrcaSync(requestContext context.Context, pool *pgxpool.Pool, client *orc
 				return OrcaResult{}, fmt.Errorf("member_number=%d: parsing sub %q: %w", m.MemberNumber, *m.Sub, err)
 			}
 		}
+		var workplaceExecutiveCommitteeSub pgtype.UUID
+		if m.WorkplaceExecutiveCommitteeSub != nil {
+			if err := workplaceExecutiveCommitteeSub.Scan(*m.WorkplaceExecutiveCommitteeSub); err != nil {
+				finishOrcaRun(requestContext, queries, run.ID, "failed", len(members), upserted, err)
+				return OrcaResult{}, fmt.Errorf("member_number=%d: parsing workplace_executive_committee_sub %q: %w", m.MemberNumber, *m.WorkplaceExecutiveCommitteeSub, err)
+			}
+		}
 		if err := queries.UpsertMember(requestContext, db.UpsertMemberParams{
-			MemberNumber: m.MemberNumber,
-			FeeStartDate: feeStartDate,
-			FeeStopDate:  feeStopDate,
-			Active:       m.Active,
-			Sub:          sub,
+			MemberNumber:                   m.MemberNumber,
+			FeeStartDate:                   feeStartDate,
+			FeeStopDate:                    feeStopDate,
+			Active:                         m.Active,
+			Sub:                            sub,
+			WorkplaceExecutiveCommitteeSub: workplaceExecutiveCommitteeSub,
 		}); err != nil {
 			finishOrcaRun(requestContext, queries, run.ID, "failed", len(members), upserted, err)
 			return OrcaResult{}, fmt.Errorf("upserting member_number=%d: %w", m.MemberNumber, err)

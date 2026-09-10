@@ -1,6 +1,7 @@
 import { type CSSProperties, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { AssignDialog } from './AssignDialog'
+import { categoryLabel, fetchCategories } from './api/categories'
 import { fetchTransactions, type TransactionQuery } from './api/transactions'
 
 const PAGE_SIZE = 100
@@ -11,7 +12,7 @@ interface Filters {
   to: string
   assigned: '' | 'true' | 'false'
   direction: '' | 'incoming' | 'outgoing'
-  category: '' | 'membership_fee' | 'salary' | 'other_income' | 'other_expense'
+  category: string
   matchedBy: '' | 'variable_symbol' | 'manual' | 'amount_heuristic'
   memberNumber: string
 }
@@ -78,6 +79,8 @@ export function TransactionsTable() {
     placeholderData: keepPreviousData,
   })
 
+  const categories = useQuery({ queryKey: ['categories'], queryFn: fetchCategories })
+
   const filterRowEl = (
     <div style={filterRow}>
       <label>
@@ -120,13 +123,8 @@ export function TransactionsTable() {
       <Select
         label="Category"
         value={filters.category}
-        onChange={(v) => update({ category: v as Filters['category'] })}
-        options={[
-          ['membership_fee', 'Membership fee'],
-          ['salary', 'Salary'],
-          ['other_income', 'Other income'],
-          ['other_expense', 'Other expense'],
-        ]}
+        onChange={(v) => update({ category: v })}
+        options={(categories.data ?? []).map((c): [string, string] => [c.name, categoryLabel(c.name)])}
       />
       <Select
         label="Matched by"
@@ -223,7 +221,7 @@ export function TransactionsTable() {
                   {t.amount} {t.currency}
                 </td>
                 <td style={td}>{t.direction === 'incoming' ? 'in' : 'out'}</td>
-                <td style={td}>{t.category}</td>
+                <td style={td}>{categoryLabel(t.category)}</td>
                 <td style={td}>{t.member_number ?? '—'}</td>
                 <td style={td}>{t.variable_symbol ?? '—'}</td>
                 <td style={td}>{t.counter_account_name ?? t.counter_account_number ?? '—'}</td>

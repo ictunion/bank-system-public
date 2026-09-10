@@ -8,10 +8,67 @@ logic is computed, as opposed to how data is stored.
 Daily pull, same idempotent shape as the Fio sync job (see `db-design.md` `members`
 section for why pull over push, and `sync_orca_runs` for the tracking table). Calls
 Orca's `/sync/bank/members` — a dedicated endpoint scoped to payment-relevant fields only
-(`member_number`, `fee_start_date`, `fee_stop_date`, `active`, `sub`), not full member
-identity. `active` is mirrored into `members.active` but no bank-system logic reads it —
-the fee-liability window is `fee_start_date` .. `fee_stop_date`, both real dates from
-Orca.
+(`member_number`, `fee_start_date`, `fee_stop_date`, `active`, `sub`,
+`workplace_executive_committee_sub`), not full member identity. `active` is mirrored
+into `members.active` but no bank-system logic reads it — the fee-liability window is
+`fee_start_date` .. `fee_stop_date`, both real dates from Orca.
+
+## Workplace-Scoped Payment History
+
+`workplace_executive_committee_sub` (see `db-design.md` `members` section) lets a
+workplace rep see payment history/missed-payments for only their own workplace's
+members, without being an admin (`list-transactions`/`payment-history`) and without
+bank-system calling back into Orca per request. Orca sends this field on
+`/sync/bank/members`, and the daily sync job upserts it into
+`members.workplace_executive_committee_sub` same as every other member field.
+
+Three routes carry the **`view-workplace-payment-history`** role — a *capability* check
+only, deliberately as weak as that sounds (see below). Two are workplace-only routes
+gated by `RequireRole`; the third, `GET /payments/{member_number}/history`, additionally
+accepts `payment-history` via `RequireAnyRole` and does its own extra check when only
+the weaker role matched — see "Payment History Endpoint" above for that one, it's not
+repeated here:
+
+- **`GET /payments/workplace/{year}/{month}/missing`** / **`GET
+  /payments/workplace/{year}/missing`** — same `{member_number,
+  total_missed_months}[]` shape as `MissingPayments`/`MissingPaymentsInYear`, filtered
+  to the caller's workplace(s).
+
+(A bulk `GET /payments/workplace/history` — every payment for every member in a rep's
+workplace, not just who's missing — was built alongside these but removed: missed
+payments is the only workplace-rep view actually needed for now. Its
+`GetPaymentHistoryForWorkplace` query and `WorkplacePaymentHistory` handler are gone;
+re-add both if that view comes back into scope.)
+
+**Scoping mechanism:** live, not a token claim. `handler.RequireRole`/`RequireAnyRole`
+attach both the verified `Claims` *and* the raw bearer token string to the request
+context (same as `RequireAuth` does for `/payments/me/history`), and every workplace
+handler calls `keycloak.Provider.UserGroupIDs(ctx, token)` — forwarding the caller's own
+token to Keycloak's **Account REST API** (`GET {issuer}/account/groups`), which is
+self-scoped: it answers only for whoever's token it is, so no elevated privilege is
+needed on bank-system's side at all. This mirrors Orca's own
+`KeycloakProvider::get_own_groups` (`orca/src/server/oid/keycloak.rs`,
+ictunion/main-system-public) exactly. The resulting group IDs pass straight through to
+SQL as `WHERE members.workplace_executive_committee_sub =
+ANY(sqlc.arg(workplace_subs)::uuid[])` (`ListMembersMissingPaymentForWorkplace`,
+`ListMembersMissingPaymentInYearForWorkplace` in `queries.sql`). No lookup of "which of
+my groups is a workplace" needed — a rep's other, unrelated Keycloak groups just match
+zero members and are silently harmless. This is the same RBAC-for-capability /
+claim-for-scope split `/payments/me/history` already uses with `sub`: the role says *you
+may call this route type*, the live lookup
+says *which rows come back*.
+
+**Why live instead of a token claim:** Keycloak's stock Group Membership mapper only
+emits a group's *path*/*name*, never its internal UUID — getting the UUID onto the token
+any other way needs a script mapper or custom SPI, ruled out as non-standard. Calling
+the Account API instead keeps `workplace_executive_committee_sub` as a plain Keycloak
+group UUID with zero extra Keycloak configuration — no protocol mapper, no second
+client, no secret; just the caller's own token, forwarded. **The one thing to confirm,
+Keycloak-side:** the `view-groups` role on the `account` client, on by default via
+`default-roles-<realm>` in a stock realm (see `frontend-auth.md` "Workplace-scoped
+payments"). Without it, `UserGroupIDs` errors rather than silently returning nothing —
+see `GET /debug/whoami` (dev-only) for inspecting what's actually on a token while
+troubleshooting.
 
 Alongside each `members` upsert, the sync manages a **default payment identifier** in
 `member_payment_identifiers`: `variable_symbol = member_number`, `valid_from =
@@ -104,7 +161,7 @@ omitted means "don't filter on it", via `(sqlc.narg(x)::T IS NULL OR col = x)`):
 |---|---|---|
 | `assigned` | `true` / `false` | `member_number IS [NOT] NULL` — `false` is the unassigned worklist |
 | `direction` | `incoming` / `outgoing` | |
-| `category` | `membership_fee` / `salary` / `other_income` / `other_expense` | |
+| `category` | any `transaction_categories.name` | not validated against the table — an unknown value just matches nothing |
 | `matched_by` | `variable_symbol` / `manual` / `amount_heuristic` | audit auto- vs hand-matched |
 | `member_number` | int | one member's transactions |
 | `from`, `to` | `YYYY-MM-DD` | inclusive range on `transaction_date` |
@@ -130,6 +187,38 @@ amount range, currency, `bank_account_id`, "covers month X" (join `payment_cover
 list-item shape plus `covered_months: [{year, month}]` from `payment_coverage`. Backs the
 edit dialog.
 
+### Transaction Category Summary (`GET /transactions/summary`)
+
+The budgeting pie charts: total spent/received per category, e.g. "total spent on
+salaries this year", never individual transactions. Gated by the **`view-budget`**
+role, deliberately not `list-transactions` — this is meant to end up on every member's
+Keycloak account eventually (a members-facing budgeting page is planned as a thin
+wrapper around the same FE component and this same endpoint), whereas
+`list-transactions` exposes counterparty names and stays admin-only. The response never
+carries `member_number`, counterparty, or any other per-transaction field — only
+`category`/`currency`/`total` — so widening who can call it later is safe by
+construction, not by convention.
+
+Optional `from`/`to` (`YYYY-MM-DD`, inclusive), same convention as the transaction
+browser above; the FE derives these from Year/Month selectors rather than exposing raw
+date inputs. Response:
+
+```json
+{
+  "incoming": [ {"category": "membership_fee", "currency": "CZK", "total": "48200.00"}, ... ],
+  "outgoing": [ {"category": "salary", "currency": "CZK", "total": "112000.00"}, ... ]
+}
+```
+
+One query, one round trip for both pie charts (`GROUP BY direction, category, currency`
+in `GetTransactionCategorySummary`, split into the two arrays in the handler) rather than
+two separate calls. `total` is `SUM(ABS(amount))` — always a positive spend/receipt
+figure regardless of how `raw_transactions.amount` signs incoming vs outgoing. Grouped by
+`currency` too (not just category) since `bank_accounts`/`raw_transactions` don't
+constrain every account to the same currency — summing across currencies would be
+silently wrong; in practice this repo currently has a single CZK account so every row
+comes back with the same currency, but the query doesn't assume that.
+
 ## Manual Assignment & Coverage
 
 The admin edits an auto-processed transaction: attach it to the right member, and (for a
@@ -144,17 +233,26 @@ Jan–Mar"). Gated by the **`manage-transactions`** role — separate from
 { "member_number": 42, "category": "membership_fee", "covers": [ {"year":2026,"month":1}, {"year":2026,"month":2} ] }
 ```
 
-- `category` optional, default `membership_fee`; must be one of the four categories.
-- One DB transaction: set `member_number` + `category`, `matched_by = 'manual'`; delete
-  this transaction's `payment_coverage` rows; re-insert one per `covers` entry.
-- `covers` only allowed for `category = membership_fee` (else `400`). When omitted/empty
-  for a membership fee, it defaults to the transaction's own year/month — same as the
+- `member_number` is **optional** — plenty of transactions (other_income/other_expense,
+  even some salary rows) aren't tied to any member. Omit it to make this a category-only
+  edit: `{"category": "other_expense"}` alone is a valid request. When given, it's
+  validated (`400` if not a real member) and `matched_by` is set to `'manual'`; omitted,
+  `member_number` and `matched_by` are both cleared to `NULL`.
+- `category` optional, default `membership_fee`; must name an existing `transaction_categories`
+  row (`400` otherwise — see "Transaction Categories" below).
+- One DB transaction: set `member_number` + `category` + `matched_by`; delete this
+  transaction's `payment_coverage` rows; re-insert one per `covers` entry.
+- `covers`/coverage rows only apply for `category = membership_fee` **with** a
+  `member_number` (`payment_coverage.member_number` is `NOT NULL`, so there's nothing to
+  attach a coverage row to otherwise) — `400` if `covers` is given for a different
+  category, or for `membership_fee` with no `member_number`. When omitted/empty for a
+  covered membership fee, it defaults to the transaction's own year/month — same as the
   automatic single-month case.
 - A requested month already covered by a **different** transaction (the
   `payment_coverage` `UNIQUE (member_number, covers_year, covers_month)` constraint) →
   `409` with `{conflicts: [{year, month}]}`, whole write rolled back. The admin clears
   the other transaction's coverage first.
-- `404` if the transaction doesn't exist, `400` if `member_number` isn't a real member.
+- `404` if the transaction doesn't exist.
 - Success returns the updated detail (`GET /transactions/{id}` shape).
 
 **`DELETE /transactions/{id}/assignment`**
@@ -166,6 +264,24 @@ re-processing would be a separate action. `204` on success. One DB transaction.
 
 Liability-window checks are deliberately **not** enforced on `covers` — manual override
 (including back-dating a lump sum) is the whole point of this endpoint.
+
+## Transaction Categories
+
+`transaction_categories(name TEXT PRIMARY KEY, is_mandatory BOOLEAN, created_at)` backs the
+`category` column (`processed_transactions.category` has an FK to it, added in
+`migrations/20260910000001_add_transaction_categories.sql`). `membership_fee`, `salary`,
+`other_income`, `other_expense` are seeded by that migration with `is_mandatory = true` —
+they're hardcoded elsewhere too (the default/fallback categories in
+`internal/processing/processing.go` and `internal/handler/transactions.go`), so deleting
+them isn't just a data question, it'd break processing. Everything else an admin adds is
+`is_mandatory = false` and freely deletable.
+
+- **`GET /categories`** (`list-transactions` role) — every category, mandatory ones first.
+- **`POST /categories`** (`manage-transactions` role) — `{name}`, always creates
+  `is_mandatory = false`. `409` on a duplicate name.
+- **`DELETE /categories/{name}`** (`manage-transactions` role) — `404` if the name doesn't
+  exist, `400` if `is_mandatory`, `409` if any `processed_transactions` row still
+  references it (the FK), else `204`.
 
 ## Payment History Endpoint (`/payments/<member_number>/history`)
 
@@ -205,14 +321,24 @@ Same underlying table (`payment_coverage`) also backs missed-payment detection b
 one is "which months have a row" (history), the other is "which expected months don't"
 (missing).
 
-**Two routes, one handler.** `GET /payments/{member_number}/history` is the admin route —
-requires the `payment-history` Keycloak client role (Orca admins, logged in via Orca's
-own client). `GET /payments/me/history` is the self-service route — requires only a
-valid token (any Keycloak client bank-system accepts, see `docs/db-design.md` `members`
-`sub` column), no role check; it resolves `member_number` from the token's `sub` via
-`members.sub`, then delegates straight into the same `PaymentHistory` handler so both
-routes are guaranteed to return an identical response shape for the same member — no
-separate response-building logic to keep in sync.
+**Two routes, three access paths, one render function.** `GET
+/payments/{member_number}/history` is gated by `RequireAnyRole(payment-history,
+view-workplace-payment-history)`, then branches inside `handler.PaymentHistory` itself:
+
+- Holding **`payment-history`** (Orca admins) — any member, no further check.
+- Holding only **`view-workplace-payment-history`** (a workplace rep) — only if that member's
+  `workplace_executive_committee_sub` matches one of the caller's own Keycloak groups
+  (`memberInCallerWorkplace`, same scoping the `/payments/workplace/.../missing` routes
+  use — see "Workplace-Scoped Payment History" below), else `403`.
+
+`GET /payments/me/history` is the third path — self-service, requires only a valid
+token (any Keycloak client bank-system accepts, see `docs/db-design.md` `members`
+`sub` column), no role check at all. It resolves `member_number` from the token's
+`sub` via `members.sub`, then renders the same way `PaymentHistory` does
+(`writePaymentHistory`) — bypassing `PaymentHistory`'s own role/workplace branch
+entirely, since a sub match is its own, stronger authorization regardless of which
+roles (if any) that token happens to carry. All three paths funnel into the same
+render function so the response shape can't drift between them.
 
 ## Missed Payment Detection
 

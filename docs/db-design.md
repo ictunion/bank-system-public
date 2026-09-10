@@ -165,6 +165,14 @@ kept so a logged-in user's JWT (see `internal/keycloak`) can be joined to their
 `member_number` row. Nullable and unique: null until the member has a Keycloak account,
 unique because one Keycloak account maps to at most one member.
 
+`workplace_executive_committee_sub` (nullable `UUID`, **not** unique) is the Keycloak
+group ID of the member's workplace executive committee — synced from Orca the same way
+as `sub`, but identifies a Keycloak *group* (many members share one), not an individual
+account. Exists so a workplace rep's payment-history view can be scoped to just their
+own workplace's members by matching this column against the group IDs on the rep's own
+token, entirely within bank-system's own DB — no live call back to Orca per request. See
+`logic-design.md` "Workplace-Scoped Payment History".
+
 **Sync from Orca:** daily pull, mirroring the Fio sync job shape (idempotent upsert into
 `members` keyed on `member_number`) rather than Orca pushing new/leaving-member events.
 Push would need a webhook endpoint on this side (new auth surface) plus a fallback
@@ -201,6 +209,7 @@ CREATE TABLE members (
     fee_stop_date      DATE,          -- when fee liability ended (left / made exempt); null = still liable
     active             BOOLEAN NOT NULL DEFAULT true,  -- synced from Orca, not used by any logic yet (see logic-design.md)
     sub                UUID UNIQUE,   -- Keycloak account UUID; null until member has a Keycloak account
+    workplace_executive_committee_sub UUID,  -- Keycloak group UUID of the member's workplace reps group; null if unassigned
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -227,7 +236,7 @@ CREATE TABLE processed_transactions (
     raw_transaction_id  BIGINT NOT NULL UNIQUE REFERENCES raw_transactions(id),
 
     member_number        INTEGER REFERENCES members(member_number),   -- null = unmatched
-    category            TEXT NOT NULL,                       -- 'membership_fee','salary','other_income','other_expense', etc.
+    category            TEXT NOT NULL REFERENCES transaction_categories(name),
     direction            TEXT NOT NULL CHECK (direction IN ('incoming','outgoing')),
 
     matched_by           TEXT,        -- 'variable_symbol' | 'manual' | 'amount_heuristic'
@@ -239,6 +248,12 @@ CREATE TABLE processed_transactions (
 CREATE INDEX idx_processed_member ON processed_transactions (member_number);
 CREATE INDEX idx_processed_category ON processed_transactions (category);
 ```
+
+`category` values live in their own `transaction_categories` table (added in
+`migrations/20260910000001_add_transaction_categories.sql`, `name TEXT PRIMARY KEY,
+is_mandatory BOOLEAN`) instead of being a free-standing enum baked into this column — see
+logic-design.md "Transaction Categories" for the mandatory-vs-custom split and the
+`/categories` API.
 
 Example query — budgeting dashboard (no per-member month semantics needed here):
 

@@ -12,6 +12,7 @@
 package keycloak
 
 import (
+	"context"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
@@ -76,6 +77,31 @@ const (
 	// (Fio-specific, write-capable) or RoleListTransactions (unrelated data) —
 	// its own role, same as the other distinct admin views.
 	RoleViewEventLogs Role = "view-event-logs"
+
+	// RoleViewBudget gates GET /transactions/summary (see
+	// handler.TransactionCategorySummary): totals grouped by category and
+	// direction, never individual transactions or counterparty names — meant
+	// to end up on every member's Keycloak account, not just admins, unlike
+	// RoleListTransactions which exposes per-transaction detail. Kept
+	// separate from RolePaymentHistory (member-specific payment history) and
+	// RoleListTransactions (admin transaction browser) since this is
+	// intentionally the widest-held, least-sensitive of the three.
+	RoleViewBudget Role = "view-budget"
+
+	// RoleViewWorkplacePaymentHistory gates the workplace-rep payment routes:
+	//   GET /payments/workplace/{year}/{month}/missing
+	//   GET /payments/workplace/{year}/missing
+	// (see handler.WorkplaceMissingPayments / handler.WorkplaceMissingPaymentsInYear)
+	// — the workplace-rep counterpart to RolePaymentHistory's admin-wide view.
+	// Also accepted (via RequireAnyRole, alongside RolePaymentHistory) on
+	// GET /payments/{member_number}/history — see handler.PaymentHistory.
+	// Role only grants the
+	// *capability* to call these routes; the actual member scoping comes from
+	// a live Provider.UserGroupIDs lookup against Keycloak's Account API
+	// (matched against members.workplace_executive_committee_sub), same as
+	// how /payments/me/history scopes by the token's sub rather than a role.
+	// See docs/logic-design.md "Workplace-Scoped Payment History".
+	RoleViewWorkplacePaymentHistory Role = "view-workplace-payment-history"
 )
 
 // Claims is the subset of a Keycloak access token we care about.
@@ -202,6 +228,30 @@ func (p *Provider) Verify(tokenString string) (*Claims, error) {
 	return claims, nil
 }
 
+// VerifyRaw does the same signature/issuer/audience validation as Verify,
+// but decodes into a raw jwt.MapClaims instead of our own narrow Claims
+// struct — so it surfaces every claim actually present on the token,
+// including ones Claims doesn't declare a field for. Debug-only: backs
+// handler.WhoAmI, for checking what a given Keycloak mapper configuration
+// actually puts on a token without needing to hand-decode it at jwt.io.
+func (p *Provider) VerifyRaw(tokenString string) (jwt.MapClaims, error) {
+	claims := jwt.MapClaims{}
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (any, error) {
+		return p.key, nil
+	},
+		jwt.WithValidMethods([]string{"RS256"}),
+		jwt.WithIssuer(p.issuer),
+		jwt.WithAudience(p.clientID),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("verifying token: %w", err)
+	}
+	if !token.Valid {
+		return nil, fmt.Errorf("invalid token")
+	}
+	return claims, nil
+}
+
 // Authorize verifies the token and additionally requires it to carry the
 // given role for this Provider's client — the Go equivalent of Orca's
 // `OidProvider::require_role`.
@@ -214,4 +264,62 @@ func (p *Provider) Authorize(tokenString string, role Role) (*Claims, error) {
 		return nil, fmt.Errorf("token is missing role %q", role)
 	}
 	return claims, nil
+}
+
+// HasRole reports whether claims carries role for this Provider's own
+// client. A thin wrapper around Claims.HasRole so callers outside this
+// package — which don't have access to the unexported clientID — can do
+// their own finer-grained role checks after RequireAnyRole has already
+// established the caller holds at least one acceptable role (see
+// handler.PaymentHistory, which branches on this to decide whether the
+// caller gets the admin-wide view or must be scoped to their own
+// workplace).
+func (p *Provider) HasRole(claims *Claims, role Role) bool {
+	return claims.HasRole(p.clientID, role)
+}
+
+// UserGroupIDs looks up the Keycloak group IDs (UUIDs) the bearer of
+// tokenString currently belongs to, via Keycloak's **Account** REST API
+// (`GET {issuer}/account/groups`) — mirrors Orca's own
+// `KeycloakProvider::get_own_groups` (orca/src/server/oid/keycloak.rs in
+// ictunion/main-system-public). Deliberately not the Admin API: the Account
+// API is self-scoped (it answers only for whoever's token this is, so it
+// just needs the caller's own already-verified bearer token forwarded — no
+// service account, no separate confidential client, no client_credentials
+// setup) and needs only the `view-groups` role, which is on by default via
+// `default-roles-<realm>` in a stock Keycloak realm. This is also why it's
+// a live call rather than a token claim: Keycloak's stock Group Membership
+// *protocol mapper* only ever exposes a group's name/path, never its ID,
+// and getting the ID onto the token any other way needs a script mapper —
+// ruled out as non-standard. See docs/logic-design.md "Workplace-Scoped
+// Payment History".
+func (p *Provider) UserGroupIDs(requestContext context.Context, tokenString string) ([]string, error) {
+	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, p.issuer+"/account/groups", nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Authorization", "Bearer "+tokenString)
+	request.Header.Set("Accept", "application/json")
+
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("fetching keycloak account groups: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetching keycloak account groups: unexpected status %d", response.StatusCode)
+	}
+
+	var groups []struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&groups); err != nil {
+		return nil, fmt.Errorf("decoding keycloak account groups: %w", err)
+	}
+
+	ids := make([]string, len(groups))
+	for i, g := range groups {
+		ids[i] = g.ID
+	}
+	return ids, nil
 }

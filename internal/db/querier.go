@@ -11,14 +11,21 @@ import (
 )
 
 type Querier interface {
-	// Manual member match (see docs/logic-design.md "Manual Assignment & Coverage").
-	// Coverage rows are managed separately by the caller in the same DB transaction.
+	// Manual categorization, with or without a member match (see
+	// docs/logic-design.md "Manual Assignment & Coverage") — member_number and
+	// matched_by are both nullable so a category-only edit (no member) just
+	// passes both as NULL. Coverage rows are managed separately by the caller in
+	// the same DB transaction.
 	AssignTransactionToMember(ctx context.Context, arg AssignTransactionToMemberParams) (int64, error)
+	CategoryExists(ctx context.Context, name string) (bool, error)
 	// fio_token is encrypted at rest via pgcrypto (pgp_sym_encrypt) using
 	// encryption_key (BANK_TOKEN_ENCRYPTION_KEY env var) — never stored in the DB
 	// itself. RETURNING list explicitly excludes fio_token_encrypted so the
 	// ciphertext (and a fortiori the token) is never echoed back to the caller.
 	CreateBankAccount(ctx context.Context, arg CreateBankAccountParams) (CreateBankAccountRow, error)
+	// is_mandatory is never set true here — only the four seeded in
+	// migrations/20260910000001_add_transaction_categories.sql are mandatory.
+	CreateCategory(ctx context.Context, name string) (TransactionCategory, error)
 	CreatePaymentCoverage(ctx context.Context, arg CreatePaymentCoverageParams) error
 	CreateProcessedTransaction(ctx context.Context, arg CreateProcessedTransactionParams) (ProcessedTransaction, error)
 	CreateSyncFioRun(ctx context.Context, bankAccountID int32) (SyncFioRun, error)
@@ -31,6 +38,12 @@ type Querier interface {
 	// :execrows lets handler.DeleteBankAccount tell "already gone" (0 rows) from
 	// "deleted just now" (1 row) and return 404 vs 204 accordingly.
 	DeleteBankAccount(ctx context.Context, id int32) (int64, error)
+	// The is_mandatory=false guard means a mandatory category and a missing one
+	// both come back as 0 rows affected — the caller (handler.DeleteCategory)
+	// checks GetCategory first to tell those two cases apart. A category still
+	// referenced by processed_transactions.category fails this with a foreign
+	// key violation instead (see processed_transactions_category_fkey).
+	DeleteCategory(ctx context.Context, name string) (int64, error)
 	DeleteCoverageForTransaction(ctx context.Context, processedTransactionID int64) error
 	// Seeds the auto-generated "default" payment identifier for a member: variable
 	// symbol == member_number, valid from their fee_start_date. Runs on every Orca
@@ -51,9 +64,22 @@ type Querier interface {
 	// syncjob.SyncOneAccount) — single-row counterpart of
 	// ListBankAccountsWithToken, same never-expose-over-HTTP caveat.
 	GetBankAccountWithToken(ctx context.Context, arg GetBankAccountWithTokenParams) (GetBankAccountWithTokenRow, error)
+	GetCategory(ctx context.Context, name string) (TransactionCategory, error)
 	GetMaxFioTransactionID(ctx context.Context, bankAccountID int32) (int64, error)
 	GetMemberNumberBySub(ctx context.Context, sub pgtype.UUID) (int32, error)
+	// Backs the workplace-rep access path on GET /payments/{member_number}/history
+	// (see docs/logic-design.md "Payment History Endpoint"): a caller without the
+	// admin payment-history role can still see this member if the returned value
+	// is non-null and matches one of the caller's own Keycloak groups.
+	GetMemberWorkplaceSub(ctx context.Context, memberNumber int32) (pgtype.UUID, error)
 	GetPaymentHistory(ctx context.Context, memberNumber int32) ([]GetPaymentHistoryRow, error)
+	// Budgeting view (see docs/logic-design.md "Transaction Category Summary"):
+	// totals grouped by direction/category/currency only — no member_number, no
+	// counterparty, no per-transaction rows, so this is safe for the
+	// widely-held view-budget role (unlike ListTransactions). SUM(ABS(amount))
+	// so an "outgoing" total reads as a positive spend figure rather than the
+	// signed value raw_transactions stores it as.
+	GetTransactionCategorySummary(ctx context.Context, arg GetTransactionCategorySummaryParams) ([]GetTransactionCategorySummaryRow, error)
 	// One row for the transaction browser's detail / edit view — same columns as
 	// ListTransactions minus the window count. Covered months come from
 	// ListCoverageForTransaction.
@@ -76,6 +102,7 @@ type Querier interface {
 	// parameter via pgp_sym_decrypt, never interpolated into SQL text. fio_token
 	// is NULL for any account not yet backfilled with a token.
 	ListBankAccountsWithToken(ctx context.Context, encryptionKey string) ([]ListBankAccountsWithTokenRow, error)
+	ListCategories(ctx context.Context) ([]TransactionCategory, error)
 	ListCoverageForTransaction(ctx context.Context, processedTransactionID int64) ([]ListCoverageForTransactionRow, error)
 	// Admin event log (GET /event-logs): sync_fio_runs and sync_orca_runs merged
 	// into one feed, newest first. No filters — just a simple paged log, same
@@ -94,12 +121,19 @@ type Querier interface {
 	// Rows are ordered by it descending ("top offenders first"), member_number
 	// breaking ties. See docs/logic-design.md "Missed Payment Detection".
 	ListMembersMissingPayment(ctx context.Context, arg ListMembersMissingPaymentParams) ([]MemberArrear, error)
+	// Workplace-rep counterpart to ListMembersMissingPayment — same shape and
+	// logic, scoped to members in any of the caller's workplace groups instead of
+	// every member. See that query's comment for the liability-window logic.
+	ListMembersMissingPaymentForWorkplace(ctx context.Context, arg ListMembersMissingPaymentForWorkplaceParams) ([]MemberArrear, error)
 	// Members who missed at least one liable month during the given calendar year —
 	// the whole-year counterpart of ListMembersMissingPayment. Same
 	// {member_number, total_missed_months} shape and ordering; total_missed_months
 	// is still the full-liability-window arrears count (member_arrears view), not
 	// scoped to the year. See docs/logic-design.md "Missed Payment Detection".
 	ListMembersMissingPaymentInYear(ctx context.Context, year int32) ([]MemberArrear, error)
+	// Workplace-rep counterpart to ListMembersMissingPaymentInYear — same shape
+	// and logic, scoped to members in any of the caller's workplace groups.
+	ListMembersMissingPaymentInYearForWorkplace(ctx context.Context, arg ListMembersMissingPaymentInYearForWorkplaceParams) ([]MemberArrear, error)
 	// Admin transaction browser: processed_transactions enriched with their
 	// raw_transactions row, with optional filters. Every filter arg is nullable —
 	// NULL / omitted means "don't filter on this". total_count is the full match

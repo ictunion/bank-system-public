@@ -1,11 +1,9 @@
 # Orca `/sync/bank/members` — API contract
 
-Spec for the endpoint Orca needs to implement, so bank-system's daily member
-sync job (not yet built — this doc is the contract to build both sides
-against) can pull payment-relevant member data. See [logic-design.md](logic-design.md)
-"Orca Member Sync" and [db-design.md](db-design.md) `members` section for the
-design decisions behind this (pull not push, why only these three fields,
-why no `variable_symbol` here).
+Spec for the endpoint Orca implements, so bank-system's daily member sync job can pull
+payment-relevant member data. See [logic-design.md](logic-design.md) "Orca Member Sync"
+and [db-design.md](db-design.md) `members` section for the design decisions behind this
+(pull not push, why only these fields, why no `variable_symbol` here).
 
 ## Request
 
@@ -32,21 +30,24 @@ Authorization: Bearer <ORCA_SYNC_TOKEN>
       "fee_start_date": "2024-01-15",
       "fee_stop_date": null,
       "active": true,
-      "sub": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+      "sub": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "workplace_executive_committee_sub": "9c858901-8a57-4791-81fe-4c455b099bc9"
     },
     {
       "member_number": 43,
       "fee_start_date": null,
       "fee_stop_date": null,
       "active": true,
-      "sub": null
+      "sub": null,
+      "workplace_executive_committee_sub": null
     },
     {
       "member_number": 12,
       "fee_start_date": "2021-03-01",
       "fee_stop_date": "2024-11-30",
       "active": false,
-      "sub": null
+      "sub": null,
+      "workplace_executive_committee_sub": null
     }
   ]
 }
@@ -62,6 +63,7 @@ later without a breaking shape change.
 | `fee_stop_date` | string, `YYYY-MM-DD` | yes | Date the member's fee liability *ended* (they left, or were made fee-exempt). `null` while liability is still open. bank-system uses it as the upper bound of the liability window: missed-payment detection stops expecting payments after this date, and it becomes `valid_to` on the member's default payment identifier so post-departure transactions no longer match as membership fees. Orca must send the real historical date, not the day the member's status changed in Orca — otherwise a member who left years ago looks liable up to today. |
 | `active` | boolean | no | Whether the member is currently active. bank-system does not delete rows on sync — an inactive/departed member stays in `members` with `active = false` so payment history stays intact. Mirrored into `members.active` but **not** currently used by any bank-system logic (fee-window logic keys on `fee_start_date`/`fee_stop_date`); kept for FE display and future use. |
 | `sub` | string, UUID | yes | The member's Keycloak `sub` claim (their Keycloak account's UUID) — lets bank-system join a logged-in user's JWT to their `member_number` row. `null` if the member has no Keycloak account yet. Distinct from Orca's internal `member_id` — not exposed here, see below. |
+| `workplace_executive_committee_sub` | string, UUID | yes | The Keycloak **group** ID of the member's workplace executive committee (the "Workplace N reps" group in Keycloak) — not a user `sub` despite the name, same ID-space idea as `sub` above but for a group rather than an individual account. Lets a workplace rep's own token (which carries the Keycloak groups they belong to) be matched against this to scope a rep's payment-history view to just their own workplace's members, with no live call back to Orca. `null` if the member isn't currently assigned to a tracked workplace. |
 
 Deliberately excluded: name, email, Orca's internal `member_id` (UUID), or
 any other identity field — Orca stays the sole source of truth for member

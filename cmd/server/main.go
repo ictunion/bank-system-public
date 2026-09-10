@@ -101,6 +101,13 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 
+	if appConfig.Debug {
+		// Dumps the caller's own token claims as-is — a setup/troubleshooting
+		// aid (see docs/frontend-auth.md "Workplace-scoped payments"), not
+		// meant to stay reachable outside local dev.
+		api.HandleFunc("GET /debug/whoami", handler.WhoAmI(keycloakProvider))
+	}
+
 	api.HandleFunc("GET /account", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.ListBankAccounts(db.New(pool))))
 	api.HandleFunc("POST /account", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.CreateBankAccount(db.New(pool), appConfig.BankTokenEncryptionKey)))
 	api.HandleFunc("PATCH /account/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.UpdateBankAccount(db.New(pool), appConfig.BankTokenEncryptionKey)))
@@ -110,13 +117,20 @@ func main() {
 	api.HandleFunc("GET /event-logs", handler.RequireRole(keycloakProvider, keycloak.RoleViewEventLogs, handler.ListEventLogs(db.New(pool))))
 
 	api.HandleFunc("GET /transactions", handler.RequireRole(keycloakProvider, keycloak.RoleListTransactions, handler.ListTransactions(db.New(pool))))
+	api.HandleFunc("GET /transactions/summary", handler.RequireRole(keycloakProvider, keycloak.RoleViewBudget, handler.CategorySummary(db.New(pool))))
 	api.HandleFunc("GET /transactions/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleListTransactions, handler.GetTransaction(db.New(pool))))
 	api.HandleFunc("PUT /transactions/{id}/assignment", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.AssignTransaction(pool)))
 	api.HandleFunc("DELETE /transactions/{id}/assignment", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.UnassignTransaction(pool)))
-	api.HandleFunc("GET /payments/{member_number}/history", handler.RequireRole(keycloakProvider, keycloak.RolePaymentHistory, handler.PaymentHistory(db.New(pool))))
+
+	api.HandleFunc("GET /categories", handler.RequireRole(keycloakProvider, keycloak.RoleListTransactions, handler.ListCategories(db.New(pool))))
+	api.HandleFunc("POST /categories", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.CreateCategory(db.New(pool))))
+	api.HandleFunc("DELETE /categories/{name}", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.DeleteCategory(db.New(pool))))
+	api.HandleFunc("GET /payments/{member_number}/history", handler.RequireAnyRole(keycloakProvider, []keycloak.Role{keycloak.RolePaymentHistory, keycloak.RoleViewWorkplacePaymentHistory}, handler.PaymentHistory(keycloakProvider, db.New(pool))))
 	api.HandleFunc("GET /payments/me/history", handler.RequireAuth(keycloakProvider, handler.MyPaymentHistory(db.New(pool))))
 	api.HandleFunc("GET /payments/{year}/{month}/missing", handler.RequireRole(keycloakProvider, keycloak.RolePaymentHistory, handler.MissingPayments(db.New(pool))))
 	api.HandleFunc("GET /payments/{year}/missing", handler.RequireRole(keycloakProvider, keycloak.RolePaymentHistory, handler.MissingPaymentsInYear(db.New(pool))))
+	api.HandleFunc("GET /payments/workplace/{year}/{month}/missing", handler.RequireRole(keycloakProvider, keycloak.RoleViewWorkplacePaymentHistory, handler.WorkplaceMissingPayments(keycloakProvider, db.New(pool))))
+	api.HandleFunc("GET /payments/workplace/{year}/missing", handler.RequireRole(keycloakProvider, keycloak.RoleViewWorkplacePaymentHistory, handler.WorkplaceMissingPaymentsInYear(keycloakProvider, db.New(pool))))
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/", http.StripPrefix("/api", api))

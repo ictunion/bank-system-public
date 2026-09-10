@@ -69,15 +69,49 @@ mapper → By configuration → Audience**
 Verify: decode an access token (jwt.io) and confirm `aud` contains
 `bank-system`, and `resource_access.bank-system.roles` lists the user's roles.
 
+### Workplace-scoped payments — no extra client, no mapper
+
+The workplace-rep payment routes (the two `/payments/workplace/.../missing` routes,
+plus the workplace-rep path through `GET /payments/{member_number}/history` — see
+`logic-design.md` "Workplace-Scoped Payment History") authorize by matching the
+caller's Keycloak **group IDs** against
+`members.workplace_executive_committee_sub`. This is looked up **live**, per request,
+via Keycloak's **Account** REST API (`internal/keycloak.Provider.UserGroupIDs`, `GET
+{issuer}/account/groups`) — the same approach Orca itself uses
+(`KeycloakProvider::get_own_groups` in `orca/src/server/oid/keycloak.rs`,
+ictunion/main-system-public): forward the caller's own already-verified bearer token:
+the Account API is self-scoped, answering only for whoever's token it is, so this needs
+**no service account, no second client, no secret**.
+
+Deliberately not a token claim, either: Keycloak's stock Group Membership *protocol
+mapper* only ever emits a group's *path*/*name*, never its internal UUID, and getting
+the UUID onto the token any other way needs a script mapper or custom SPI — ruled out
+as non-standard.
+
+The one thing to confirm: the caller's account needs the **`view-groups`** role on the
+`account` client, which is on by default in a stock Keycloak realm (part of
+`default-roles-<realm>`) — same as Orca relies on. Nothing to configure unless that's
+been changed in the `members` realm.
+
+Verify: `GET /debug/whoami` (only registered when `DEBUG=true` — see `cmd/server/main.go`)
+echoes back the caller's own raw token claims, useful during setup. To confirm the
+Account API call itself works, exercise `GET /payments/workplace/{year}/{month}/missing`
+as a rep and check for a `500` (Account API call failing — check server logs; likely
+`view-groups` missing) vs an empty-but-200 result (call succeeded, rep just isn't in the
+group you expected).
+
 ### Roles
 
-Client roles on `bank-system`: `payment-history`,
-`list-transactions`, `manage-transactions`, `manage-bank-accounts`, `view-event-logs` (see
-`internal/keycloak/keycloak.go`). Assign to the admin users who should reach
-those endpoints — `manage-transactions` is the write role for editing member
-matches / coverage and should be granted more narrowly than `list-transactions`.
-The SPA reads `resource_access["bank-system"].roles` from the token to show/hide
-admin actions; the backend independently enforces them.
+Client roles on `bank-system`: `payment-history`, `list-transactions`,
+`manage-transactions`, `manage-bank-accounts`, `view-event-logs`, `view-budget`,
+`view-workplace-payment-history` (see `internal/keycloak/keycloak.go`). Assign to the admin
+users who should reach those endpoints — `manage-transactions` is the write role for
+editing member matches / coverage and should be granted more narrowly than
+`list-transactions`. `view-workplace-payment-history` is different from the others: it's a
+capability check only — grant it to every workplace rep, since it's the live Keycloak
+group lookup above (not the role) that actually limits which members' data a given rep
+can see. The SPA reads `resource_access["bank-system"].roles` from the token to
+show/hide admin actions; the backend independently enforces them.
 
 ## Production hardening (nginx)
 

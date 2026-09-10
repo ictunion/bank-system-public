@@ -1,5 +1,6 @@
 import { type CSSProperties, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { categoryLabel, fetchCategories } from './api/categories'
 import { ApiError, errMessage } from './api/client'
 import { Overlay } from './Overlay'
 import {
@@ -17,12 +18,11 @@ const MONTH_NAMES = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ]
 
-const CATEGORIES: [Category, string][] = [
-  ['membership_fee', 'Membership fee'],
-  ['salary', 'Salary'],
-  ['other_income', 'Other income'],
-  ['other_expense', 'Other expense'],
-]
+// membership_fee is one of the four mandatory categories (see
+// docs/logic-design.md "Transaction Categories") — this specific name is
+// hardcoded on the backend too (internal/handler/transactions.go), not just
+// here, so it's safe to check for literally.
+const MEMBERSHIP_FEE = 'membership_fee'
 
 function monthOf(isoDate: string): MonthRef {
   const [y, m] = isoDate.split('-')
@@ -58,6 +58,8 @@ export function AssignDialog({
 function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: () => void }) {
   const qc = useQueryClient()
 
+  const categories = useQuery({ queryKey: ['categories'], queryFn: fetchCategories })
+
   const [memberNumber, setMemberNumber] = useState(detail.member_number?.toString() ?? '')
   const [category, setCategory] = useState<Category>(detail.category)
   const [months, setMonths] = useState<MonthRef[]>(
@@ -70,12 +72,15 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
     onClose()
   }
 
+  const hasMember = memberNumber.trim() !== ''
+  const coverable = category === MEMBERSHIP_FEE && hasMember
+
   const assign = useMutation({
     mutationFn: () =>
       assignTransaction(detail.id, {
-        member_number: Number(memberNumber),
+        member_number: hasMember ? Number(memberNumber) : undefined,
         category,
-        covers: category === 'membership_fee' ? months : undefined,
+        covers: coverable ? months : undefined,
       }),
     onSuccess: done,
   })
@@ -85,11 +90,13 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
     onSuccess: done,
   })
 
-  const memberValid = Number.isInteger(Number(memberNumber)) && Number(memberNumber) > 0
+  // Member # is optional — a lot of transactions (other_income/other_expense,
+  // even some salary rows) aren't tied to any member. Left blank, this is a
+  // category-only edit. Filled in, it must be a real positive number.
+  const memberValid = !hasMember || (Number.isInteger(Number(memberNumber)) && Number(memberNumber) > 0)
   const monthsValid =
-    category !== 'membership_fee' ||
-    (months.length > 0 &&
-      months.every((m) => m.month >= 1 && m.month <= 12 && m.year >= 2000))
+    !coverable ||
+    (months.length > 0 && months.every((m) => m.month >= 1 && m.month <= 12 && m.year >= 2000))
   const canSave = memberValid && monthsValid && !assign.isPending && !unassign.isPending
 
   const conflicts =
@@ -126,7 +133,7 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
       </div>
 
       <label style={field}>
-        Member #
+        Member # (optional)
         <input
           type="number"
           min="1"
@@ -139,16 +146,16 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
 
       <label style={field}>
         Category
-        <select value={category} onChange={(e) => setCategory(e.target.value as Category)}>
-          {CATEGORIES.map(([v, l]) => (
-            <option key={v} value={v}>
-              {l}
+        <select value={category} onChange={(e) => setCategory(e.target.value)}>
+          {(categories.data ?? []).map((c) => (
+            <option key={c.name} value={c.name}>
+              {categoryLabel(c.name)}
             </option>
           ))}
         </select>
       </label>
 
-      {category === 'membership_fee' && (
+      {coverable && (
         <fieldset style={{ border: '1px solid #ddd', borderRadius: 6, padding: '0.75rem' }}>
           <legend>Covers months</legend>
           {months.map((m, i) => (

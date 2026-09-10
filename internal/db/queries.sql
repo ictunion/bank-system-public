@@ -175,13 +175,14 @@ INSERT INTO raw_transactions (
 ON CONFLICT (bank_account_id, fio_transaction_id) DO NOTHING;
 
 -- name: UpsertMember :exec
-INSERT INTO members (member_number, fee_start_date, fee_stop_date, active, sub)
-VALUES (sqlc.arg(member_number), sqlc.narg(fee_start_date), sqlc.narg(fee_stop_date), sqlc.arg(active), sqlc.narg(sub))
+INSERT INTO members (member_number, fee_start_date, fee_stop_date, active, sub, workplace_executive_committee_sub)
+VALUES (sqlc.arg(member_number), sqlc.narg(fee_start_date), sqlc.narg(fee_stop_date), sqlc.arg(active), sqlc.narg(sub), sqlc.narg(workplace_executive_committee_sub))
 ON CONFLICT (member_number) DO UPDATE
 SET fee_start_date = EXCLUDED.fee_start_date,
     fee_stop_date = EXCLUDED.fee_stop_date,
     active = EXCLUDED.active,
-    sub = EXCLUDED.sub;
+    sub = EXCLUDED.sub,
+    workplace_executive_committee_sub = EXCLUDED.workplace_executive_committee_sub;
 
 -- name: EnsureDefaultPaymentIdentifier :exec
 -- Seeds the auto-generated "default" payment identifier for a member: variable
@@ -209,6 +210,13 @@ WHERE member_number = sqlc.arg(member_number)
 
 -- name: GetMemberNumberBySub :one
 SELECT member_number FROM members WHERE sub = sqlc.arg(sub);
+
+-- name: GetMemberWorkplaceSub :one
+-- Backs the workplace-rep access path on GET /payments/{member_number}/history
+-- (see docs/logic-design.md "Payment History Endpoint"): a caller without the
+-- admin payment-history role can still see this member if the returned value
+-- is non-null and matches one of the caller's own Keycloak groups.
+SELECT workplace_executive_committee_sub FROM members WHERE member_number = sqlc.arg(member_number);
 
 -- name: GetPaymentHistory :many
 SELECT pc.covers_year, pc.covers_month,
@@ -256,6 +264,55 @@ SELECT ma.member_number, ma.total_missed_months
 FROM member_arrears ma
 JOIN members m ON m.member_number = ma.member_number
 WHERE EXISTS (
+    SELECT 1
+    FROM generate_series(
+        greatest(
+            date_trunc('month', m.fee_start_date::timestamp),
+            make_date(sqlc.arg(year)::int, 1, 1)::timestamp
+        ),
+        least(
+            date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)::timestamp),
+            make_date(sqlc.arg(year)::int, 12, 1)::timestamp
+        ),
+        interval '1 month'
+    ) AS ym(month)
+    WHERE NOT EXISTS (
+        SELECT 1 FROM payment_coverage pc
+        WHERE pc.member_number = ma.member_number
+          AND pc.covers_year = EXTRACT(YEAR FROM ym.month)::int
+          AND pc.covers_month = EXTRACT(MONTH FROM ym.month)::int
+    )
+)
+ORDER BY ma.total_missed_months DESC, ma.member_number;
+
+-- name: ListMembersMissingPaymentForWorkplace :many
+-- Workplace-rep counterpart to ListMembersMissingPayment — same shape and
+-- logic, scoped to members in any of the caller's workplace groups instead of
+-- every member. See that query's comment for the liability-window logic.
+SELECT ma.member_number, ma.total_missed_months
+FROM member_arrears ma
+JOIN members m ON m.member_number = ma.member_number
+WHERE m.workplace_executive_committee_sub = ANY(sqlc.arg(workplace_subs)::uuid[])
+  AND date_trunc('month', m.fee_start_date::timestamp)
+        <= make_date(sqlc.arg(year)::int, sqlc.arg(month)::int, 1)::timestamp
+  AND make_date(sqlc.arg(year)::int, sqlc.arg(month)::int, 1)::timestamp
+        <= date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)::timestamp)
+  AND NOT EXISTS (
+      SELECT 1 FROM payment_coverage pc
+      WHERE pc.member_number = ma.member_number
+        AND pc.covers_year = sqlc.arg(year)::int
+        AND pc.covers_month = sqlc.arg(month)::int
+  )
+ORDER BY ma.total_missed_months DESC, ma.member_number;
+
+-- name: ListMembersMissingPaymentInYearForWorkplace :many
+-- Workplace-rep counterpart to ListMembersMissingPaymentInYear — same shape
+-- and logic, scoped to members in any of the caller's workplace groups.
+SELECT ma.member_number, ma.total_missed_months
+FROM member_arrears ma
+JOIN members m ON m.member_number = ma.member_number
+WHERE m.workplace_executive_committee_sub = ANY(sqlc.arg(workplace_subs)::uuid[])
+  AND EXISTS (
     SELECT 1
     FROM generate_series(
         greatest(
@@ -343,6 +400,25 @@ WHERE (sqlc.narg(assigned)::boolean IS NULL
 ORDER BY rt.transaction_date DESC, rt.id DESC
 LIMIT sqlc.arg(lim)::int OFFSET sqlc.arg(off)::int;
 
+-- name: GetTransactionCategorySummary :many
+-- Budgeting view (see docs/logic-design.md "Transaction Category Summary"):
+-- totals grouped by direction/category/currency only — no member_number, no
+-- counterparty, no per-transaction rows, so this is safe for the
+-- widely-held view-budget role (unlike ListTransactions). SUM(ABS(amount))
+-- so an "outgoing" total reads as a positive spend figure rather than the
+-- signed value raw_transactions stores it as.
+SELECT
+    pt.direction,
+    pt.category,
+    rt.currency,
+    COALESCE(SUM(ABS(rt.amount)), 0)::numeric AS total
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE (sqlc.narg(date_from)::date IS NULL OR rt.transaction_date >= sqlc.narg(date_from)::date)
+  AND (sqlc.narg(date_to)::date IS NULL OR rt.transaction_date <= sqlc.narg(date_to)::date)
+GROUP BY pt.direction, pt.category, rt.currency
+ORDER BY pt.direction, total DESC;
+
 -- name: FindMemberByVariableSymbol :one
 SELECT member_number FROM member_payment_identifiers
 WHERE variable_symbol = sqlc.arg(variable_symbol)
@@ -396,13 +472,39 @@ ORDER BY covers_year, covers_month;
 -- name: MemberExists :one
 SELECT EXISTS (SELECT 1 FROM members WHERE member_number = sqlc.arg(member_number)) AS exists;
 
+-- name: CategoryExists :one
+SELECT EXISTS (SELECT 1 FROM transaction_categories WHERE name = sqlc.arg(name)) AS exists;
+
+-- name: ListCategories :many
+SELECT * FROM transaction_categories ORDER BY is_mandatory DESC, name;
+
+-- name: CreateCategory :one
+-- is_mandatory is never set true here — only the four seeded in
+-- migrations/20260910000001_add_transaction_categories.sql are mandatory.
+INSERT INTO transaction_categories (name, is_mandatory) VALUES (sqlc.arg(name), false)
+RETURNING *;
+
+-- name: DeleteCategory :execrows
+-- The is_mandatory=false guard means a mandatory category and a missing one
+-- both come back as 0 rows affected — the caller (handler.DeleteCategory)
+-- checks GetCategory first to tell those two cases apart. A category still
+-- referenced by processed_transactions.category fails this with a foreign
+-- key violation instead (see processed_transactions_category_fkey).
+DELETE FROM transaction_categories WHERE name = sqlc.arg(name) AND is_mandatory = false;
+
+-- name: GetCategory :one
+SELECT * FROM transaction_categories WHERE name = sqlc.arg(name);
+
 -- name: AssignTransactionToMember :one
--- Manual member match (see docs/logic-design.md "Manual Assignment & Coverage").
--- Coverage rows are managed separately by the caller in the same DB transaction.
+-- Manual categorization, with or without a member match (see
+-- docs/logic-design.md "Manual Assignment & Coverage") — member_number and
+-- matched_by are both nullable so a category-only edit (no member) just
+-- passes both as NULL. Coverage rows are managed separately by the caller in
+-- the same DB transaction.
 UPDATE processed_transactions
 SET member_number = sqlc.arg(member_number),
     category = sqlc.arg(category),
-    matched_by = 'manual'
+    matched_by = sqlc.narg(matched_by)
 WHERE id = sqlc.arg(id)
 RETURNING id;
 

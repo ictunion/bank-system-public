@@ -16,24 +16,44 @@ const assignTransactionToMember = `-- name: AssignTransactionToMember :one
 UPDATE processed_transactions
 SET member_number = $1,
     category = $2,
-    matched_by = 'manual'
-WHERE id = $3
+    matched_by = $3
+WHERE id = $4
 RETURNING id
 `
 
 type AssignTransactionToMemberParams struct {
-	MemberNumber *int32 `json:"member_number"`
-	Category     string `json:"category"`
-	ID           int64  `json:"id"`
+	MemberNumber *int32  `json:"member_number"`
+	Category     string  `json:"category"`
+	MatchedBy    *string `json:"matched_by"`
+	ID           int64   `json:"id"`
 }
 
-// Manual member match (see docs/logic-design.md "Manual Assignment & Coverage").
-// Coverage rows are managed separately by the caller in the same DB transaction.
+// Manual categorization, with or without a member match (see
+// docs/logic-design.md "Manual Assignment & Coverage") — member_number and
+// matched_by are both nullable so a category-only edit (no member) just
+// passes both as NULL. Coverage rows are managed separately by the caller in
+// the same DB transaction.
 func (q *Queries) AssignTransactionToMember(ctx context.Context, arg AssignTransactionToMemberParams) (int64, error) {
-	row := q.db.QueryRow(ctx, assignTransactionToMember, arg.MemberNumber, arg.Category, arg.ID)
+	row := q.db.QueryRow(ctx, assignTransactionToMember,
+		arg.MemberNumber,
+		arg.Category,
+		arg.MatchedBy,
+		arg.ID,
+	)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const categoryExists = `-- name: CategoryExists :one
+SELECT EXISTS (SELECT 1 FROM transaction_categories WHERE name = $1) AS exists
+`
+
+func (q *Queries) CategoryExists(ctx context.Context, name string) (bool, error) {
+	row := q.db.QueryRow(ctx, categoryExists, name)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const createBankAccount = `-- name: CreateBankAccount :one
@@ -88,6 +108,20 @@ func (q *Queries) CreateBankAccount(ctx context.Context, arg CreateBankAccountPa
 		&i.DisplayName,
 		&i.CreatedAt,
 	)
+	return i, err
+}
+
+const createCategory = `-- name: CreateCategory :one
+INSERT INTO transaction_categories (name, is_mandatory) VALUES ($1, false)
+RETURNING name, is_mandatory, created_at
+`
+
+// is_mandatory is never set true here — only the four seeded in
+// migrations/20260910000001_add_transaction_categories.sql are mandatory.
+func (q *Queries) CreateCategory(ctx context.Context, name string) (TransactionCategory, error) {
+	row := q.db.QueryRow(ctx, createCategory, name)
+	var i TransactionCategory
+	err := row.Scan(&i.Name, &i.IsMandatory, &i.CreatedAt)
 	return i, err
 }
 
@@ -207,6 +241,23 @@ WHERE id = $1 AND deleted_at IS NULL
 // "deleted just now" (1 row) and return 404 vs 204 accordingly.
 func (q *Queries) DeleteBankAccount(ctx context.Context, id int32) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteBankAccount, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteCategory = `-- name: DeleteCategory :execrows
+DELETE FROM transaction_categories WHERE name = $1 AND is_mandatory = false
+`
+
+// The is_mandatory=false guard means a mandatory category and a missing one
+// both come back as 0 rows affected — the caller (handler.DeleteCategory)
+// checks GetCategory first to tell those two cases apart. A category still
+// referenced by processed_transactions.category fails this with a foreign
+// key violation instead (see processed_transactions_category_fkey).
+func (q *Queries) DeleteCategory(ctx context.Context, name string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteCategory, name)
 	if err != nil {
 		return 0, err
 	}
@@ -401,6 +452,17 @@ func (q *Queries) GetBankAccountWithToken(ctx context.Context, arg GetBankAccoun
 	return i, err
 }
 
+const getCategory = `-- name: GetCategory :one
+SELECT name, is_mandatory, created_at FROM transaction_categories WHERE name = $1
+`
+
+func (q *Queries) GetCategory(ctx context.Context, name string) (TransactionCategory, error) {
+	row := q.db.QueryRow(ctx, getCategory, name)
+	var i TransactionCategory
+	err := row.Scan(&i.Name, &i.IsMandatory, &i.CreatedAt)
+	return i, err
+}
+
 const getMaxFioTransactionID = `-- name: GetMaxFioTransactionID :one
 SELECT COALESCE(MAX(fio_transaction_id), 0)::bigint AS max_id
 FROM raw_transactions
@@ -423,6 +485,21 @@ func (q *Queries) GetMemberNumberBySub(ctx context.Context, sub pgtype.UUID) (in
 	var member_number int32
 	err := row.Scan(&member_number)
 	return member_number, err
+}
+
+const getMemberWorkplaceSub = `-- name: GetMemberWorkplaceSub :one
+SELECT workplace_executive_committee_sub FROM members WHERE member_number = $1
+`
+
+// Backs the workplace-rep access path on GET /payments/{member_number}/history
+// (see docs/logic-design.md "Payment History Endpoint"): a caller without the
+// admin payment-history role can still see this member if the returned value
+// is non-null and matches one of the caller's own Keycloak groups.
+func (q *Queries) GetMemberWorkplaceSub(ctx context.Context, memberNumber int32) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getMemberWorkplaceSub, memberNumber)
+	var workplace_executive_committee_sub pgtype.UUID
+	err := row.Scan(&workplace_executive_committee_sub)
+	return workplace_executive_committee_sub, err
 }
 
 const getPaymentHistory = `-- name: GetPaymentHistory :many
@@ -461,6 +538,63 @@ func (q *Queries) GetPaymentHistory(ctx context.Context, memberNumber int32) ([]
 			&i.Amount,
 			&i.Currency,
 			&i.ProcessedTransactionID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getTransactionCategorySummary = `-- name: GetTransactionCategorySummary :many
+SELECT
+    pt.direction,
+    pt.category,
+    rt.currency,
+    COALESCE(SUM(ABS(rt.amount)), 0)::numeric AS total
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE ($1::date IS NULL OR rt.transaction_date >= $1::date)
+  AND ($2::date IS NULL OR rt.transaction_date <= $2::date)
+GROUP BY pt.direction, pt.category, rt.currency
+ORDER BY pt.direction, total DESC
+`
+
+type GetTransactionCategorySummaryParams struct {
+	DateFrom pgtype.Date `json:"date_from"`
+	DateTo   pgtype.Date `json:"date_to"`
+}
+
+type GetTransactionCategorySummaryRow struct {
+	Direction string `json:"direction"`
+	Category  string `json:"category"`
+	Currency  string `json:"currency"`
+	Total     string `json:"total"`
+}
+
+// Budgeting view (see docs/logic-design.md "Transaction Category Summary"):
+// totals grouped by direction/category/currency only — no member_number, no
+// counterparty, no per-transaction rows, so this is safe for the
+// widely-held view-budget role (unlike ListTransactions). SUM(ABS(amount))
+// so an "outgoing" total reads as a positive spend figure rather than the
+// signed value raw_transactions stores it as.
+func (q *Queries) GetTransactionCategorySummary(ctx context.Context, arg GetTransactionCategorySummaryParams) ([]GetTransactionCategorySummaryRow, error) {
+	rows, err := q.db.Query(ctx, getTransactionCategorySummary, arg.DateFrom, arg.DateTo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetTransactionCategorySummaryRow
+	for rows.Next() {
+		var i GetTransactionCategorySummaryRow
+		if err := rows.Scan(
+			&i.Direction,
+			&i.Category,
+			&i.Currency,
+			&i.Total,
 		); err != nil {
 			return nil, err
 		}
@@ -765,6 +899,30 @@ func (q *Queries) ListBankAccountsWithToken(ctx context.Context, encryptionKey s
 	return items, nil
 }
 
+const listCategories = `-- name: ListCategories :many
+SELECT name, is_mandatory, created_at FROM transaction_categories ORDER BY is_mandatory DESC, name
+`
+
+func (q *Queries) ListCategories(ctx context.Context) ([]TransactionCategory, error) {
+	rows, err := q.db.Query(ctx, listCategories)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []TransactionCategory
+	for rows.Next() {
+		var i TransactionCategory
+		if err := rows.Scan(&i.Name, &i.IsMandatory, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCoverageForTransaction = `-- name: ListCoverageForTransaction :many
 SELECT covers_year, covers_month
 FROM payment_coverage
@@ -935,6 +1093,53 @@ func (q *Queries) ListMembersMissingPayment(ctx context.Context, arg ListMembers
 	return items, nil
 }
 
+const listMembersMissingPaymentForWorkplace = `-- name: ListMembersMissingPaymentForWorkplace :many
+SELECT ma.member_number, ma.total_missed_months
+FROM member_arrears ma
+JOIN members m ON m.member_number = ma.member_number
+WHERE m.workplace_executive_committee_sub = ANY($1::uuid[])
+  AND date_trunc('month', m.fee_start_date::timestamp)
+        <= make_date($2::int, $3::int, 1)::timestamp
+  AND make_date($2::int, $3::int, 1)::timestamp
+        <= date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)::timestamp)
+  AND NOT EXISTS (
+      SELECT 1 FROM payment_coverage pc
+      WHERE pc.member_number = ma.member_number
+        AND pc.covers_year = $2::int
+        AND pc.covers_month = $3::int
+  )
+ORDER BY ma.total_missed_months DESC, ma.member_number
+`
+
+type ListMembersMissingPaymentForWorkplaceParams struct {
+	WorkplaceSubs []pgtype.UUID `json:"workplace_subs"`
+	Year          int32         `json:"year"`
+	Month         int32         `json:"month"`
+}
+
+// Workplace-rep counterpart to ListMembersMissingPayment — same shape and
+// logic, scoped to members in any of the caller's workplace groups instead of
+// every member. See that query's comment for the liability-window logic.
+func (q *Queries) ListMembersMissingPaymentForWorkplace(ctx context.Context, arg ListMembersMissingPaymentForWorkplaceParams) ([]MemberArrear, error) {
+	rows, err := q.db.Query(ctx, listMembersMissingPaymentForWorkplace, arg.WorkplaceSubs, arg.Year, arg.Month)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []MemberArrear
+	for rows.Next() {
+		var i MemberArrear
+		if err := rows.Scan(&i.MemberNumber, &i.TotalMissedMonths); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMembersMissingPaymentInYear = `-- name: ListMembersMissingPaymentInYear :many
 SELECT ma.member_number, ma.total_missed_months
 FROM member_arrears ma
@@ -969,6 +1174,61 @@ ORDER BY ma.total_missed_months DESC, ma.member_number
 // scoped to the year. See docs/logic-design.md "Missed Payment Detection".
 func (q *Queries) ListMembersMissingPaymentInYear(ctx context.Context, year int32) ([]MemberArrear, error) {
 	rows, err := q.db.Query(ctx, listMembersMissingPaymentInYear, year)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []MemberArrear
+	for rows.Next() {
+		var i MemberArrear
+		if err := rows.Scan(&i.MemberNumber, &i.TotalMissedMonths); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMembersMissingPaymentInYearForWorkplace = `-- name: ListMembersMissingPaymentInYearForWorkplace :many
+SELECT ma.member_number, ma.total_missed_months
+FROM member_arrears ma
+JOIN members m ON m.member_number = ma.member_number
+WHERE m.workplace_executive_committee_sub = ANY($1::uuid[])
+  AND EXISTS (
+    SELECT 1
+    FROM generate_series(
+        greatest(
+            date_trunc('month', m.fee_start_date::timestamp),
+            make_date($2::int, 1, 1)::timestamp
+        ),
+        least(
+            date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)::timestamp),
+            make_date($2::int, 12, 1)::timestamp
+        ),
+        interval '1 month'
+    ) AS ym(month)
+    WHERE NOT EXISTS (
+        SELECT 1 FROM payment_coverage pc
+        WHERE pc.member_number = ma.member_number
+          AND pc.covers_year = EXTRACT(YEAR FROM ym.month)::int
+          AND pc.covers_month = EXTRACT(MONTH FROM ym.month)::int
+    )
+)
+ORDER BY ma.total_missed_months DESC, ma.member_number
+`
+
+type ListMembersMissingPaymentInYearForWorkplaceParams struct {
+	WorkplaceSubs []pgtype.UUID `json:"workplace_subs"`
+	Year          int32         `json:"year"`
+}
+
+// Workplace-rep counterpart to ListMembersMissingPaymentInYear — same shape
+// and logic, scoped to members in any of the caller's workplace groups.
+func (q *Queries) ListMembersMissingPaymentInYearForWorkplace(ctx context.Context, arg ListMembersMissingPaymentInYearForWorkplaceParams) ([]MemberArrear, error) {
+	rows, err := q.db.Query(ctx, listMembersMissingPaymentInYearForWorkplace, arg.WorkplaceSubs, arg.Year)
 	if err != nil {
 		return nil, err
 	}
@@ -1279,21 +1539,23 @@ func (q *Queries) UpdateBankAccount(ctx context.Context, arg UpdateBankAccountPa
 }
 
 const upsertMember = `-- name: UpsertMember :exec
-INSERT INTO members (member_number, fee_start_date, fee_stop_date, active, sub)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO members (member_number, fee_start_date, fee_stop_date, active, sub, workplace_executive_committee_sub)
+VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (member_number) DO UPDATE
 SET fee_start_date = EXCLUDED.fee_start_date,
     fee_stop_date = EXCLUDED.fee_stop_date,
     active = EXCLUDED.active,
-    sub = EXCLUDED.sub
+    sub = EXCLUDED.sub,
+    workplace_executive_committee_sub = EXCLUDED.workplace_executive_committee_sub
 `
 
 type UpsertMemberParams struct {
-	MemberNumber int32       `json:"member_number"`
-	FeeStartDate pgtype.Date `json:"fee_start_date"`
-	FeeStopDate  pgtype.Date `json:"fee_stop_date"`
-	Active       bool        `json:"active"`
-	Sub          pgtype.UUID `json:"sub"`
+	MemberNumber                   int32       `json:"member_number"`
+	FeeStartDate                   pgtype.Date `json:"fee_start_date"`
+	FeeStopDate                    pgtype.Date `json:"fee_stop_date"`
+	Active                         bool        `json:"active"`
+	Sub                            pgtype.UUID `json:"sub"`
+	WorkplaceExecutiveCommitteeSub pgtype.UUID `json:"workplace_executive_committee_sub"`
 }
 
 func (q *Queries) UpsertMember(ctx context.Context, arg UpsertMemberParams) error {
@@ -1303,6 +1565,7 @@ func (q *Queries) UpsertMember(ctx context.Context, arg UpsertMemberParams) erro
 		arg.FeeStopDate,
 		arg.Active,
 		arg.Sub,
+		arg.WorkplaceExecutiveCommitteeSub,
 	)
 	return err
 }

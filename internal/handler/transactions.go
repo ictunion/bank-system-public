@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"slices"
 	"strconv"
 	"time"
 
@@ -22,7 +21,6 @@ const (
 
 var (
 	validDirections = []string{"incoming", "outgoing"}
-	validCategories = []string{"membership_fee", "salary", "other_income", "other_expense"}
 	validMatchedBy  = []string{"variable_symbol", "manual", "amount_heuristic"}
 )
 
@@ -84,9 +82,8 @@ func ListTransactions(queries *db.Queries) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid direction")
 			return
 		}
-		if params.Category, ok = enumParam(queryParams.Get("category"), validCategories); !ok {
-			writeError(w, http.StatusBadRequest, "invalid category")
-			return
+		if s := queryParams.Get("category"); s != "" {
+			params.Category = &s
 		}
 		if params.MatchedBy, ok = enumParam(queryParams.Get("matched_by"), validMatchedBy); !ok {
 			writeError(w, http.StatusBadRequest, "invalid matched_by")
@@ -212,9 +209,9 @@ type transactionDetail struct {
 }
 
 type assignTransactionRequest struct {
-	MemberNumber int32      `json:"member_number"`
-	Category     *string    `json:"category"` // optional, defaults to "membership_fee"
-	Covers       []monthRef `json:"covers"`   // optional; empty = the transaction's own month
+	MemberNumber *int32     `json:"member_number"` // optional; omit for a category-only edit, no member match
+	Category     *string    `json:"category"`      // optional, defaults to "membership_fee"
+	Covers       []monthRef `json:"covers"`        // optional; empty = the transaction's own month
 }
 
 func parseTransactionID(r *http.Request) (int64, bool) {
@@ -288,12 +285,17 @@ func GetTransaction(queries *db.Queries) http.HandlerFunc {
 	}
 }
 
-// AssignTransaction handles PUT /transactions/{id}/assignment — manual member
-// match plus payment_coverage, in one DB transaction (see docs/logic-design.md
-// "Manual Assignment & Coverage"). matched_by is set to 'manual'. For
-// category=membership_fee the coverage rows are replaced with `covers` (or the
-// transaction's own month when `covers` is empty); other categories carry no
-// coverage. A month already covered by a *different* transaction is a 409.
+// AssignTransaction handles PUT /transactions/{id}/assignment — manual
+// categorization, in one DB transaction (see docs/logic-design.md "Manual
+// Assignment & Coverage"). member_number is optional: a lot of transactions
+// (other_income/other_expense, even some salary rows) aren't tied to any
+// member, so this also serves as a category-only edit — omit member_number
+// to just change the category without matching anyone. matched_by is set to
+// 'manual' when a member is given, NULL otherwise. For category=membership_fee
+// *with* a member, the coverage rows are replaced with `covers` (or the
+// transaction's own month when `covers` is empty); no member or a non-fee
+// category carries no coverage. A month already covered by a *different*
+// transaction is a 409.
 func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseTransactionID(r)
@@ -307,8 +309,8 @@ func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
-		if request.MemberNumber < 1 {
-			writeError(w, http.StatusBadRequest, "member_number is required")
+		if request.MemberNumber != nil && *request.MemberNumber < 1 {
+			writeError(w, http.StatusBadRequest, "member_number must be positive")
 			return
 		}
 
@@ -316,14 +318,16 @@ func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 		if request.Category != nil {
 			category = *request.Category
 		}
-		if !slices.Contains(validCategories, category) {
-			writeError(w, http.StatusBadRequest, "invalid category")
-			return
-		}
-		coverable := category == "membership_fee"
-		if !coverable && len(request.Covers) > 0 {
-			writeError(w, http.StatusBadRequest, "covers is only valid for category membership_fee")
-			return
+		coverable := category == "membership_fee" && request.MemberNumber != nil
+		if len(request.Covers) > 0 {
+			if category != "membership_fee" {
+				writeError(w, http.StatusBadRequest, "covers is only valid for category membership_fee")
+				return
+			}
+			if request.MemberNumber == nil {
+				writeError(w, http.StatusBadRequest, "covers requires a member_number")
+				return
+			}
 		}
 		maxYear := time.Now().Year() + 1
 		for _, m := range request.Covers {
@@ -335,13 +339,25 @@ func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 
 		queries := db.New(pool)
 
-		exists, err := queries.MemberExists(r.Context(), request.MemberNumber)
+		if request.MemberNumber != nil {
+			exists, err := queries.MemberExists(r.Context(), *request.MemberNumber)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to check member")
+				return
+			}
+			if !exists {
+				writeError(w, http.StatusBadRequest, "member_number does not exist")
+				return
+			}
+		}
+
+		categoryExists, err := queries.CategoryExists(r.Context(), category)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to check member")
+			writeError(w, http.StatusInternalServerError, "failed to check category")
 			return
 		}
-		if !exists {
-			writeError(w, http.StatusBadRequest, "member_number does not exist")
+		if !categoryExists {
+			writeError(w, http.StatusBadRequest, "invalid category")
 			return
 		}
 
@@ -371,10 +387,17 @@ func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 		defer tx.Rollback(r.Context())
 		txQueries := db.New(tx)
 
+		var matchedBy *string
+		if request.MemberNumber != nil {
+			manual := "manual"
+			matchedBy = &manual
+		}
+
 		if _, err := txQueries.AssignTransactionToMember(r.Context(), db.AssignTransactionToMemberParams{
 			ID:           id,
-			MemberNumber: &request.MemberNumber,
+			MemberNumber: request.MemberNumber,
 			Category:     category,
+			MatchedBy:    matchedBy,
 		}); errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "transaction not found")
 			return
@@ -392,7 +415,7 @@ func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 		for _, m := range months {
 			n, err := txQueries.InsertCoverageRow(r.Context(), db.InsertCoverageRowParams{
 				ProcessedTransactionID: id,
-				MemberNumber:           request.MemberNumber,
+				MemberNumber:           *request.MemberNumber,
 				CoversYear:             int32(m.Year),
 				CoversMonth:            int16(m.Month),
 			})
@@ -477,5 +500,65 @@ func UnassignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 		}
 
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+type categoryTotal struct {
+	Category string `json:"category"`
+	Currency string `json:"currency"`
+	Total    string `json:"total"`
+}
+
+type categorySummaryResponse struct {
+	Incoming []categoryTotal `json:"incoming"`
+	Outgoing []categoryTotal `json:"outgoing"`
+}
+
+// CategorySummary handles GET /transactions/summary — totals grouped by
+// category and direction for the budgeting view (see docs/logic-design.md
+// "Transaction Category Summary"). Optional from/to (YYYY-MM-DD, inclusive)
+// query params scope it to a date range, same convention as ListTransactions.
+// Gated by RoleViewBudget rather than RoleListTransactions: unlike the
+// transaction browser, this never returns a member_number, counterparty, or
+// any other per-transaction detail — only category/currency/total — so it's
+// meant to be safe for every member to see, not just admins.
+func CategorySummary(queries *db.Queries) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		queryParams := r.URL.Query()
+
+		dateFrom, ok := dateParam(queryParams.Get("from"))
+		if !ok {
+			writeError(w, http.StatusBadRequest, "from must be YYYY-MM-DD")
+			return
+		}
+		dateTo, ok := dateParam(queryParams.Get("to"))
+		if !ok {
+			writeError(w, http.StatusBadRequest, "to must be YYYY-MM-DD")
+			return
+		}
+
+		rows, err := queries.GetTransactionCategorySummary(r.Context(), db.GetTransactionCategorySummaryParams{
+			DateFrom: dateFrom,
+			DateTo:   dateTo,
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to summarize transactions")
+			return
+		}
+
+		response := categorySummaryResponse{
+			Incoming: make([]categoryTotal, 0),
+			Outgoing: make([]categoryTotal, 0),
+		}
+		for _, row := range rows {
+			total := categoryTotal{Category: row.Category, Currency: row.Currency, Total: row.Total}
+			if row.Direction == "incoming" {
+				response.Incoming = append(response.Incoming, total)
+			} else {
+				response.Outgoing = append(response.Outgoing, total)
+			}
+		}
+
+		writeJSON(w, http.StatusOK, response)
 	}
 }

@@ -2,6 +2,8 @@ import { useAuth } from 'react-oidc-context'
 import { Link, Route, Routes } from 'react-router-dom'
 import { AuthGate } from './AuthGate'
 import { BankAccountsPage } from './BankAccountsPage'
+import { BudgetPage } from './BudgetPage'
+import { CategoriesPage } from './CategoriesPage'
 import { EventLogsPage } from './EventLogsPage'
 import { useHasRole } from './roles'
 import { TransactionsTable } from './TransactionsTable'
@@ -18,6 +20,7 @@ function Dashboard() {
   const auth = useAuth()
   const canManageBankAccounts = useHasRole('manage-bank-accounts')
   const canViewEventLogs = useHasRole('view-event-logs')
+  const canViewBudget = useHasRole('view-budget')
 
   return (
     <main>
@@ -37,6 +40,14 @@ function Dashboard() {
             <Link to="/" style={{ color: '#fff' }}>
               Transactions
             </Link>
+            <Link to="/categories" style={{ color: '#fff' }}>
+              Categories
+            </Link>
+            {canViewBudget && (
+              <Link to="/budget" style={{ color: '#fff' }}>
+                Budget
+              </Link>
+            )}
             {canManageBankAccounts && (
               <Link to="/bank-accounts" style={{ color: '#fff' }}>
                 Bank accounts
@@ -58,6 +69,8 @@ function Dashboard() {
         <div style={{ background: '#fff', borderRadius: '8px', padding: '1.5rem' }}>
           <Routes>
             <Route path="/" element={<TransactionsTable />} />
+            <Route path="/categories" element={<CategoriesPage />} />
+            <Route path="/budget" element={<BudgetPage />} />
             <Route path="/bank-accounts" element={<BankAccountsPage />} />
             <Route path="/event-logs" element={<EventLogsPage />} />
           </Routes>

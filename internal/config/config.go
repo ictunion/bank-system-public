@@ -122,11 +122,11 @@ func Load() (Config, error) {
 		Addr:                   ":" + port,
 		BankTokenEncryptionKey: bankTokenEncryptionKey,
 		Debug:                  envBool("DEBUG"),
-		DisableFioSync:   envBool("DISABLE_FIO_SYNC"),
-		OrcaAPIURL:       orcaAPIURL,
-		OrcaSyncToken:    orcaSyncToken,
-		KeycloakHost:     keycloakHost,
-		KeycloakRealm:    keycloakRealm,
-		KeycloakClientID: keycloakClientID,
+		DisableFioSync:         envBool("DISABLE_FIO_SYNC"),
+		OrcaAPIURL:             orcaAPIURL,
+		OrcaSyncToken:          orcaSyncToken,
+		KeycloakHost:           keycloakHost,
+		KeycloakRealm:          keycloakRealm,
+		KeycloakClientID:       keycloakClientID,
 	}, nil
 }
