@@ -93,12 +93,9 @@ The one thing to confirm: the caller's account needs the **`view-groups`** role 
 `default-roles-<realm>`) — same as Orca relies on. Nothing to configure unless that's
 been changed in the `members` realm.
 
-Verify: `GET /debug/whoami` (only registered when `DEBUG=true` — see `cmd/server/main.go`)
-echoes back the caller's own raw token claims, useful during setup. To confirm the
-Account API call itself works, exercise `GET /payments/workplace/{year}/{month}/missing`
-as a rep and check for a `500` (Account API call failing — check server logs; likely
-`view-groups` missing) vs an empty-but-200 result (call succeeded, rep just isn't in the
-group you expected).
+Verify: exercise `GET /payments/workplace/{year}/{month}/missing` as a rep and check for
+a `500` (Account API call failing — check server logs; likely `view-groups` missing) vs
+an empty-but-200 result (call succeeded, rep just isn't in the group you expected).
 
 ### Roles
 

@@ -101,13 +101,6 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 
-	if appConfig.Debug {
-		// Dumps the caller's own token claims as-is — a setup/troubleshooting
-		// aid (see docs/frontend-auth.md "Workplace-scoped payments"), not
-		// meant to stay reachable outside local dev.
-		api.HandleFunc("GET /debug/whoami", handler.WhoAmI(keycloakProvider))
-	}
-
 	api.HandleFunc("GET /account", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.ListBankAccounts(db.New(pool))))
 	api.HandleFunc("POST /account", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.CreateBankAccount(db.New(pool), appConfig.BankTokenEncryptionKey)))
 	api.HandleFunc("PATCH /account/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.UpdateBankAccount(db.New(pool), appConfig.BankTokenEncryptionKey)))

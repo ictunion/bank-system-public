@@ -66,9 +66,7 @@ group UUID with zero extra Keycloak configuration — no protocol mapper, no sec
 client, no secret; just the caller's own token, forwarded. **The one thing to confirm,
 Keycloak-side:** the `view-groups` role on the `account` client, on by default via
 `default-roles-<realm>` in a stock realm (see `frontend-auth.md` "Workplace-scoped
-payments"). Without it, `UserGroupIDs` errors rather than silently returning nothing —
-see `GET /debug/whoami` (dev-only) for inspecting what's actually on a token while
-troubleshooting.
+payments"). Without it, `UserGroupIDs` errors rather than silently returning nothing.
 
 Alongside each `members` upsert, the sync manages a **default payment identifier** in
 `member_payment_identifiers`: `variable_symbol = member_number`, `valid_from =

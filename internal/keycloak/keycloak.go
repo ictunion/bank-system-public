@@ -228,30 +228,6 @@ func (p *Provider) Verify(tokenString string) (*Claims, error) {
 	return claims, nil
 }
 
-// VerifyRaw does the same signature/issuer/audience validation as Verify,
-// but decodes into a raw jwt.MapClaims instead of our own narrow Claims
-// struct — so it surfaces every claim actually present on the token,
-// including ones Claims doesn't declare a field for. Debug-only: backs
-// handler.WhoAmI, for checking what a given Keycloak mapper configuration
-// actually puts on a token without needing to hand-decode it at jwt.io.
-func (p *Provider) VerifyRaw(tokenString string) (jwt.MapClaims, error) {
-	claims := jwt.MapClaims{}
-	token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (any, error) {
-		return p.key, nil
-	},
-		jwt.WithValidMethods([]string{"RS256"}),
-		jwt.WithIssuer(p.issuer),
-		jwt.WithAudience(p.clientID),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("verifying token: %w", err)
-	}
-	if !token.Valid {
-		return nil, fmt.Errorf("invalid token")
-	}
-	return claims, nil
-}
-
 // Authorize verifies the token and additionally requires it to carry the
 // given role for this Provider's client — the Go equivalent of Orca's
 // `OidProvider::require_role`.
