@@ -36,6 +36,16 @@ type coveredMonth struct {
 	Month int16 `json:"month"`
 }
 
+// paymentHistoryEntry is either a real payment (ProcessedTransactionID > 0,
+// TransactionDate/Currency populated, Amount a real figure) or a waived
+// month (see docs/logic-design.md "Payment Waivers"): ProcessedTransactionID
+// 0, TransactionDate/Currency empty, Amount the literal string "Waived".
+// Reusing the existing string Amount field this way — rather than adding a
+// new field/type — lets the frontend show a "Waived" label for that month
+// wherever it already renders Amount, no schema change on its side. The
+// waiver's reason is deliberately not included here; it stays admin-only
+// (see the Waivers tab / GET /payments/waivers), not surfaced to a member
+// looking at their own history.
 type paymentHistoryEntry struct {
 	ProcessedTransactionID int64          `json:"processed_transaction_id"`
 	TransactionDate        string         `json:"transaction_date"`
@@ -57,6 +67,17 @@ type paymentHistoryEntry struct {
 // of the rep's own Keycloak groups (looked up live via Provider.UserGroupIDs)
 // — same scoping WorkplaceMissingPayments uses, just for one member_number
 // instead of the whole workplace.
+//
+// @Summary      Get one member's payment history
+// @Description  Requires payment-history (any member) or view-workplace-payment-history (own workplace's members only). Includes waived months (amount "Waived", no real transaction fields) alongside real payments.
+// @Tags         payments
+// @Security     BearerAuth
+// @Produce      json
+// @Param        member_number  path  int  true  "Member number"
+// @Success      200  {array}  handler.paymentHistoryEntry
+// @Failure      400,401  {object}  map[string]string
+// @Failure      403  {object}  map[string]string
+// @Router       /payments/{member_number}/history [get]
 func PaymentHistory(provider *keycloak.Provider, queries *db.Queries) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		memberNumber, err := strconv.ParseInt(r.PathValue("member_number"), 10, 32)
@@ -137,6 +158,7 @@ func writePaymentHistory(w http.ResponseWriter, r *http.Request, queries *db.Que
 	// back as one entry with several covered_months.
 	order := make([]int64, 0, len(rows))
 	entries := make(map[int64]*paymentHistoryEntry, len(rows))
+	paidMonths := make(map[coveredMonth]bool, len(rows))
 	for _, row := range rows {
 		entry, ok := entries[row.ProcessedTransactionID]
 		if !ok {
@@ -149,12 +171,33 @@ func writePaymentHistory(w http.ResponseWriter, r *http.Request, queries *db.Que
 			entries[row.ProcessedTransactionID] = entry
 			order = append(order, row.ProcessedTransactionID)
 		}
-		entry.CoveredMonths = append(entry.CoveredMonths, coveredMonth{Year: row.CoversYear, Month: row.CoversMonth})
+		month := coveredMonth{Year: row.CoversYear, Month: row.CoversMonth}
+		entry.CoveredMonths = append(entry.CoveredMonths, month)
+		paidMonths[month] = true
 	}
 
 	out := make([]*paymentHistoryEntry, 0, len(order))
 	for _, id := range order {
 		out = append(out, entries[id])
+	}
+
+	waivers, err := queries.ListWaiversForMember(r.Context(), memberNumber)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to fetch waivers")
+		return
+	}
+	for _, waiver := range waivers {
+		month := coveredMonth{Year: waiver.CoversYear, Month: waiver.CoversMonth}
+		if paidMonths[month] {
+			// A real payment landed for this month after it was already
+			// waived (WaivePayment only guards the other order) — the real
+			// payment wins, don't also report the month as waived.
+			continue
+		}
+		out = append(out, &paymentHistoryEntry{
+			Amount:        "Waived",
+			CoveredMonths: []coveredMonth{month},
+		})
 	}
 
 	writeJSON(w, http.StatusOK, out)
@@ -168,6 +211,16 @@ func writePaymentHistory(w http.ResponseWriter, r *http.Request, queries *db.Que
 // own role/workplace check entirely — a self-service caller is authorized by
 // the sub match itself, regardless of which roles (if any) their token
 // carries.
+//
+// @Summary      Get the caller's own payment history
+// @Description  Requires only a valid token — no role. Resolves the member from the token's sub. Same shape as GET /payments/{member_number}/history.
+// @Tags         payments
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200  {array}  handler.paymentHistoryEntry
+// @Failure      401  {object}  map[string]string
+// @Failure      403  {object}  map[string]string  "token has no valid sub, or no member found for it"
+// @Router       /payments/me/history [get]
 func MyPaymentHistory(queries *db.Queries) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := ClaimsFromContext(r.Context())

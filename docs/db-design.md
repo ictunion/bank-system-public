@@ -19,7 +19,7 @@ Postgres DB, then run custom processing on top:
   itemized per employee)
 
 All HTTP routes are served under an `/api` prefix (`GET /api/payments/...`, `GET
-/api/healthz`, etc.); paths in these docs are written without it for brevity. The prefix
+/api/transactions`, etc.); paths in these docs are written without it for brevity. The prefix
 exists so a reverse proxy can serve the admin frontend at `/` and forward only `/api/`
 to this service — see the deployment notes.
 
@@ -287,8 +287,9 @@ CREATE TABLE payment_coverage (
 );
 ```
 
-Default case (one payment = the month it landed in): the processing step inserts a
-single `payment_coverage` row for the transaction's own year/month alongside the
+Default case (one payment = the month *before* the one it landed in — dues are paid a
+month in arrears, see logic-design.md "Missed Payment Detection"): the processing step
+inserts a single `payment_coverage` row for that month alongside the
 `processed_transactions` row — no manual work needed for the common case.
 
 Lump-sum case: manually insert additional `payment_coverage` rows against the same
@@ -318,15 +319,54 @@ Jan–Mar" instead of 3 separate lines.
 
 "Missed payment this month" detection now checks `payment_coverage`, not
 `processed_transactions` directly: generate expected months across the liability window
-(`members.fee_start_date` .. `COALESCE(members.fee_stop_date, CURRENT_DATE)`), `LEFT
-JOIN` against `payment_coverage` grouped by member/month, flag gaps. A member with a
-null `fee_start_date` isn't liable yet (no expected months); one with a `fee_stop_date`
-isn't expected to pay past it. Fine to compute this on read at current volume rather
-than storing it — the per-member arrears count is a plain (non-materialized) view,
-`member_arrears`, that both `/payments/<year>/<month>/missing` and
-`/payments/<year>/missing` build on (see logic-design.md). This is unrelated to the
-"`processed_transactions` is a real table" decision below — that's about not recomputing
-manual/heuristic categorization, whereas an arrears diff has no manual state.
+(`members.fee_start_date` .. `LEAST(COALESCE(members.fee_stop_date, CURRENT_DATE),
+CURRENT_DATE - 2 months)`), `LEFT JOIN` against `payment_coverage` grouped by
+member/month, flag gaps. A member with a null `fee_start_date` isn't liable yet (no
+expected months); one with a `fee_stop_date` isn't expected to pay past it; the
+`CURRENT_DATE - 2 months` cap accounts for dues being paid a month in arrears (month M
+isn't overdue until M+1 has also fully elapsed) — see logic-design.md "Missed Payment
+Detection" for why. Fine to compute this on read at current volume rather than storing
+it — the per-member arrears count is a plain (non-materialized) view, `member_arrears`,
+that both `/payments/<year>/<month>/missing` and `/payments/<year>/missing` build on
+(see logic-design.md). This is unrelated to the "`processed_transactions` is a real
+table" decision below — that's about not recomputing manual/heuristic categorization,
+whereas an arrears diff has no manual state. A month with a `payment_waivers` row (see
+below) is excluded from this diff the same way a covered month is.
+
+#### Waived months (`payment_waivers`)
+
+Some missing months never get a matching transaction and never will — a member who
+forgot one payment years ago isn't going to be chased for it indefinitely, but also
+shouldn't sit on the missing-payments list forever. `payment_waivers` records an
+explicit admin decision to write off one specific month, independently of
+`payment_coverage`:
+
+```sql
+CREATE TABLE payment_waivers (
+    id             BIGSERIAL PRIMARY KEY,
+    member_number  INTEGER NOT NULL REFERENCES members(member_number),
+    covers_year    INTEGER NOT NULL,
+    covers_month   SMALLINT NOT NULL CHECK (covers_month BETWEEN 1 AND 12),
+    reason         TEXT NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (member_number, covers_year, covers_month)
+);
+```
+
+Kept as a separate table rather than making `payment_coverage.processed_transaction_id`
+nullable: `payment_coverage` stays strictly "a real payment landed for this month" (every
+row still has a real amount/date/transaction behind it, so `GetPaymentHistory`'s joins
+stay inner joins), and a month can't collide between "paid" and "waived" since each has
+its own `UNIQUE (member_number, covers_year, covers_month)` constraint in its own table —
+no shared uniqueness scope to reconcile. `reason` is `NOT NULL`: there's no admin-identity
+column anywhere in this schema (see logic-design.md "Manual Assignment & Coverage" — no
+audit trail exists for manual re-assignment either), so the reason text is the only record
+of why a debt was written off.
+
+A waived month is excluded from `member_arrears.total_missed_months` and from all four
+`ListMembersMissingPayment*` queries, same treatment as a paid one — but `has_ever_paid`
+stays keyed to `payment_coverage` alone, since waiving a month isn't paying it. See
+logic-design.md "Payment Waivers" for the `/payments/{member_number}/waive` endpoint.
 
 Budgeting view with privacy redaction: query `processed_transactions` grouped by
 `category`, controlling via `is_public_visible` whether individual counterparties are ever

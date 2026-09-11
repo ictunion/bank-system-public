@@ -1,0 +1,1443 @@
+basePath: /api
+definitions:
+  handler.assignTransactionRequest:
+    properties:
+      category:
+        description: optional, defaults to "membership_fee"
+        type: string
+      covers:
+        description: optional; empty = the transaction's own month
+        items:
+          $ref: '#/definitions/handler.monthRef'
+        type: array
+      member_number:
+        description: optional; omit for a category-only edit, no member match
+        type: integer
+    type: object
+  handler.backfillRequest:
+    properties:
+      from:
+        description: YYYY-MM-DD, inclusive
+        type: string
+      to:
+        description: YYYY-MM-DD, inclusive
+        type: string
+    type: object
+  handler.bankAccountResponse:
+    properties:
+      created_at:
+        type: string
+      currency:
+        type: string
+      display_name:
+        type: string
+      fio_account_id:
+        type: string
+      has_token:
+        type: boolean
+      iban:
+        type: string
+      id:
+        type: integer
+      is_active:
+        type: boolean
+    type: object
+  handler.categoryResponse:
+    properties:
+      is_mandatory:
+        type: boolean
+      name:
+        type: string
+    type: object
+  handler.categorySummaryResponse:
+    properties:
+      incoming:
+        items:
+          $ref: '#/definitions/handler.categoryTotal'
+        type: array
+      outgoing:
+        items:
+          $ref: '#/definitions/handler.categoryTotal'
+        type: array
+    type: object
+  handler.categoryTotal:
+    properties:
+      category:
+        type: string
+      currency:
+        type: string
+      total:
+        type: string
+    type: object
+  handler.coveredMonth:
+    properties:
+      month:
+        type: integer
+      year:
+        type: integer
+    type: object
+  handler.createBankAccountRequest:
+    properties:
+      currency:
+        type: string
+      display_name:
+        type: string
+      fio_account_id:
+        type: string
+      fio_token:
+        type: string
+      iban:
+        type: string
+    type: object
+  handler.createCategoryRequest:
+    properties:
+      name:
+        type: string
+    type: object
+  handler.eventLogItem:
+    properties:
+      detail:
+        type: string
+      error_message:
+        type: string
+      event_type:
+        type: string
+      fetched:
+        type: integer
+      finished_at:
+        type: string
+      id:
+        type: integer
+      processed:
+        type: integer
+      started_at:
+        type: string
+      status:
+        type: string
+    type: object
+  handler.eventLogsResponse:
+    properties:
+      events:
+        items:
+          $ref: '#/definitions/handler.eventLogItem'
+        type: array
+      limit:
+        type: integer
+      offset:
+        type: integer
+      total:
+        type: integer
+    type: object
+  handler.missingPaymentMember:
+    properties:
+      has_ever_paid:
+        description: |-
+          HasEverPaid is false when the member has no payment_coverage row at
+          all — never made a single matched payment, as opposed to usually
+          paying and missing one month. In practice a common, distinct case
+          (e.g. a member who never received/actioned their bank details) that
+          needs different follow-up than an occasional miss, so callers can
+          filter on it instead of inferring it from total_missed_months alone.
+        type: boolean
+      member_number:
+        type: integer
+      total_missed_months:
+        description: |-
+          TotalMissedMonths is the member's unpaid months across their whole
+          liability window, not just the queried month — a contact-priority signal.
+          Always >= 1 for a member in this list; rows come pre-sorted by it,
+          descending (top offenders first).
+        type: integer
+    type: object
+  handler.monthRef:
+    properties:
+      month:
+        type: integer
+      year:
+        type: integer
+    type: object
+  handler.paymentHistoryEntry:
+    properties:
+      amount:
+        type: string
+      covered_months:
+        items:
+          $ref: '#/definitions/handler.coveredMonth'
+        type: array
+      currency:
+        type: string
+      processed_transaction_id:
+        type: integer
+      transaction_date:
+        type: string
+    type: object
+  handler.paymentWaiverResponse:
+    properties:
+      created_at:
+        type: string
+      member_number:
+        type: integer
+      month:
+        type: integer
+      reason:
+        type: string
+      year:
+        type: integer
+    type: object
+  handler.syncResultResponse:
+    properties:
+      bank_account_id:
+        type: integer
+      transactions_failed:
+        type: integer
+      transactions_fetched:
+        type: integer
+      transactions_inserted:
+        type: integer
+      transactions_processed:
+        type: integer
+    type: object
+  handler.transactionDetail:
+    properties:
+      amount:
+        type: string
+      category:
+        type: string
+      comment:
+        type: string
+      constant_symbol:
+        type: string
+      counter_account_name:
+        type: string
+      counter_account_number:
+        type: string
+      covered_months:
+        items:
+          $ref: '#/definitions/handler.monthRef'
+        type: array
+      currency:
+        type: string
+      direction:
+        type: string
+      id:
+        type: integer
+      is_public_visible:
+        type: boolean
+      matched_by:
+        type: string
+      member_number:
+        type: integer
+      message_for_recipient:
+        type: string
+      specific_symbol:
+        type: string
+      transaction_date:
+        type: string
+      user_identification:
+        type: string
+      variable_symbol:
+        type: string
+    type: object
+  handler.transactionListItem:
+    properties:
+      amount:
+        type: string
+      category:
+        type: string
+      comment:
+        type: string
+      constant_symbol:
+        type: string
+      counter_account_name:
+        type: string
+      counter_account_number:
+        type: string
+      currency:
+        type: string
+      direction:
+        type: string
+      id:
+        type: integer
+      is_public_visible:
+        type: boolean
+      matched_by:
+        type: string
+      member_number:
+        type: integer
+      message_for_recipient:
+        type: string
+      specific_symbol:
+        type: string
+      transaction_date:
+        type: string
+      user_identification:
+        type: string
+      variable_symbol:
+        type: string
+    type: object
+  handler.transactionsResponse:
+    properties:
+      limit:
+        type: integer
+      offset:
+        type: integer
+      total:
+        type: integer
+      transactions:
+        items:
+          $ref: '#/definitions/handler.transactionListItem'
+        type: array
+    type: object
+  handler.updateBankAccountRequest:
+    properties:
+      display_name:
+        type: string
+      fio_token:
+        type: string
+    type: object
+  handler.waiveRequest:
+    properties:
+      month:
+        type: integer
+      reason:
+        type: string
+      year:
+        type: integer
+    type: object
+info:
+  contact: {}
+  description: 'Private bank API — syncs Fio Bank transaction data into Postgres,
+    matches member payments to their bank transactions, and detects missed dues. Dev-only
+    documentation (see config.EnableSwaggerDocs): every route below requires a Keycloak
+    bearer token unless noted otherwise.'
+  title: Bank System API
+  version: "1.0"
+paths:
+  /account:
+    get:
+      description: Requires the manage-bank-accounts role. Excludes the Fio token
+        itself, only whether one is set.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/handler.bankAccountResponse'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List bank accounts
+      tags:
+      - accounts
+    post:
+      consumes:
+      - application/json
+      description: Requires the manage-bank-accounts role. fio_token is encrypted
+        at rest and never echoed back.
+      parameters:
+      - description: New bank account
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.createBankAccountRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/handler.bankAccountResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: fio_account_id already registered
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Register a bank account
+      tags:
+      - accounts
+  /account/{id}:
+    delete:
+      description: Requires the manage-bank-accounts role. The row and its sync history
+        are kept, just marked inactive.
+      parameters:
+      - description: Bank account ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: no content
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a bank account
+      tags:
+      - accounts
+    patch:
+      consumes:
+      - application/json
+      description: Requires the manage-bank-accounts role. fio_account_id/iban/currency
+        are Fio-assigned and not editable here.
+      parameters:
+      - description: Bank account ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Fields to update
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.updateBankAccountRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.bankAccountResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a bank account's label and/or Fio token
+      tags:
+      - accounts
+  /account/{id}/backfill:
+    post:
+      consumes:
+      - application/json
+      description: Requires the manage-bank-accounts role. Pulls via Fio's /periods/
+        endpoint for a date range predating the account's cursor-based sync; ranges
+        over 90 days old need SCA unlocked in Fio's own Internet Banking first. Runs
+        transaction processing synchronously afterward.
+      parameters:
+      - description: Bank account ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Date range, both YYYY-MM-DD, inclusive
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.backfillRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.syncResultResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: sync disabled, or account inactive/has no token
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Fio API call failed
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Backfill historical transactions for one account
+      tags:
+      - accounts
+  /account/{id}/sync:
+    post:
+      description: Requires the manage-bank-accounts role. Refuses (409) when DISABLE_FIO_SYNC
+        is set. Runs transaction processing synchronously afterward.
+      parameters:
+      - description: Bank account ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.syncResultResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: sync disabled, or account inactive/has no token
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Fio API call failed
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Trigger an immediate Fio sync for one account
+      tags:
+      - accounts
+  /categories:
+    get:
+      description: Requires the list-transactions role. Mandatory categories first.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/handler.categoryResponse'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List transaction categories
+      tags:
+      - categories
+    post:
+      consumes:
+      - application/json
+      description: Requires the manage-transactions role. Always created with is_mandatory=false.
+      parameters:
+      - description: New category
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.createCategoryRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/handler.categoryResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: name already exists
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Add a custom transaction category
+      tags:
+      - categories
+  /categories/{name}:
+    delete:
+      description: Requires the manage-transactions role. Mandatory categories and
+        categories still in use cannot be deleted.
+      parameters:
+      - description: Category name
+        in: path
+        name: name
+        required: true
+        type: string
+      responses:
+        "204":
+          description: no content
+        "400":
+          description: mandatory category
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: mandatory category
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: mandatory category
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: category still referenced by existing transactions
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a custom transaction category
+      tags:
+      - categories
+  /event-logs:
+    get:
+      description: Requires the view-event-logs role. Merges Fio and Orca sync runs
+        into one feed, newest first.
+      parameters:
+      - description: Max results, default 100, capped at 500
+        in: query
+        name: limit
+        type: integer
+      - description: Default 0
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.eventLogsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List sync run history
+      tags:
+      - event-logs
+  /payments/{member_number}/history:
+    get:
+      description: Requires payment-history (any member) or view-workplace-payment-history
+        (own workplace's members only). Includes waived months (amount "Waived", no
+        real transaction fields) alongside real payments.
+      parameters:
+      - description: Member number
+        in: path
+        name: member_number
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/handler.paymentHistoryEntry'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get one member's payment history
+      tags:
+      - payments
+  /payments/{member_number}/waive:
+    post:
+      consumes:
+      - application/json
+      description: Requires the manage-transactions role. Idempotent (repeat calls
+        keep the original reason). 400 if the month is already covered by a real payment.
+      parameters:
+      - description: Member number
+        in: path
+        name: member_number
+        required: true
+        type: integer
+      - description: Month to waive, and why
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.waiveRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.paymentWaiverResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Write off a member's missed month
+      tags:
+      - payments
+  /payments/{member_number}/waive/{year}/{month}:
+    delete:
+      description: Requires the manage-transactions role. The month reappears in missing-payment
+        lists on the next read.
+      parameters:
+      - description: Member number
+        in: path
+        name: member_number
+        required: true
+        type: integer
+      - description: Waived year
+        in: path
+        name: year
+        required: true
+        type: integer
+      - description: Waived month, 1-12
+        in: path
+        name: month
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: no content
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Undo a waiver
+      tags:
+      - payments
+  /payments/{year}/{month}/missing:
+    get:
+      description: Requires the payment-history role. A waived month (see docs/logic-design.md
+        "Payment Waivers") is excluded from this list, same as a paid one.
+      parameters:
+      - description: 1 to current year + 1
+        in: path
+        name: year
+        required: true
+        type: integer
+      - description: 1 to 12
+        in: path
+        name: month
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/handler.missingPaymentMember'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Members missing a payment for one month
+      tags:
+      - payments
+  /payments/{year}/missing:
+    get:
+      description: Requires the payment-history role. total_missed_months/has_ever_paid
+        are full-liability-window figures, not scoped to the queried year.
+      parameters:
+      - description: 1 to current year + 1
+        in: path
+        name: year
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/handler.missingPaymentMember'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Members who missed at least one payment in a year
+      tags:
+      - payments
+  /payments/me/history:
+    get:
+      description: Requires only a valid token — no role. Resolves the member from
+        the token's sub. Same shape as GET /payments/{member_number}/history.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/handler.paymentHistoryEntry'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: token has no valid sub, or no member found for it
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get the caller's own payment history
+      tags:
+      - payments
+  /payments/waivers:
+    get:
+      description: Requires the manage-transactions role. All members, newest-created
+        first.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/handler.paymentWaiverResponse'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List every waiver
+      tags:
+      - payments
+  /payments/workplace/{year}/{month}/missing:
+    get:
+      description: Requires the view-workplace-payment-history role. Scoped live to
+        the caller's own Keycloak workplace group(s) via the Account API.
+      parameters:
+      - description: 1 to current year + 1
+        in: path
+        name: year
+        required: true
+        type: integer
+      - description: 1 to 12
+        in: path
+        name: month
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/handler.missingPaymentMember'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Keycloak Account API call failed
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 'Workplace-scoped: members missing a payment for one month'
+      tags:
+      - payments
+  /payments/workplace/{year}/missing:
+    get:
+      description: Requires the view-workplace-payment-history role. Scoped live to
+        the caller's own Keycloak workplace group(s) via the Account API.
+      parameters:
+      - description: 1 to current year + 1
+        in: path
+        name: year
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/handler.missingPaymentMember'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Keycloak Account API call failed
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 'Workplace-scoped: members who missed a payment in a year'
+      tags:
+      - payments
+  /transactions:
+    get:
+      description: Requires the list-transactions role. All filters optional and combinable.
+      parameters:
+      - description: true = has a member match, false = the unassigned worklist
+        in: query
+        name: assigned
+        type: boolean
+      - description: incoming or outgoing
+        in: query
+        name: direction
+        type: string
+      - description: e.g. membership_fee, salary, other_income, other_expense
+        in: query
+        name: category
+        type: string
+      - description: variable_symbol, manual, or amount_heuristic
+        in: query
+        name: matched_by
+        type: string
+      - description: One member's transactions
+        in: query
+        name: member_number
+        type: integer
+      - description: YYYY-MM-DD, inclusive
+        in: query
+        name: from
+        type: string
+      - description: YYYY-MM-DD, inclusive
+        in: query
+        name: to
+        type: string
+      - description: Default 100, capped at 500
+        in: query
+        name: limit
+        type: integer
+      - description: Default 0
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.transactionsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Browse processed transactions
+      tags:
+      - transactions
+  /transactions/{id}:
+    get:
+      description: Requires the list-transactions role.
+      parameters:
+      - description: processed_transactions ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.transactionDetail'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get one transaction's detail
+      tags:
+      - transactions
+  /transactions/{id}/assignment:
+    delete:
+      description: Requires the manage-transactions role. Clears member/matched_by,
+        deletes coverage rows, resets category to the direction default.
+      parameters:
+      - description: processed_transactions ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: no content
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Revert a transaction's match
+      tags:
+      - transactions
+    put:
+      consumes:
+      - application/json
+      description: Requires the manage-transactions role. member_number optional (category-only
+        edit if omitted); covers optional (defaults to the month before the transaction's
+        own).
+      parameters:
+      - description: processed_transactions ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: New member/category/coverage
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.assignTransactionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.transactionDetail'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: one or more covers months already covered by a different transaction
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Manually match/categorize a transaction
+      tags:
+      - transactions
+  /transactions/summary:
+    get:
+      description: Requires the view-budget role. Grouped by direction/category/currency
+        only — no member_number or counterparty, safe for wide member-facing use.
+      parameters:
+      - description: YYYY-MM-DD, inclusive
+        in: query
+        name: from
+        type: string
+      - description: YYYY-MM-DD, inclusive
+        in: query
+        name: to
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.categorySummaryResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Budgeting totals by category
+      tags:
+      - transactions
+securityDefinitions:
+  BearerAuth:
+    description: 'Keycloak-issued bearer token for bank-system''s Keycloak client,
+      sent as `Authorization: Bearer <token>`. Which role(s) a given route requires
+      is noted on that route below — see internal/keycloak.Role for the full list.'
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

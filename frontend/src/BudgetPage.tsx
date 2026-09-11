@@ -164,7 +164,12 @@ function CategoryPie({ currency, totals }: { currency: string; totals: CategoryT
               <Cell key={s.name} fill={s.color ?? SLICE_COLORS[i]} />
             ))}
           </Pie>
-          <Tooltip formatter={(value: number) => formatAmount(String(value), currency)} />
+          <Tooltip
+            formatter={(value: number) => {
+              const percent = grandTotal === 0 ? '—' : `${((value / grandTotal) * 100).toFixed(1)}%`
+              return `${formatAmount(String(value), currency)} (${percent})`
+            }}
+          />
           <Legend />
         </PieChart>
       </ResponsiveContainer>
@@ -178,6 +183,9 @@ function CategoryPie({ currency, totals }: { currency: string; totals: CategoryT
               <tr key={t.category}>
                 <td style={td}>{categoryLabel(t.category)}</td>
                 <td style={{ ...td, textAlign: 'right' }}>{formatAmount(t.total, t.currency)}</td>
+                <td style={{ ...td, textAlign: 'right', color: '#666' }}>
+                  {grandTotal === 0 ? '—' : `${((Number(t.total) / grandTotal) * 100).toFixed(1)}%`}
+                </td>
               </tr>
             ))}
           </tbody>

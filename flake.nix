@@ -21,6 +21,7 @@
             sqlc
             goose
             postgresql
+            go-swag
 
             # frontend/ (React + Vite) — bundles npm
             nodejs_22

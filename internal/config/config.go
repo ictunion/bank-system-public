@@ -42,6 +42,15 @@ type Config struct {
 	// Set via the DEBUG env var (any of "1", "true", "yes", case-insensitive).
 	Debug bool
 
+	// EnableSwaggerDocs mounts the generated Swagger UI (see
+	// internal/swaggerdocs, produced by `make swagger` from the @-annotations
+	// on cmd/server/main.go and internal/handler/*.go) at GET /api/docs/*.
+	// Off by default — dev-only, never set in production: every real route
+	// here is role-gated, and the docs UI itself carries no auth of its own,
+	// so it should never be reachable outside local development. Set via the
+	// ENABLE_SWAGGER_DOCS env var (any of "1", "true", "yes", case-insensitive).
+	EnableSwaggerDocs bool
+
 	// DisableFioSync skips starting the Fio sync job entirely (no startup run, no
 	// daily 3am run). For local dev when you don't want the live Fio API touched
 	// at all — e.g. after seeding fake raw_transactions data, so a server restart
@@ -134,6 +143,7 @@ func Load() (Config, error) {
 		Addr:                   ":" + port,
 		BankTokenEncryptionKey: bankTokenEncryptionKey,
 		Debug:                  envBool("DEBUG"),
+		EnableSwaggerDocs:      envBool("ENABLE_SWAGGER_DOCS"),
 		DisableFioSync:         envBool("DISABLE_FIO_SYNC"),
 		FioAPIURL:              fioAPIURL,
 		OrcaAPIURL:             orcaAPIURL,

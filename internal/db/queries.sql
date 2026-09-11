@@ -228,11 +228,68 @@ JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
 WHERE pc.member_number = sqlc.arg(member_number)
 ORDER BY pc.covers_year DESC, pc.covers_month DESC;
 
+-- name: ListWaivers :many
+-- Every payment_waivers row across all members — backs the dedicated
+-- Waivers admin tab (list + delete + create), gated the same as manual
+-- transaction assignment (manage-transactions). See docs/logic-design.md
+-- "Payment Waivers". Newest first, same convention as ListWaiversForMember.
+SELECT member_number, covers_year, covers_month, reason, created_at
+FROM payment_waivers
+ORDER BY created_at DESC;
+
+-- name: ListWaiversForMember :many
+-- Backs the "why did this month stop showing up as missing" question on the
+-- payment history panel — see docs/logic-design.md "Payment Waivers".
+SELECT covers_year, covers_month, reason, created_at
+FROM payment_waivers
+WHERE member_number = sqlc.arg(member_number)
+ORDER BY covers_year DESC, covers_month DESC;
+
+-- name: PaymentCoverageExists :one
+-- Guards CreatePaymentWaiver: a month with a real payment_coverage row
+-- doesn't need (and shouldn't get) a waiver — see docs/logic-design.md
+-- "Payment Waivers".
+SELECT EXISTS (
+    SELECT 1 FROM payment_coverage
+    WHERE member_number = sqlc.arg(member_number)
+      AND covers_year = sqlc.arg(covers_year)
+      AND covers_month = sqlc.arg(covers_month)
+) AS exists;
+
+-- name: CreatePaymentWaiver :execrows
+-- ON CONFLICT DO NOTHING + :execrows, same idempotent-insert pattern as
+-- CreatePaymentCoverage/InsertCoverageRow — calling this twice for the same
+-- month is a no-op (0 rows affected), not an error, since the caller's
+-- intent ("this month is written off") is already satisfied.
+INSERT INTO payment_waivers (member_number, covers_year, covers_month, reason)
+VALUES (sqlc.arg(member_number), sqlc.arg(covers_year), sqlc.arg(covers_month), sqlc.arg(reason))
+ON CONFLICT (member_number, covers_year, covers_month) DO NOTHING;
+
+-- name: GetPaymentWaiver :one
+SELECT covers_year, covers_month, reason, created_at
+FROM payment_waivers
+WHERE member_number = sqlc.arg(member_number)
+  AND covers_year = sqlc.arg(covers_year)
+  AND covers_month = sqlc.arg(covers_month);
+
+-- name: DeletePaymentWaiver :execrows
+-- Undoes a waiver (the admin changed their mind, or waived the wrong
+-- month) — the month reappears in missing-payment lists on the next read,
+-- same as any other computed-on-read state here.
+DELETE FROM payment_waivers
+WHERE member_number = sqlc.arg(member_number)
+  AND covers_year = sqlc.arg(covers_year)
+  AND covers_month = sqlc.arg(covers_month);
+
 -- name: ListMembersMissingPayment :many
 -- Members who were liable for the membership fee in the given year/month but
 -- have no payment_coverage row for it. "Liable" = fee_start_date is set (the
 -- member_arrears view enforces this) and the target month falls within
--- [fee_start_date, COALESCE(fee_stop_date, CURRENT_DATE)] at month granularity.
+-- [fee_start_date, upper bound] at month granularity, where upper bound is
+-- COALESCE(fee_stop_date, CURRENT_DATE) capped at CURRENT_DATE - 2 months: dues
+-- for month M are due by the end of month M+1 (a recurring one-month grace,
+-- not just onboarding — see docs/logic-design.md "Missed Payment Detection"),
+-- so M only counts as liable-and-overdue once M+1 has also fully elapsed.
 --
 -- total_missed_months comes from the member_arrears view: a total-arrears figure
 -- independent of the queried month (every unpaid month across the member's full
@@ -248,12 +305,21 @@ JOIN members m ON m.member_number = ma.member_number
 WHERE date_trunc('month', m.fee_start_date::timestamp)
         <= make_date(sqlc.arg(year)::int, sqlc.arg(month)::int, 1)::timestamp
   AND make_date(sqlc.arg(year)::int, sqlc.arg(month)::int, 1)::timestamp
-        <= date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)::timestamp)
+        <= LEAST(
+             date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)::timestamp),
+             date_trunc('month', CURRENT_DATE::timestamp) - interval '2 months'
+           )
   AND NOT EXISTS (
       SELECT 1 FROM payment_coverage pc
       WHERE pc.member_number = ma.member_number
         AND pc.covers_year = sqlc.arg(year)::int
         AND pc.covers_month = sqlc.arg(month)::int
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM payment_waivers pw
+      WHERE pw.member_number = ma.member_number
+        AND pw.covers_year = sqlc.arg(year)::int
+        AND pw.covers_month = sqlc.arg(month)::int
   )
 ORDER BY ma.total_missed_months DESC, ma.member_number;
 
@@ -276,6 +342,7 @@ WHERE EXISTS (
         ),
         least(
             date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)::timestamp),
+            date_trunc('month', CURRENT_DATE::timestamp) - interval '2 months',
             make_date(sqlc.arg(year)::int, 12, 1)::timestamp
         ),
         interval '1 month'
@@ -285,6 +352,12 @@ WHERE EXISTS (
         WHERE pc.member_number = ma.member_number
           AND pc.covers_year = EXTRACT(YEAR FROM ym.month)::int
           AND pc.covers_month = EXTRACT(MONTH FROM ym.month)::int
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM payment_waivers pw
+        WHERE pw.member_number = ma.member_number
+          AND pw.covers_year = EXTRACT(YEAR FROM ym.month)::int
+          AND pw.covers_month = EXTRACT(MONTH FROM ym.month)::int
     )
 )
 ORDER BY ma.total_missed_months DESC, ma.member_number;
@@ -300,12 +373,21 @@ WHERE m.workplace_executive_committee_sub = ANY(sqlc.arg(workplace_subs)::uuid[]
   AND date_trunc('month', m.fee_start_date::timestamp)
         <= make_date(sqlc.arg(year)::int, sqlc.arg(month)::int, 1)::timestamp
   AND make_date(sqlc.arg(year)::int, sqlc.arg(month)::int, 1)::timestamp
-        <= date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)::timestamp)
+        <= LEAST(
+             date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)::timestamp),
+             date_trunc('month', CURRENT_DATE::timestamp) - interval '2 months'
+           )
   AND NOT EXISTS (
       SELECT 1 FROM payment_coverage pc
       WHERE pc.member_number = ma.member_number
         AND pc.covers_year = sqlc.arg(year)::int
         AND pc.covers_month = sqlc.arg(month)::int
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM payment_waivers pw
+      WHERE pw.member_number = ma.member_number
+        AND pw.covers_year = sqlc.arg(year)::int
+        AND pw.covers_month = sqlc.arg(month)::int
   )
 ORDER BY ma.total_missed_months DESC, ma.member_number;
 
@@ -325,6 +407,7 @@ WHERE m.workplace_executive_committee_sub = ANY(sqlc.arg(workplace_subs)::uuid[]
         ),
         least(
             date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)::timestamp),
+            date_trunc('month', CURRENT_DATE::timestamp) - interval '2 months',
             make_date(sqlc.arg(year)::int, 12, 1)::timestamp
         ),
         interval '1 month'
@@ -334,6 +417,12 @@ WHERE m.workplace_executive_committee_sub = ANY(sqlc.arg(workplace_subs)::uuid[]
         WHERE pc.member_number = ma.member_number
           AND pc.covers_year = EXTRACT(YEAR FROM ym.month)::int
           AND pc.covers_month = EXTRACT(MONTH FROM ym.month)::int
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM payment_waivers pw
+        WHERE pw.member_number = ma.member_number
+          AND pw.covers_year = EXTRACT(YEAR FROM ym.month)::int
+          AND pw.covers_month = EXTRACT(MONTH FROM ym.month)::int
     )
 )
 ORDER BY ma.total_missed_months DESC, ma.member_number;
@@ -436,7 +525,12 @@ INSERT INTO processed_transactions (raw_transaction_id, member_number, category,
 VALUES (sqlc.arg(raw_transaction_id), sqlc.narg(member_number), sqlc.arg(category), sqlc.arg(direction), sqlc.narg(matched_by))
 RETURNING *;
 
--- name: CreatePaymentCoverage :exec
+-- name: CreatePaymentCoverage :execrows
+-- ON CONFLICT DO NOTHING + :execrows (same pattern as InsertCoverageRow) so
+-- the caller can tell when a second payment lands on an already-covered
+-- month — see internal/processing/processing.go's log line, since this path
+-- (unlike the manual assignment endpoint) has no HTTP response to surface it
+-- through.
 INSERT INTO payment_coverage (processed_transaction_id, member_number, covers_year, covers_month)
 VALUES (sqlc.arg(processed_transaction_id), sqlc.arg(member_number), sqlc.arg(covers_year), sqlc.arg(covers_month))
 ON CONFLICT (member_number, covers_year, covers_month) DO NOTHING;

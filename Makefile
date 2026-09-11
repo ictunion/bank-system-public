@@ -44,6 +44,18 @@ migrate:
 sqlc:
 	sqlc generate
 
+# Regenerates internal/swaggerdocs from the @-annotation comments on
+# cmd/server/main.go (general API info) and internal/handler/*.go (one
+# @Router block per route). Dev-only doc — see docs/stack-overview.md and
+# config.EnableSwaggerDocs: the UI only mounts when ENABLE_SWAGGER_DOCS=true,
+# never in a production build. --parseInternal so swag can resolve response
+# types declared in internal/handler despite dir-scoping to the two package
+# paths that actually carry annotations.
+.PHONY: swagger
+swagger:
+	swag init -g main.go -d ./cmd/server,./internal/handler --output internal/swaggerdocs --parseInternal
+	go mod tidy
+
 .PHONY: db-test-init
 db-test-init:
 	@pg_ctl -D "$(PGDATA)" status >/dev/null 2>&1 || $(MAKE) db-start

@@ -127,9 +127,11 @@ Per transaction:
 1. **Member match** — `variable_symbol` looked up against `member_payment_identifiers`,
    restricted to the identifier valid on the transaction's date (`valid_from` /
    `valid_to`). Matched → `category = 'membership_fee'`, `matched_by = 'variable_symbol'`,
-   and a `payment_coverage` row inserted for the transaction's own year/month (the
-   default single-month case — see `db-design.md` `payment_coverage`). Lump-sum
-   multi-month coverage stays a manual follow-up step, not handled here.
+   and a `payment_coverage` row inserted for the month **before** the transaction's own
+   (the default single-month case — see `db-design.md` `payment_coverage`, and "Missed
+   Payment Detection" below for why: dues are paid a month in arrears, so a payment
+   received in October defaults to covering September). Lump-sum multi-month coverage
+   stays a manual follow-up step, not handled here.
 2. **Salary detection** — only checked if not matched above. Substring match on `"mzda"`
    (case-insensitive) against `comment` or `user_identification`. Not error-proof (no
    structured payroll signal exists yet), but good enough for a first version — revisit
@@ -173,8 +175,10 @@ add-coverage actions), amount/date/currency/direction, category/member_number/ma
 the payment symbols, and counterparty + free-text fields for identification.
 
 The January-missing-payments workflow: `/payments/2026/1/missing` says *who* is short,
-then `GET /transactions?direction=incoming&assigned=false&from=2026-01-01&to=2026-01-31`
-lists the unassigned January credits to match against them.
+then `GET /transactions?direction=incoming&assigned=false&from=2026-02-01&to=2026-02-28`
+lists the unassigned credits to match against them — **February**, not January: dues for
+January are paid during February (see "Missed Payment Detection" below), so that's where
+a late-but-legitimate January payment would actually land.
 
 Deferred filters: free-text search (`ILIKE` on counterparty name / VS / message),
 amount range, currency, `bank_account_id`, "covers month X" (join `payment_coverage`).
@@ -244,8 +248,9 @@ Jan–Mar"). Gated by the **`manage-transactions`** role — separate from
   `member_number` (`payment_coverage.member_number` is `NOT NULL`, so there's nothing to
   attach a coverage row to otherwise) — `400` if `covers` is given for a different
   category, or for `membership_fee` with no `member_number`. When omitted/empty for a
-  covered membership fee, it defaults to the transaction's own year/month — same as the
-  automatic single-month case.
+  covered membership fee, it defaults to the month **before** the transaction's own —
+  same one-month-in-arrears convention as the automatic single-month case (see "Missed
+  Payment Detection" below).
 - A requested month already covered by a **different** transaction (the
   `payment_coverage` `UNIQUE (member_number, covers_year, covers_month)` constraint) →
   `409` with `{conflicts: [{year, month}]}`, whole write rolled back. The admin clears
@@ -314,6 +319,16 @@ Endpoint logic:
 4. Coverage rows come from the processing step for the default case (payment covers its
    own transaction month) and from manual entry for lump-sum cases — this endpoint is
    read-only against `payment_coverage`, it does not create coverage rows itself.
+5. Also appends one entry per row from `ListWaiversForMember` (see "Payment Waivers"
+   below), skipping any month that also has a real `payment_coverage` row (a payment can
+   in principle land for a month after it was already waived — the real payment wins,
+   the month isn't reported twice). A waived entry reuses the same JSON shape as a real
+   one, but with `processed_transaction_id: 0`, `transaction_date`/`currency` empty, and
+   `amount` set to the literal string `"Waived"` — chosen specifically so the frontend
+   can show a "Waived" label wherever it already renders `amount` for a month, without a
+   new field or type on its side. The waiver's `reason` is never included here; it's
+   admin-only (see `GET /payments/waivers`), not something a member should see about
+   their own waived month.
 
 Same underlying table (`payment_coverage`) also backs missed-payment detection below —
 one is "which months have a row" (history), the other is "which expected months don't"
@@ -347,6 +362,17 @@ paid — one row per `(member_number, covers_year, covers_month)`. A "missing" m
 just the absence of a row, found by diffing against the months a member was liable to
 pay.
 
+**Dues are paid a month in arrears, always — not just for a member's first payment.**
+Month M's fee is expected during month M+1 (join in April → first payment during May),
+so M only counts as *overdue* once M+1 has also fully elapsed — i.e. once the current
+month is M+2 or later. This is why the liability window's upper bound below is capped at
+`CURRENT_DATE - 2 months`, not `CURRENT_DATE`: without that cap, the still-in-progress
+current month (and the previous one, still within its own grace period) would show as
+"missing" for essentially every liable member, every time. The same one-month lag is why
+automatic/default coverage attribution (`processOne`, `AssignTransaction`'s default
+`covers`) targets the month *before* the transaction's own — see "Transaction
+Processing" and "Manual Assignment & Coverage" above.
+
 Two cohort endpoints, both gated by the same `payment-history` Keycloak role as the
 per-member history route (anyone trusted with an individual member's payments is trusted
 with the cohort list — same data sensitivity), both returning
@@ -355,7 +381,7 @@ descending (top offenders first), `member_number` breaking ties:
 
 - `GET /payments/{year}/{month}/missing` (handler `MissingPayments`, query
   `ListMembersMissingPayment`) — members liable that specific month with no coverage
-  row for it.
+  row for it and no waiver (see "Payment Waivers" below) for it either.
 - `GET /payments/{year}/missing` (handler `MissingPaymentsInYear`, query
   `ListMembersMissingPaymentInYear`) — members who missed at least one liable month
   anywhere in that calendar year.
@@ -390,7 +416,10 @@ basis for a future `/payments/{member_number}/missing` route):
 SELECT expected.month
 FROM generate_series(
     date_trunc('month', m.fee_start_date),
-    date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)),
+    LEAST(
+        date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)),
+        date_trunc('month', CURRENT_DATE) - interval '2 months'
+    ),
     interval '1 month'
 ) AS expected(month)
 LEFT JOIN payment_coverage pc
@@ -402,13 +431,17 @@ WHERE m.member_number = $1
     AND pc.id IS NULL;
 ```
 
-The window is `fee_start_date` .. `COALESCE(fee_stop_date, CURRENT_DATE)`: a member with
-no `fee_start_date` yet isn't liable (the `IS NOT NULL` guard drops them — `generate_series`
-on a null start would error anyway), and a member with a `fee_stop_date` isn't expected
-to pay past it, so an ex-member stops accruing "missed" months the day their liability
-ended rather than forever. (Restrict further with
-`member_payment_identifiers.valid_from`/`valid_to` if a member's identifier window is
-narrower still.)
+The window is `fee_start_date` .. `LEAST(COALESCE(fee_stop_date, CURRENT_DATE),
+CURRENT_DATE - 2 months)`: a member with no `fee_start_date` yet isn't liable (the `IS
+NOT NULL` guard drops them — `generate_series` on a null start would error anyway), a
+member with a `fee_stop_date` isn't expected to pay past it so an ex-member stops
+accruing "missed" months the day their liability ended rather than forever, and the
+`CURRENT_DATE - 2 months` cap enforces the one-month-arrears grace described above (it
+only actually bites while a member is currently or recently liable — for anyone whose
+`fee_stop_date` is well in the past, the grace period has long since elapsed and
+`LEAST` resolves to `fee_stop_date` same as before this cap existed). (Restrict further
+with `member_payment_identifiers.valid_from`/`valid_to` if a member's identifier window
+is narrower still.)
 
 ### Why not prefill `payment_coverage` with placeholder/missing rows
 
@@ -428,3 +461,73 @@ Considered and rejected:
 Revisit only if this becomes a proven hot path (e.g. a dashboard computing "missing"
 across all members frequently) — at that point, a plain view or scheduled cache refresh
 would be the first thing to try before touching the storage model.
+
+## Payment Waivers
+
+Some missing months never get a matching transaction and never will — a member forgot
+one payment years ago, and nobody is going to chase them for a single month from 2022
+or ask them to pay it back. But that member also shouldn't sit on the missing-payments
+list forever just because there's no transaction to attach. `payment_waivers` (see
+`db-design.md`) records an explicit admin decision to write off one specific month,
+kept deliberately separate from `payment_coverage` — a waived month is not a paid one.
+
+**`POST /payments/{member_number}/waive`**
+
+```json
+{ "year": 2022, "month": 6, "reason": "confirmed with member — one-off miss, too old to chase" }
+```
+
+- `reason` is required (non-empty after trimming) — the only record of why a debt was
+  written off, since no admin-identity column exists anywhere in this schema (see
+  "Manual Assignment & Coverage" above — the same is true there).
+- `400` if `member_number` doesn't exist, `year`/`month` is out of range, or the month
+  is already covered by a real `payment_coverage` row — waiving a paid month would be
+  meaningless, and more likely signals a mismatch worth investigating than a debt worth
+  forgiving.
+- Idempotent: waiving an already-waived month is a `200` no-op (`ON CONFLICT DO
+  NOTHING` on `payment_waivers`' own `UNIQUE (member_number, covers_year,
+  covers_month)`) returning the *original* reason, not the one just submitted — the
+  first recorded reason stands. To change a reason, delete and re-create the waiver.
+- No liability-window check — same reasoning as `covers` on the manual assignment
+  endpoint: this is a deliberate manual override, and an admin might reasonably waive a
+  month just outside the computed window (e.g. rounding at the liability boundary).
+- Success returns `{member_number, year, month, reason, created_at}`.
+
+**`DELETE /payments/{member_number}/waive/{year}/{month}`**
+
+Undoes a waiver — the admin changed their mind, or waived the wrong month. The month
+reappears in missing-payment lists on the next read, same as any other computed-on-read
+state here (see "Missed Payment Detection" above). `404` if no such waiver exists,
+`204` on success.
+
+Both routes are gated by **`manage-transactions`** — the same role as
+`PUT/DELETE /transactions/{id}/assignment`, since writing off a member's debt is the
+same trust level as manually re-matching a payment.
+
+**Effect on detection:** `member_arrears.total_missed_months` and all four
+`ListMembersMissingPayment*` queries (`ListMembersMissingPayment`,
+`ListMembersMissingPaymentInYear`, and their `...ForWorkplace` counterparts) exclude a
+month with a `payment_waivers` row the same way they already exclude one with a
+`payment_coverage` row — an extra `NOT EXISTS` clause alongside the existing one. A
+waived member can therefore disappear from the missing list entirely (if the waived
+month was their only gap) or just show a lower `total_missed_months` (if they have
+other, unwaived gaps too).
+
+**`has_ever_paid` is untouched by waivers** — it stays `EXISTS (payment_coverage)` only.
+Waiving a month is explicitly *not* the same as paying it, and a member who has never
+made a real payment but has an old month waived should still read as "never paid" for
+follow-up purposes (send onboarding info again), not blend into "usually pays."
+
+**`GET /payments/waivers`** — every waiver across every member (query `ListWaivers`,
+handler `ListWaivers`), newest-created first. Backs a dedicated admin-only Waivers tab
+in the frontend (list + delete + create — see `docs/frontend-auth.md`/frontend source),
+gated by the same `manage-transactions` role as the other two routes here: seeing which
+debts were written off and why is the same trust level as writing one off. Unlike the
+two cohort missing-payment endpoints, this one isn't scoped by year/month or workplace —
+the tab shows the whole (typically small) list at once.
+
+`ListWaiversForMember` remains the per-member read path, used by
+`writePaymentHistory` to fold waived months into `/payments/{member_number}/history` and
+`/payments/me/history` (see "Payment History Endpoint" above) — kept distinct from
+`ListWaivers` since that use needs the member-scoped shape, not the full cross-member
+list the Waivers tab needs.

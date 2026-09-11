@@ -53,6 +53,15 @@ type PaymentCoverage struct {
 	CoversMonth            int16 `json:"covers_month"`
 }
 
+type PaymentWaiver struct {
+	ID           int64     `json:"id"`
+	MemberNumber int32     `json:"member_number"`
+	CoversYear   int32     `json:"covers_year"`
+	CoversMonth  int16     `json:"covers_month"`
+	Reason       string    `json:"reason"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
 type ProcessedTransaction struct {
 	ID               int64     `json:"id"`
 	RawTransactionID int64     `json:"raw_transaction_id"`

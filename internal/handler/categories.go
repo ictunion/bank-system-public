@@ -25,6 +25,15 @@ type categoryResponse struct {
 // ones added since), mandatory ones first. Used by the FE both to populate
 // the category picker on manual assignment and to render the manage-
 // categories admin view.
+//
+// @Summary      List transaction categories
+// @Description  Requires the list-transactions role. Mandatory categories first.
+// @Tags         categories
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200  {array}  handler.categoryResponse
+// @Failure      401,403  {object}  map[string]string
+// @Router       /categories [get]
 func ListCategories(queries *db.Queries) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		categories, err := queries.ListCategories(r.Context())
@@ -48,6 +57,18 @@ type createCategoryRequest struct {
 // CreateCategory handles POST /categories — adds a custom category.
 // is_mandatory is always false here; only the four seeded categories are
 // mandatory (see migrations/20260910000001_add_transaction_categories.sql).
+//
+// @Summary      Add a custom transaction category
+// @Description  Requires the manage-transactions role. Always created with is_mandatory=false.
+// @Tags         categories
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        request  body  handler.createCategoryRequest  true  "New category"
+// @Success      201  {object}  handler.categoryResponse
+// @Failure      400,401,403  {object}  map[string]string
+// @Failure      409  {object}  map[string]string  "name already exists"
+// @Router       /categories [post]
 func CreateCategory(queries *db.Queries) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var request createCategoryRequest
@@ -85,6 +106,17 @@ func CreateCategory(queries *db.Queries) http.HandlerFunc {
 // of the four mandatory categories (400), a category still referenced by
 // processed_transactions.category (409, via the FK's violation on delete),
 // or a name that doesn't exist (404).
+//
+// @Summary      Delete a custom transaction category
+// @Description  Requires the manage-transactions role. Mandatory categories and categories still in use cannot be deleted.
+// @Tags         categories
+// @Security     BearerAuth
+// @Param        name  path  string  true  "Category name"
+// @Success      204  "no content"
+// @Failure      400,401,403  {object}  map[string]string  "mandatory category"
+// @Failure      404  {object}  map[string]string
+// @Failure      409  {object}  map[string]string  "category still referenced by existing transactions"
+// @Router       /categories/{name} [delete]
 func DeleteCategory(queries *db.Queries) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")

@@ -35,6 +35,17 @@ type eventLogItem struct {
 // ListEventLogs handles GET /event-logs — sync_fio_runs and sync_orca_runs
 // merged into one admin-facing feed, newest first. No filters, just
 // limit/offset paging (same defaults/cap as ListTransactions).
+//
+// @Summary      List sync run history
+// @Description  Requires the view-event-logs role. Merges Fio and Orca sync runs into one feed, newest first.
+// @Tags         event-logs
+// @Security     BearerAuth
+// @Produce      json
+// @Param        limit   query  int  false  "Max results, default 100, capped at 500"
+// @Param        offset  query  int  false  "Default 0"
+// @Success      200  {object}  handler.eventLogsResponse
+// @Failure      400,401,403  {object}  map[string]string
+// @Router       /event-logs [get]
 func ListEventLogs(queries *db.Queries) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		queryParams := r.URL.Query()

@@ -103,8 +103,9 @@ Client roles on `bank-system`: `payment-history`, `list-transactions`,
 `manage-transactions`, `manage-bank-accounts`, `view-event-logs`, `view-budget`,
 `view-workplace-payment-history` (see `internal/keycloak/keycloak.go`). Assign to the admin
 users who should reach those endpoints — `manage-transactions` is the write role for
-editing member matches / coverage and should be granted more narrowly than
-`list-transactions`. `view-workplace-payment-history` is different from the others: it's a
+editing member matches / coverage (and the Waivers tab — writing off a member's missed
+month) and should be granted more narrowly than `list-transactions`.
+`view-workplace-payment-history` is different from the others: it's a
 capability check only — grant it to every workplace rep, since it's the live Keycloak
 group lookup above (not the role) that actually limits which members' data a given rep
 can see. The SPA reads `resource_access["bank-system"].roles` from the token to

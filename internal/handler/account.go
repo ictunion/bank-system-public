@@ -53,6 +53,15 @@ type bankAccountResponse struct {
 // the admin UI, including soft-deleted ones (IsActive false) so admins still
 // see the historical record. Never includes the Fio token itself, only
 // whether one is set.
+//
+// @Summary      List bank accounts
+// @Description  Requires the manage-bank-accounts role. Excludes the Fio token itself, only whether one is set.
+// @Tags         accounts
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200  {array}  handler.bankAccountResponse
+// @Failure      401,403  {object}  map[string]string
+// @Router       /account [get]
 func ListBankAccounts(queries *db.Queries) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		accounts, err := queries.ListBankAccounts(r.Context())
@@ -82,6 +91,18 @@ func ListBankAccounts(queries *db.Queries) http.HandlerFunc {
 // the Fio sync job (internal/syncjob) has something to sync against, including
 // the Fio API token it should use (encrypted at rest, see queries.sql). This is
 // a one-time-per-account setup call, not part of the daily sync flow.
+//
+// @Summary      Register a bank account
+// @Description  Requires the manage-bank-accounts role. fio_token is encrypted at rest and never echoed back.
+// @Tags         accounts
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        request  body  handler.createBankAccountRequest  true  "New bank account"
+// @Success      201  {object}  handler.bankAccountResponse
+// @Failure      400,401,403  {object}  map[string]string
+// @Failure      409  {object}  map[string]string  "fio_account_id already registered"
+// @Router       /account [post]
 func CreateBankAccount(queries *db.Queries, encryptionKey string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var request createBankAccountRequest
@@ -149,6 +170,19 @@ func CreateBankAccount(queries *db.Queries, encryptionKey string) http.HandlerFu
 // UpdateBankAccount handles PATCH /account/{id} — edits our own label for the
 // account and/or rotates its Fio token. See updateBankAccountRequest for why
 // fio_account_id/iban/currency aren't here.
+//
+// @Summary      Update a bank account's label and/or Fio token
+// @Description  Requires the manage-bank-accounts role. fio_account_id/iban/currency are Fio-assigned and not editable here.
+// @Tags         accounts
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id       path  int                                true  "Bank account ID"
+// @Param        request  body  handler.updateBankAccountRequest  true  "Fields to update"
+// @Success      200  {object}  handler.bankAccountResponse
+// @Failure      400,401,403  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Router       /account/{id} [patch]
 func UpdateBankAccount(queries *db.Queries, encryptionKey string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseBankAccountID(r)
@@ -211,6 +245,16 @@ func UpdateBankAccount(queries *db.Queries, encryptionKey string) http.HandlerFu
 // no ON DELETE clause, and the row needs to stick around for
 // ListBankAccounts to still show it). 0 rows affected means the id doesn't
 // exist or was already deleted — both read as 404.
+//
+// @Summary      Soft-delete a bank account
+// @Description  Requires the manage-bank-accounts role. The row and its sync history are kept, just marked inactive.
+// @Tags         accounts
+// @Security     BearerAuth
+// @Param        id  path  int  true  "Bank account ID"
+// @Success      204  "no content"
+// @Failure      400,401,403  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Router       /account/{id} [delete]
 func DeleteBankAccount(queries *db.Queries) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseBankAccountID(r)
@@ -255,6 +299,19 @@ type syncResultResponse struct {
 // already-committed raw_transactions rows aren't lost — left for the next
 // scheduled cycle, same as any other unprocessed row — so that's reported as
 // a 200 with zeroed processing counts, not an error.
+//
+// @Summary      Trigger an immediate Fio sync for one account
+// @Description  Requires the manage-bank-accounts role. Refuses (409) when DISABLE_FIO_SYNC is set. Runs transaction processing synchronously afterward.
+// @Tags         accounts
+// @Security     BearerAuth
+// @Produce      json
+// @Param        id  path  int  true  "Bank account ID"
+// @Success      200  {object}  handler.syncResultResponse
+// @Failure      400,401,403  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      409  {object}  map[string]string  "sync disabled, or account inactive/has no token"
+// @Failure      502  {object}  map[string]string  "Fio API call failed"
+// @Router       /account/{id}/sync [post]
 func TriggerFioSync(pool *pgxpool.Pool, fioAPIURL, encryptionKey string, disableFioSync, debug bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseBankAccountID(r)
@@ -318,6 +375,21 @@ type backfillRequest struct {
 // other unprocessed raw_transactions row — so that failure is reported as a
 // 200 with zeroed processing counts, not an error, to avoid implying the
 // backfill itself failed.
+//
+// @Summary      Backfill historical transactions for one account
+// @Description  Requires the manage-bank-accounts role. Pulls via Fio's /periods/ endpoint for a date range predating the account's cursor-based sync; ranges over 90 days old need SCA unlocked in Fio's own Internet Banking first. Runs transaction processing synchronously afterward.
+// @Tags         accounts
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id       path  int                          true  "Bank account ID"
+// @Param        request  body  handler.backfillRequest  true  "Date range, both YYYY-MM-DD, inclusive"
+// @Success      200  {object}  handler.syncResultResponse
+// @Failure      400,401,403  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      409  {object}  map[string]string  "sync disabled, or account inactive/has no token"
+// @Failure      502  {object}  map[string]string  "Fio API call failed"
+// @Router       /account/{id}/backfill [post]
 func BackfillAccount(pool *pgxpool.Pool, fioAPIURL, encryptionKey string, disableFioSync, debug bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseBankAccountID(r)

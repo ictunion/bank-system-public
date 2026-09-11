@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kubik/bank-system/internal/db"
 	"github.com/kubik/bank-system/internal/dbtest"
@@ -96,7 +97,7 @@ func TestAssignTransaction_CategoryOnlyNoMember(t *testing.T) {
 	}
 }
 
-func TestAssignTransaction_WithMemberDefaultsCoverageToTransactionMonth(t *testing.T) {
+func TestAssignTransaction_WithMemberDefaultsCoverageToMonthBeforeTransaction(t *testing.T) {
 	pool := dbtest.Pool(t)
 	queries := db.New(pool)
 	account := seedBankAccount(t, queries, "9300000004")
@@ -120,7 +121,13 @@ func TestAssignTransaction_WithMemberDefaultsCoverageToTransactionMonth(t *testi
 		t.Errorf("MemberNumber = %v, want 900502", got.MemberNumber)
 	}
 	if len(got.CoveredMonths) != 1 {
-		t.Fatalf("CoveredMonths = %v, want exactly one entry (the transaction's own month)", got.CoveredMonths)
+		t.Fatalf("CoveredMonths = %v, want exactly one entry (the month before the transaction's own)", got.CoveredMonths)
+	}
+	// Dues are paid a month in arrears (see docs/logic-design.md "Missed
+	// Payment Detection") — same convention processOne uses automatically.
+	wantMonth := time.Now().AddDate(0, -1, 0)
+	if got.CoveredMonths[0].Year != wantMonth.Year() || got.CoveredMonths[0].Month != int(wantMonth.Month()) {
+		t.Errorf("CoveredMonths[0] = %+v, want {%d %d}", got.CoveredMonths[0], wantMonth.Year(), int(wantMonth.Month()))
 	}
 }
 

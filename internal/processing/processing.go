@@ -121,13 +121,35 @@ func processOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.
 	}
 
 	if category == "membership_fee" && memberNumber != nil {
-		if err := txQueries.CreatePaymentCoverage(requestContext, db.CreatePaymentCoverageParams{
+		// Dues for month M are paid during month M+1 (see docs/logic-design.md
+		// "Missed Payment Detection") — a transaction received this month covers
+		// *last* month's fee by default, not its own month. AssignTransaction's
+		// manual default follows the same convention; either can be overridden
+		// explicitly (there, via `covers` — not possible here, since automatic
+		// matching has no other signal to go on).
+		coveredMonth := rt.TransactionDate.AddDate(0, -1, 0)
+		rows, err := txQueries.CreatePaymentCoverage(requestContext, db.CreatePaymentCoverageParams{
 			ProcessedTransactionID: pt.ID,
 			MemberNumber:           *memberNumber,
-			CoversYear:             int32(rt.TransactionDate.Year()),
-			CoversMonth:            int16(rt.TransactionDate.Month()),
-		}); err != nil {
+			CoversYear:             int32(coveredMonth.Year()),
+			CoversMonth:            int16(coveredMonth.Month()),
+		})
+		if err != nil {
 			return fmt.Errorf("inserting payment_coverage: %w", err)
+		}
+		if rows == 0 {
+			// member_number/covers_year/covers_month already covered by a
+			// different transaction — e.g. two payments in the same month, or a
+			// catch-up payment for a month processOne has no way to know is the
+			// actually-missing one (it always defaults to "last month," see
+			// above). Not an error: this transaction still commits, categorized
+			// correctly, just without a payment_coverage row of its own until an
+			// admin manually re-points it at a different month (PUT
+			// /transactions/{id}/assignment with an explicit `covers`). Logged
+			// because — unlike that manual endpoint, which 409s — this path has
+			// no caller to report it to otherwise.
+			log.Printf("processing: raw_transaction_id=%d: member_number=%d already has payment_coverage for %d-%02d, no coverage row created for this transaction",
+				rt.ID, *memberNumber, coveredMonth.Year(), int(coveredMonth.Month()))
 		}
 	}
 

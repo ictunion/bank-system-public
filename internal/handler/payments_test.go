@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -123,6 +124,95 @@ func TestMyPaymentHistory_ReturnsCoveredMonths(t *testing.T) {
 	}
 	if len(got[0].CoveredMonths) != 1 || got[0].CoveredMonths[0].Month != 1 || got[0].CoveredMonths[0].Year != 2026 {
 		t.Errorf("CoveredMonths = %+v, want [{2026 1}]", got[0].CoveredMonths)
+	}
+}
+
+func TestMyPaymentHistory_WaivedMonthShowsAsWaived(t *testing.T) {
+	queries := dbtest.Tx(t)
+	const sub = "77777777-7777-7777-7777-777777777777"
+	const memberNumber = int32(900103)
+	seedMemberWithSub(t, queries, memberNumber, sub)
+
+	if _, err := queries.CreatePaymentWaiver(context.Background(), db.CreatePaymentWaiverParams{
+		MemberNumber: memberNumber,
+		CoversYear:   2022,
+		CoversMonth:  6,
+		Reason:       "one-off miss, too old to chase",
+	}); err != nil {
+		t.Fatalf("CreatePaymentWaiver: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := withFakeClaims(httptest.NewRequest(http.MethodGet, "/payments/me/history", nil), sub)
+	MyPaymentHistory(queries)(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	var got []paymentHistoryEntry
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d entries, want 1: %+v", len(got), got)
+	}
+	if got[0].Amount != "Waived" {
+		t.Errorf("Amount = %q, want %q", got[0].Amount, "Waived")
+	}
+	if len(got[0].CoveredMonths) != 1 || got[0].CoveredMonths[0] != (coveredMonth{Year: 2022, Month: 6}) {
+		t.Errorf("CoveredMonths = %+v, want [{2022 6}]", got[0].CoveredMonths)
+	}
+	// The reason must never reach this response — it's admin-only.
+	if strings.Contains(recorder.Body.String(), "too old to chase") {
+		t.Errorf("response leaks the waiver reason: %s", recorder.Body.String())
+	}
+}
+
+func TestMyPaymentHistory_PaidMonthWinsOverWaivedMonth(t *testing.T) {
+	queries := dbtest.Tx(t)
+	const sub = "88888888-8888-8888-8888-888888888888"
+	const memberNumber = int32(900104)
+	seedMemberWithSub(t, queries, memberNumber, sub)
+
+	if _, err := queries.CreatePaymentWaiver(context.Background(), db.CreatePaymentWaiverParams{
+		MemberNumber: memberNumber,
+		CoversYear:   2026,
+		CoversMonth:  1,
+		Reason:       "x",
+	}); err != nil {
+		t.Fatalf("CreatePaymentWaiver: %v", err)
+	}
+
+	account := seedBankAccount(t, queries, "9200000030")
+	member := memberNumber
+	pt := seedTransaction(t, queries, account.ID, 4002, "500.00", "membership_fee", "incoming", &member)
+	if _, err := queries.InsertCoverageRow(context.Background(), db.InsertCoverageRowParams{
+		ProcessedTransactionID: pt.ID,
+		MemberNumber:           memberNumber,
+		CoversYear:             2026,
+		CoversMonth:            1,
+	}); err != nil {
+		t.Fatalf("InsertCoverageRow: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := withFakeClaims(httptest.NewRequest(http.MethodGet, "/payments/me/history", nil), sub)
+	MyPaymentHistory(queries)(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	var got []paymentHistoryEntry
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	// A payment landed for a month that was already (redundantly) waived —
+	// must appear once, as the real payment, not twice.
+	if len(got) != 1 {
+		t.Fatalf("got %d entries, want 1 (real payment must win, month not double-reported): %+v", len(got), got)
+	}
+	if got[0].Amount == "Waived" {
+		t.Errorf("Amount = %q, want the real payment amount", got[0].Amount)
 	}
 }
 

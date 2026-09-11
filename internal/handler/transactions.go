@@ -55,6 +55,24 @@ type transactionListItem struct {
 // All filters are optional query params (see docs/logic-design.md "Transaction
 // Browser"): assigned (true|false), direction, category, matched_by,
 // member_number, from, to (YYYY-MM-DD), limit (<=500, default 100), offset.
+//
+// @Summary      Browse processed transactions
+// @Description  Requires the list-transactions role. All filters optional and combinable.
+// @Tags         transactions
+// @Security     BearerAuth
+// @Produce      json
+// @Param        assigned       query  bool    false  "true = has a member match, false = the unassigned worklist"
+// @Param        direction      query  string  false  "incoming or outgoing"
+// @Param        category       query  string  false  "e.g. membership_fee, salary, other_income, other_expense"
+// @Param        matched_by     query  string  false  "variable_symbol, manual, or amount_heuristic"
+// @Param        member_number  query  int     false  "One member's transactions"
+// @Param        from           query  string  false  "YYYY-MM-DD, inclusive"
+// @Param        to             query  string  false  "YYYY-MM-DD, inclusive"
+// @Param        limit          query  int     false  "Default 100, capped at 500"
+// @Param        offset         query  int     false  "Default 0"
+// @Success      200  {object}  handler.transactionsResponse
+// @Failure      400,401,403  {object}  map[string]string
+// @Router       /transactions [get]
 func ListTransactions(queries *db.Queries) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		queryParams := r.URL.Query()
@@ -267,6 +285,17 @@ func writeTransactionDetail(w http.ResponseWriter, r *http.Request, queries *db.
 
 // GetTransaction handles GET /transactions/{id} — one transaction with its
 // covered months, for the browser's detail / edit view.
+//
+// @Summary      Get one transaction's detail
+// @Description  Requires the list-transactions role.
+// @Tags         transactions
+// @Security     BearerAuth
+// @Produce      json
+// @Param        id  path  int  true  "processed_transactions ID"
+// @Success      200  {object}  handler.transactionDetail
+// @Failure      400,401,403  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Router       /transactions/{id} [get]
 func GetTransaction(queries *db.Queries) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseTransactionID(r)
@@ -292,10 +321,25 @@ func GetTransaction(queries *db.Queries) http.HandlerFunc {
 // member, so this also serves as a category-only edit — omit member_number
 // to just change the category without matching anyone. matched_by is set to
 // 'manual' when a member is given, NULL otherwise. For category=membership_fee
-// *with* a member, the coverage rows are replaced with `covers` (or the
-// transaction's own month when `covers` is empty); no member or a non-fee
-// category carries no coverage. A month already covered by a *different*
-// transaction is a 409.
+// *with* a member, the coverage rows are replaced with `covers` (or the month
+// before the transaction's own when `covers` is empty — dues are paid a month
+// in arrears, see docs/logic-design.md "Missed Payment Detection"); no member
+// or a non-fee category carries no coverage. A month already covered by a
+// *different* transaction is a 409.
+//
+// @Summary      Manually match/categorize a transaction
+// @Description  Requires the manage-transactions role. member_number optional (category-only edit if omitted); covers optional (defaults to the month before the transaction's own).
+// @Tags         transactions
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id       path  int                                true  "processed_transactions ID"
+// @Param        request  body  handler.assignTransactionRequest  true  "New member/category/coverage"
+// @Success      200  {object}  handler.transactionDetail
+// @Failure      400,401,403  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      409  {object}  map[string]string  "one or more covers months already covered by a different transaction"
+// @Router       /transactions/{id}/assignment [put]
 func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseTransactionID(r)
@@ -375,7 +419,13 @@ func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 			if len(request.Covers) > 0 {
 				months = request.Covers
 			} else {
-				months = []monthRef{{Year: detail.TransactionDate.Year(), Month: int(detail.TransactionDate.Month())}}
+				// Dues for month M are paid during month M+1 (see
+				// docs/logic-design.md "Missed Payment Detection") — default to
+				// the month before the transaction's own, same convention
+				// processOne uses for automatic matches. Explicit `covers`
+				// above overrides this, same as it overrides the automatic case.
+				coveredMonth := detail.TransactionDate.AddDate(0, -1, 0)
+				months = []monthRef{{Year: coveredMonth.Year(), Month: int(coveredMonth.Month())}}
 			}
 		}
 
@@ -448,6 +498,16 @@ func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 // member match and matched_by, deletes the transaction's payment_coverage rows,
 // and resets category to the direction-based default (other_income /
 // other_expense). One DB transaction.
+//
+// @Summary      Revert a transaction's match
+// @Description  Requires the manage-transactions role. Clears member/matched_by, deletes coverage rows, resets category to the direction default.
+// @Tags         transactions
+// @Security     BearerAuth
+// @Param        id  path  int  true  "processed_transactions ID"
+// @Success      204  "no content"
+// @Failure      400,401,403  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Router       /transactions/{id}/assignment [delete]
 func UnassignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseTransactionID(r)
@@ -522,6 +582,17 @@ type categorySummaryResponse struct {
 // transaction browser, this never returns a member_number, counterparty, or
 // any other per-transaction detail — only category/currency/total — so it's
 // meant to be safe for every member to see, not just admins.
+//
+// @Summary      Budgeting totals by category
+// @Description  Requires the view-budget role. Grouped by direction/category/currency only — no member_number or counterparty, safe for wide member-facing use.
+// @Tags         transactions
+// @Security     BearerAuth
+// @Produce      json
+// @Param        from  query  string  false  "YYYY-MM-DD, inclusive"
+// @Param        to    query  string  false  "YYYY-MM-DD, inclusive"
+// @Success      200  {object}  handler.categorySummaryResponse
+// @Failure      400,401,403  {object}  map[string]string
+// @Router       /transactions/summary [get]
 func CategorySummary(queries *db.Queries) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		queryParams := r.URL.Query()

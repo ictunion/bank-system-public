@@ -125,7 +125,7 @@ func (q *Queries) CreateCategory(ctx context.Context, name string) (TransactionC
 	return i, err
 }
 
-const createPaymentCoverage = `-- name: CreatePaymentCoverage :exec
+const createPaymentCoverage = `-- name: CreatePaymentCoverage :execrows
 INSERT INTO payment_coverage (processed_transaction_id, member_number, covers_year, covers_month)
 VALUES ($1, $2, $3, $4)
 ON CONFLICT (member_number, covers_year, covers_month) DO NOTHING
@@ -138,14 +138,52 @@ type CreatePaymentCoverageParams struct {
 	CoversMonth            int16 `json:"covers_month"`
 }
 
-func (q *Queries) CreatePaymentCoverage(ctx context.Context, arg CreatePaymentCoverageParams) error {
-	_, err := q.db.Exec(ctx, createPaymentCoverage,
+// ON CONFLICT DO NOTHING + :execrows (same pattern as InsertCoverageRow) so
+// the caller can tell when a second payment lands on an already-covered
+// month — see internal/processing/processing.go's log line, since this path
+// (unlike the manual assignment endpoint) has no HTTP response to surface it
+// through.
+func (q *Queries) CreatePaymentCoverage(ctx context.Context, arg CreatePaymentCoverageParams) (int64, error) {
+	result, err := q.db.Exec(ctx, createPaymentCoverage,
 		arg.ProcessedTransactionID,
 		arg.MemberNumber,
 		arg.CoversYear,
 		arg.CoversMonth,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const createPaymentWaiver = `-- name: CreatePaymentWaiver :execrows
+INSERT INTO payment_waivers (member_number, covers_year, covers_month, reason)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (member_number, covers_year, covers_month) DO NOTHING
+`
+
+type CreatePaymentWaiverParams struct {
+	MemberNumber int32  `json:"member_number"`
+	CoversYear   int32  `json:"covers_year"`
+	CoversMonth  int16  `json:"covers_month"`
+	Reason       string `json:"reason"`
+}
+
+// ON CONFLICT DO NOTHING + :execrows, same idempotent-insert pattern as
+// CreatePaymentCoverage/InsertCoverageRow — calling this twice for the same
+// month is a no-op (0 rows affected), not an error, since the caller's
+// intent ("this month is written off") is already satisfied.
+func (q *Queries) CreatePaymentWaiver(ctx context.Context, arg CreatePaymentWaiverParams) (int64, error) {
+	result, err := q.db.Exec(ctx, createPaymentWaiver,
+		arg.MemberNumber,
+		arg.CoversYear,
+		arg.CoversMonth,
+		arg.Reason,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const createProcessedTransaction = `-- name: CreateProcessedTransaction :one
@@ -271,6 +309,30 @@ DELETE FROM payment_coverage WHERE processed_transaction_id = $1
 func (q *Queries) DeleteCoverageForTransaction(ctx context.Context, processedTransactionID int64) error {
 	_, err := q.db.Exec(ctx, deleteCoverageForTransaction, processedTransactionID)
 	return err
+}
+
+const deletePaymentWaiver = `-- name: DeletePaymentWaiver :execrows
+DELETE FROM payment_waivers
+WHERE member_number = $1
+  AND covers_year = $2
+  AND covers_month = $3
+`
+
+type DeletePaymentWaiverParams struct {
+	MemberNumber int32 `json:"member_number"`
+	CoversYear   int32 `json:"covers_year"`
+	CoversMonth  int16 `json:"covers_month"`
+}
+
+// Undoes a waiver (the admin changed their mind, or waived the wrong
+// month) — the month reappears in missing-payment lists on the next read,
+// same as any other computed-on-read state here.
+func (q *Queries) DeletePaymentWaiver(ctx context.Context, arg DeletePaymentWaiverParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deletePaymentWaiver, arg.MemberNumber, arg.CoversYear, arg.CoversMonth)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const ensureDefaultPaymentIdentifier = `-- name: EnsureDefaultPaymentIdentifier :exec
@@ -547,6 +609,39 @@ func (q *Queries) GetPaymentHistory(ctx context.Context, memberNumber int32) ([]
 		return nil, err
 	}
 	return items, nil
+}
+
+const getPaymentWaiver = `-- name: GetPaymentWaiver :one
+SELECT covers_year, covers_month, reason, created_at
+FROM payment_waivers
+WHERE member_number = $1
+  AND covers_year = $2
+  AND covers_month = $3
+`
+
+type GetPaymentWaiverParams struct {
+	MemberNumber int32 `json:"member_number"`
+	CoversYear   int32 `json:"covers_year"`
+	CoversMonth  int16 `json:"covers_month"`
+}
+
+type GetPaymentWaiverRow struct {
+	CoversYear  int32     `json:"covers_year"`
+	CoversMonth int16     `json:"covers_month"`
+	Reason      string    `json:"reason"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func (q *Queries) GetPaymentWaiver(ctx context.Context, arg GetPaymentWaiverParams) (GetPaymentWaiverRow, error) {
+	row := q.db.QueryRow(ctx, getPaymentWaiver, arg.MemberNumber, arg.CoversYear, arg.CoversMonth)
+	var i GetPaymentWaiverRow
+	err := row.Scan(
+		&i.CoversYear,
+		&i.CoversMonth,
+		&i.Reason,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const getTransactionCategorySummary = `-- name: GetTransactionCategorySummary :many
@@ -1048,12 +1143,21 @@ JOIN members m ON m.member_number = ma.member_number
 WHERE date_trunc('month', m.fee_start_date::timestamp)
         <= make_date($1::int, $2::int, 1)::timestamp
   AND make_date($1::int, $2::int, 1)::timestamp
-        <= date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)::timestamp)
+        <= LEAST(
+             date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)::timestamp),
+             date_trunc('month', CURRENT_DATE::timestamp) - interval '2 months'
+           )
   AND NOT EXISTS (
       SELECT 1 FROM payment_coverage pc
       WHERE pc.member_number = ma.member_number
         AND pc.covers_year = $1::int
         AND pc.covers_month = $2::int
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM payment_waivers pw
+      WHERE pw.member_number = ma.member_number
+        AND pw.covers_year = $1::int
+        AND pw.covers_month = $2::int
   )
 ORDER BY ma.total_missed_months DESC, ma.member_number
 `
@@ -1066,7 +1170,11 @@ type ListMembersMissingPaymentParams struct {
 // Members who were liable for the membership fee in the given year/month but
 // have no payment_coverage row for it. "Liable" = fee_start_date is set (the
 // member_arrears view enforces this) and the target month falls within
-// [fee_start_date, COALESCE(fee_stop_date, CURRENT_DATE)] at month granularity.
+// [fee_start_date, upper bound] at month granularity, where upper bound is
+// COALESCE(fee_stop_date, CURRENT_DATE) capped at CURRENT_DATE - 2 months: dues
+// for month M are due by the end of month M+1 (a recurring one-month grace,
+// not just onboarding — see docs/logic-design.md "Missed Payment Detection"),
+// so M only counts as liable-and-overdue once M+1 has also fully elapsed.
 //
 // total_missed_months comes from the member_arrears view: a total-arrears figure
 // independent of the queried month (every unpaid month across the member's full
@@ -1104,12 +1212,21 @@ WHERE m.workplace_executive_committee_sub = ANY($1::uuid[])
   AND date_trunc('month', m.fee_start_date::timestamp)
         <= make_date($2::int, $3::int, 1)::timestamp
   AND make_date($2::int, $3::int, 1)::timestamp
-        <= date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)::timestamp)
+        <= LEAST(
+             date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)::timestamp),
+             date_trunc('month', CURRENT_DATE::timestamp) - interval '2 months'
+           )
   AND NOT EXISTS (
       SELECT 1 FROM payment_coverage pc
       WHERE pc.member_number = ma.member_number
         AND pc.covers_year = $2::int
         AND pc.covers_month = $3::int
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM payment_waivers pw
+      WHERE pw.member_number = ma.member_number
+        AND pw.covers_year = $2::int
+        AND pw.covers_month = $3::int
   )
 ORDER BY ma.total_missed_months DESC, ma.member_number
 `
@@ -1156,6 +1273,7 @@ WHERE EXISTS (
         ),
         least(
             date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)::timestamp),
+            date_trunc('month', CURRENT_DATE::timestamp) - interval '2 months',
             make_date($1::int, 12, 1)::timestamp
         ),
         interval '1 month'
@@ -1165,6 +1283,12 @@ WHERE EXISTS (
         WHERE pc.member_number = ma.member_number
           AND pc.covers_year = EXTRACT(YEAR FROM ym.month)::int
           AND pc.covers_month = EXTRACT(MONTH FROM ym.month)::int
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM payment_waivers pw
+        WHERE pw.member_number = ma.member_number
+          AND pw.covers_year = EXTRACT(YEAR FROM ym.month)::int
+          AND pw.covers_month = EXTRACT(MONTH FROM ym.month)::int
     )
 )
 ORDER BY ma.total_missed_months DESC, ma.member_number
@@ -1210,6 +1334,7 @@ WHERE m.workplace_executive_committee_sub = ANY($1::uuid[])
         ),
         least(
             date_trunc('month', COALESCE(m.fee_stop_date, CURRENT_DATE)::timestamp),
+            date_trunc('month', CURRENT_DATE::timestamp) - interval '2 months',
             make_date($2::int, 12, 1)::timestamp
         ),
         interval '1 month'
@@ -1219,6 +1344,12 @@ WHERE m.workplace_executive_committee_sub = ANY($1::uuid[])
         WHERE pc.member_number = ma.member_number
           AND pc.covers_year = EXTRACT(YEAR FROM ym.month)::int
           AND pc.covers_month = EXTRACT(MONTH FROM ym.month)::int
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM payment_waivers pw
+        WHERE pw.member_number = ma.member_number
+          AND pw.covers_year = EXTRACT(YEAR FROM ym.month)::int
+          AND pw.covers_month = EXTRACT(MONTH FROM ym.month)::int
     )
 )
 ORDER BY ma.total_missed_months DESC, ma.member_number
@@ -1423,12 +1554,122 @@ func (q *Queries) ListUnprocessedTransactions(ctx context.Context) ([]RawTransac
 	return items, nil
 }
 
+const listWaivers = `-- name: ListWaivers :many
+SELECT member_number, covers_year, covers_month, reason, created_at
+FROM payment_waivers
+ORDER BY created_at DESC
+`
+
+type ListWaiversRow struct {
+	MemberNumber int32     `json:"member_number"`
+	CoversYear   int32     `json:"covers_year"`
+	CoversMonth  int16     `json:"covers_month"`
+	Reason       string    `json:"reason"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// Every payment_waivers row across all members — backs the dedicated
+// Waivers admin tab (list + delete + create), gated the same as manual
+// transaction assignment (manage-transactions). See docs/logic-design.md
+// "Payment Waivers". Newest first, same convention as ListWaiversForMember.
+func (q *Queries) ListWaivers(ctx context.Context) ([]ListWaiversRow, error) {
+	rows, err := q.db.Query(ctx, listWaivers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListWaiversRow
+	for rows.Next() {
+		var i ListWaiversRow
+		if err := rows.Scan(
+			&i.MemberNumber,
+			&i.CoversYear,
+			&i.CoversMonth,
+			&i.Reason,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWaiversForMember = `-- name: ListWaiversForMember :many
+SELECT covers_year, covers_month, reason, created_at
+FROM payment_waivers
+WHERE member_number = $1
+ORDER BY covers_year DESC, covers_month DESC
+`
+
+type ListWaiversForMemberRow struct {
+	CoversYear  int32     `json:"covers_year"`
+	CoversMonth int16     `json:"covers_month"`
+	Reason      string    `json:"reason"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// Backs the "why did this month stop showing up as missing" question on the
+// payment history panel — see docs/logic-design.md "Payment Waivers".
+func (q *Queries) ListWaiversForMember(ctx context.Context, memberNumber int32) ([]ListWaiversForMemberRow, error) {
+	rows, err := q.db.Query(ctx, listWaiversForMember, memberNumber)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListWaiversForMemberRow
+	for rows.Next() {
+		var i ListWaiversForMemberRow
+		if err := rows.Scan(
+			&i.CoversYear,
+			&i.CoversMonth,
+			&i.Reason,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const memberExists = `-- name: MemberExists :one
 SELECT EXISTS (SELECT 1 FROM members WHERE member_number = $1) AS exists
 `
 
 func (q *Queries) MemberExists(ctx context.Context, memberNumber int32) (bool, error) {
 	row := q.db.QueryRow(ctx, memberExists, memberNumber)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const paymentCoverageExists = `-- name: PaymentCoverageExists :one
+SELECT EXISTS (
+    SELECT 1 FROM payment_coverage
+    WHERE member_number = $1
+      AND covers_year = $2
+      AND covers_month = $3
+) AS exists
+`
+
+type PaymentCoverageExistsParams struct {
+	MemberNumber int32 `json:"member_number"`
+	CoversYear   int32 `json:"covers_year"`
+	CoversMonth  int16 `json:"covers_month"`
+}
+
+// Guards CreatePaymentWaiver: a month with a real payment_coverage row
+// doesn't need (and shouldn't get) a waiver — see docs/logic-design.md
+// "Payment Waivers".
+func (q *Queries) PaymentCoverageExists(ctx context.Context, arg PaymentCoverageExistsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, paymentCoverageExists, arg.MemberNumber, arg.CoversYear, arg.CoversMonth)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err

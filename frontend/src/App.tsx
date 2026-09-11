@@ -7,6 +7,7 @@ import { CategoriesPage } from './CategoriesPage'
 import { EventLogsPage } from './EventLogsPage'
 import { useHasRole } from './roles'
 import { TransactionsTable } from './TransactionsTable'
+import { WaiversPage } from './WaiversPage'
 
 export function App() {
   return (
@@ -21,6 +22,7 @@ function Dashboard() {
   const canManageBankAccounts = useHasRole('manage-bank-accounts')
   const canViewEventLogs = useHasRole('view-event-logs')
   const canViewBudget = useHasRole('view-budget')
+  const canManageTransactions = useHasRole('manage-transactions')
 
   return (
     <main>
@@ -40,6 +42,11 @@ function Dashboard() {
             <Link to="/" style={{ color: '#fff' }}>
               Transactions
             </Link>
+            {canManageTransactions && (
+              <Link to="/waivers" style={{ color: '#fff' }}>
+                Waivers
+              </Link>
+            )}
             <Link to="/categories" style={{ color: '#fff' }}>
               Categories
             </Link>
@@ -73,6 +80,7 @@ function Dashboard() {
             <Route path="/budget" element={<BudgetPage />} />
             <Route path="/bank-accounts" element={<BankAccountsPage />} />
             <Route path="/event-logs" element={<EventLogsPage />} />
+            <Route path="/waivers" element={<WaiversPage />} />
           </Routes>
         </div>
       </div>

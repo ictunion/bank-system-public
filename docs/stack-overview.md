@@ -29,15 +29,38 @@ Caching is not automatic anywhere in this stack — it's implemented explicitly 
 
 ## HTTP surface
 - All application routes are mounted under an **`/api` prefix** (`/api/payments/...`,
-  `/api/healthz`, ...). `cmd/server/main.go` builds the route mux unprefixed and mounts
+  `/api/transactions`, ...). `cmd/server/main.go` builds the route mux unprefixed and mounts
   it via `http.StripPrefix("/api", ...)`. The prefix keeps the API namespace clear of
   the admin frontend's client-side routes and lets the reverse proxy split the two.
+
+## API documentation (Swagger / OpenAPI)
+- **swaggo/swag** — comment-annotation based, the standard approach for a plain
+  `net/http` Go service (no framework to hang route metadata off of). Every handler in
+  `internal/handler` carries `@Summary`/`@Router`/etc. comments immediately above its
+  func; `cmd/server/main.go` carries the general `@title`/`@BasePath`/`@securityDefinitions`
+  block above `func main`.
+- `make swagger` (`swag init ... --output internal/swaggerdocs`, then `go mod tidy`)
+  regenerates `internal/swaggerdocs/{docs.go,swagger.json,swagger.yaml}` from those
+  comments — same shape as `make sqlc`, a codegen step run in the nix shell, not
+  something derived automatically from route registration or request/response types.
+  Re-run it after adding/changing a route or its annotations; nothing enforces that the
+  annotations still match the handler otherwise (same drift risk as any comment).
+  Never hand-edit `internal/swaggerdocs/*` — see CLAUDE.md.
+- Served via `github.com/swaggo/http-swagger/v2`, mounted at `GET /api/docs/*` **only**
+  when `EnableSwaggerDocs` is true (`ENABLE_SWAGGER_DOCS` env var, default false — see
+  `internal/config`). Deliberately dev-only: every real route in this service requires a
+  Keycloak bearer token and a role, but the docs UI itself carries no auth of its own, so
+  it must never be reachable in a production deployment.
 
 ## Auth
 - **Keycloak** (same realm as the rest of ictunion's stack). Bearer tokens verified in
   `internal/keycloak`; role-gated routes via `handler.RequireRole` (`payment-history`,
   `list-transactions`, `manage-transactions`, `manage-bank-accounts`, `view-event-logs`). Machine-to-machine sync routes use a static shared secret instead
   (see `logic-design.md` "Orca Member Sync").
+- No unauthenticated routes at all, including no `/healthz` — a bad Postgres connection
+  fails the process at startup instead (`pool.Ping` in `cmd/server/main.go`, `log.Fatalf`
+  to stderr on failure), so there's nothing for an unauthenticated liveness check to add:
+  the process either starts with a working DB connection or doesn't start.
 - Frontend logs in with Authorization Code + PKCE against the same `bank-system` client
   (public), tokens held in memory only. Full setup — including the **required audience
   mapper** without which the backend rejects every SPA token — in `frontend-auth.md`.

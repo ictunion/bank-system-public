@@ -26,7 +26,17 @@ type Querier interface {
 	// is_mandatory is never set true here — only the four seeded in
 	// migrations/20260910000001_add_transaction_categories.sql are mandatory.
 	CreateCategory(ctx context.Context, name string) (TransactionCategory, error)
-	CreatePaymentCoverage(ctx context.Context, arg CreatePaymentCoverageParams) error
+	// ON CONFLICT DO NOTHING + :execrows (same pattern as InsertCoverageRow) so
+	// the caller can tell when a second payment lands on an already-covered
+	// month — see internal/processing/processing.go's log line, since this path
+	// (unlike the manual assignment endpoint) has no HTTP response to surface it
+	// through.
+	CreatePaymentCoverage(ctx context.Context, arg CreatePaymentCoverageParams) (int64, error)
+	// ON CONFLICT DO NOTHING + :execrows, same idempotent-insert pattern as
+	// CreatePaymentCoverage/InsertCoverageRow — calling this twice for the same
+	// month is a no-op (0 rows affected), not an error, since the caller's
+	// intent ("this month is written off") is already satisfied.
+	CreatePaymentWaiver(ctx context.Context, arg CreatePaymentWaiverParams) (int64, error)
 	CreateProcessedTransaction(ctx context.Context, arg CreateProcessedTransactionParams) (ProcessedTransaction, error)
 	CreateSyncFioRun(ctx context.Context, bankAccountID int32) (SyncFioRun, error)
 	CreateSyncOrcaRun(ctx context.Context) (SyncOrcaRun, error)
@@ -45,6 +55,10 @@ type Querier interface {
 	// key violation instead (see processed_transactions_category_fkey).
 	DeleteCategory(ctx context.Context, name string) (int64, error)
 	DeleteCoverageForTransaction(ctx context.Context, processedTransactionID int64) error
+	// Undoes a waiver (the admin changed their mind, or waived the wrong
+	// month) — the month reappears in missing-payment lists on the next read,
+	// same as any other computed-on-read state here.
+	DeletePaymentWaiver(ctx context.Context, arg DeletePaymentWaiverParams) (int64, error)
 	// Seeds the auto-generated "default" payment identifier for a member: variable
 	// symbol == member_number, valid from their fee_start_date. Runs on every Orca
 	// sync. DO NOTHING on conflict so a re-run is a no-op. Skipped by the caller when
@@ -73,6 +87,7 @@ type Querier interface {
 	// is non-null and matches one of the caller's own Keycloak groups.
 	GetMemberWorkplaceSub(ctx context.Context, memberNumber int32) (pgtype.UUID, error)
 	GetPaymentHistory(ctx context.Context, memberNumber int32) ([]GetPaymentHistoryRow, error)
+	GetPaymentWaiver(ctx context.Context, arg GetPaymentWaiverParams) (GetPaymentWaiverRow, error)
 	// Budgeting view (see docs/logic-design.md "Transaction Category Summary"):
 	// totals grouped by direction/category/currency only — no member_number, no
 	// counterparty, no per-transaction rows, so this is safe for the
@@ -113,7 +128,11 @@ type Querier interface {
 	// Members who were liable for the membership fee in the given year/month but
 	// have no payment_coverage row for it. "Liable" = fee_start_date is set (the
 	// member_arrears view enforces this) and the target month falls within
-	// [fee_start_date, COALESCE(fee_stop_date, CURRENT_DATE)] at month granularity.
+	// [fee_start_date, upper bound] at month granularity, where upper bound is
+	// COALESCE(fee_stop_date, CURRENT_DATE) capped at CURRENT_DATE - 2 months: dues
+	// for month M are due by the end of month M+1 (a recurring one-month grace,
+	// not just onboarding — see docs/logic-design.md "Missed Payment Detection"),
+	// so M only counts as liable-and-overdue once M+1 has also fully elapsed.
 	//
 	// total_missed_months comes from the member_arrears view: a total-arrears figure
 	// independent of the queried month (every unpaid month across the member's full
@@ -145,7 +164,19 @@ type Querier interface {
 	// docs/logic-design.md "Transaction Browser".
 	ListTransactions(ctx context.Context, arg ListTransactionsParams) ([]ListTransactionsRow, error)
 	ListUnprocessedTransactions(ctx context.Context) ([]RawTransaction, error)
+	// Every payment_waivers row across all members — backs the dedicated
+	// Waivers admin tab (list + delete + create), gated the same as manual
+	// transaction assignment (manage-transactions). See docs/logic-design.md
+	// "Payment Waivers". Newest first, same convention as ListWaiversForMember.
+	ListWaivers(ctx context.Context) ([]ListWaiversRow, error)
+	// Backs the "why did this month stop showing up as missing" question on the
+	// payment history panel — see docs/logic-design.md "Payment Waivers".
+	ListWaiversForMember(ctx context.Context, memberNumber int32) ([]ListWaiversForMemberRow, error)
 	MemberExists(ctx context.Context, memberNumber int32) (bool, error)
+	// Guards CreatePaymentWaiver: a month with a real payment_coverage row
+	// doesn't need (and shouldn't get) a waiver — see docs/logic-design.md
+	// "Payment Waivers".
+	PaymentCoverageExists(ctx context.Context, arg PaymentCoverageExistsParams) (bool, error)
 	// Mirrors members.fee_stop_date onto the default payment identifier's valid_to
 	// (variable_symbol == member_number): fee liability ended -> row closed with that
 	// date, fee_stop_date cleared in Orca -> row reopened (valid_to = NULL). The sync

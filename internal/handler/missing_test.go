@@ -159,6 +159,47 @@ func TestMissingPayments_HasEverPaidWhenMissingADifferentMonth(t *testing.T) {
 	}
 }
 
+// TestMissingPayments_OneMonthGracePeriod pins down the actual bug this test
+// guards against: dues for month M are paid during month M+1 (see
+// docs/logic-design.md "Missed Payment Detection"), so M only becomes
+// "missing" once M+1 has also fully elapsed. Computed relative to time.Now()
+// rather than a fixed year/month so it stays meaningful whenever the suite
+// runs, unlike the fixed-2026 tests above.
+func TestMissingPayments_OneMonthGracePeriod(t *testing.T) {
+	now := time.Now()
+	feeStart := now.AddDate(-5, 0, 0) // liable well before any of the months below
+
+	tests := []struct {
+		name        string
+		monthsAgo   int
+		wantMissing bool
+	}{
+		{"current month — not due yet at all", 0, false},
+		{"last month — still within its grace period", 1, false},
+		{"two months ago — grace period has elapsed", 2, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			queries := dbtest.Tx(t)
+			memberNumber := int32(900010 + tt.monthsAgo)
+			seedMember(t, queries, memberNumber, &feeStart)
+
+			target := now.AddDate(0, -tt.monthsAgo, 0)
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/payments/x/x/missing", nil)
+			request.SetPathValue("year", itoa(int32(target.Year())))
+			request.SetPathValue("month", itoa(int32(target.Month())))
+			MissingPayments(queries)(recorder, request)
+
+			members := missingPaymentMembers(t, recorder)
+			if got := containsMember(members, memberNumber); got != tt.wantMissing {
+				t.Errorf("containsMember = %v, want %v (querying %d-%02d, %d month(s) ago): %+v",
+					got, tt.wantMissing, target.Year(), int(target.Month()), tt.monthsAgo, members)
+			}
+		})
+	}
+}
+
 func TestMissingPayments_MemberNotYetLiable(t *testing.T) {
 	queries := dbtest.Tx(t)
 	const memberNumber = int32(900002)
