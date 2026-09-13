@@ -1,7 +1,7 @@
-Main responsibility of this code is payment synchronization and matching. Code does daily pulls from Fio bank (raw transactions from their API) and from Orca (minimal member info -> member number, workplace identification, payment start/stop date).
+Main responsibility of this code is payment synchronization and payment matching. Code does daily pulls from Fio bank (raw transactions from their API) and from Orca (minimal member info -> member number, workplace identification, payment start/stop date).
 
 ## API
-API is serving multiple routes (see Swagger for detailed info). It's split into few different responsibilities.
+API is serving multiple routes (see [Swagger](#swagger) for detailed info). It's split into few different responsibilities.
 
 Payment history -> We can query this API for payment history of every member, returns matched transactions.
 
@@ -14,7 +14,7 @@ Payment reconciliation -> Set of routes to define payment categories, match spec
 Logging -> Routes that returns logs about every sync, for admins only.
 
 ## Frontend
-Frontend is located in `/frontend` directory. It provides UI for admins and money people to do operations on top of transactions.
+Frontend is located in [/frontend](/frontend) directory. It provides UI for admins and money people to do operations on top of transactions.
 
 ## How to build
 We have makefile prepared to assist with running the code. It's important to start by copying `.env.example` to `.env` and setting all mandatory fields. The API can be created by running:
