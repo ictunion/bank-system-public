@@ -18,10 +18,9 @@ const MONTH_NAMES = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ]
 
-// membership_fee is one of the four mandatory categories (see
-// docs/logic-design.md "Transaction Categories") — this specific name is
-// hardcoded on the backend too (internal/handler/transactions.go), not just
-// here, so it's safe to check for literally.
+// membership_fee is one of the four mandatory categories — this specific
+// name is hardcoded on the backend too (internal/handler/transactions.go),
+// not just here, so it's safe to check for literally.
 const MEMBERSHIP_FEE = 'membership_fee'
 
 function monthOf(isoDate: string): MonthRef {

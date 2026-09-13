@@ -1,6 +1,6 @@
 // Package scheduler runs a job immediately and then repeatedly at a fixed
 // clock time every day, using only the standard library — no cron dependency
-// needed for a single daily job (see db-design.md, "Sync Job (Go)").
+// needed for a single daily job.
 package scheduler
 
 import (

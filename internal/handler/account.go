@@ -287,10 +287,10 @@ type syncResultResponse struct {
 
 // TriggerFioSync handles POST /account/{id}/sync — an admin "sync now" button
 // for one bank account, on top of the scheduled daily run
-// (internal/scheduler + cmd/server/main.go). Refuses to run at all when
-// DISABLE_FIO_SYNC is set, same local-dev safety net as the scheduled job
-// (see config.DisableFioSync) — nothing here bypasses it, so flipping that env
-// var back off later re-enables this button with no code change.
+// (internal/scheduler + cmd/server/main.go). Refuses to run at all in debug
+// mode (config.Debug), same local-dev safety net as the scheduled job —
+// local dev has no real Fio account/token, so this would just fail or
+// overwrite `make seed`'s fixture data.
 //
 // Runs transaction processing/matching synchronously right after a
 // successful sync, same as BackfillAccount and for the same reason: an admin
@@ -301,7 +301,7 @@ type syncResultResponse struct {
 // a 200 with zeroed processing counts, not an error.
 //
 // @Summary      Trigger an immediate Fio sync for one account
-// @Description  Requires the manage-bank-accounts role. Refuses (409) when DISABLE_FIO_SYNC is set. Runs transaction processing synchronously afterward.
+// @Description  Requires the manage-bank-accounts role. Refuses (409) in debug mode (DEBUG=true). Runs transaction processing synchronously afterward.
 // @Tags         accounts
 // @Security     BearerAuth
 // @Produce      json
@@ -309,18 +309,18 @@ type syncResultResponse struct {
 // @Success      200  {object}  handler.syncResultResponse
 // @Failure      400,401,403  {object}  map[string]string
 // @Failure      404  {object}  map[string]string
-// @Failure      409  {object}  map[string]string  "sync disabled, or account inactive/has no token"
+// @Failure      409  {object}  map[string]string  "debug mode, or account inactive/has no token"
 // @Failure      502  {object}  map[string]string  "Fio API call failed"
 // @Router       /account/{id}/sync [post]
-func TriggerFioSync(pool *pgxpool.Pool, fioAPIURL, encryptionKey string, disableFioSync, debug bool) http.HandlerFunc {
+func TriggerFioSync(pool *pgxpool.Pool, fioAPIURL, encryptionKey string, debug bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseBankAccountID(r)
 		if !ok {
 			writeError(w, http.StatusBadRequest, "invalid id")
 			return
 		}
-		if disableFioSync {
-			writeError(w, http.StatusConflict, "fio sync is disabled (DISABLE_FIO_SYNC)")
+		if debug {
+			writeError(w, http.StatusConflict, "fio sync is disabled in debug mode (DEBUG=true) — see `make seed` for local fixture data")
 			return
 		}
 
@@ -362,9 +362,8 @@ type backfillRequest struct {
 // pull via Fio's /periods/ endpoint (syncjob.BackfillAccount), for
 // transactions predating an account's first cursor-based sync. Data older
 // than 90 days needs a manual strong-authorization (SCA) unlock done first in
-// Fio's own Internet Banking (see docs/fio-api.md) — without it, Fio itself
-// returns an error for that range, surfaced here as a 502 same as any other
-// Fio failure.
+// Fio's own Internet Banking — without it, Fio itself returns an error for
+// that range, surfaced here as a 502 same as any other Fio failure.
 //
 // Unlike TriggerFioSync, this also runs transaction processing/matching
 // synchronously afterward: a backfill is meant to be reviewed right away
@@ -387,18 +386,18 @@ type backfillRequest struct {
 // @Success      200  {object}  handler.syncResultResponse
 // @Failure      400,401,403  {object}  map[string]string
 // @Failure      404  {object}  map[string]string
-// @Failure      409  {object}  map[string]string  "sync disabled, or account inactive/has no token"
+// @Failure      409  {object}  map[string]string  "debug mode, or account inactive/has no token"
 // @Failure      502  {object}  map[string]string  "Fio API call failed"
 // @Router       /account/{id}/backfill [post]
-func BackfillAccount(pool *pgxpool.Pool, fioAPIURL, encryptionKey string, disableFioSync, debug bool) http.HandlerFunc {
+func BackfillAccount(pool *pgxpool.Pool, fioAPIURL, encryptionKey string, debug bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseBankAccountID(r)
 		if !ok {
 			writeError(w, http.StatusBadRequest, "invalid id")
 			return
 		}
-		if disableFioSync {
-			writeError(w, http.StatusConflict, "fio sync is disabled (DISABLE_FIO_SYNC)")
+		if debug {
+			writeError(w, http.StatusConflict, "fio sync is disabled in debug mode (DEBUG=true) — see `make seed` for local fixture data")
 			return
 		}
 

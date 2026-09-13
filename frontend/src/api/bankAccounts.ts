@@ -54,15 +54,16 @@ export interface SyncResult {
 }
 
 // Manual "sync now" trigger, on top of the daily scheduled sync. Refused by
-// the backend (409) when DISABLE_FIO_SYNC is set.
+// the backend (409) in debug mode (DEBUG=true).
 export function triggerFioSync(id: number): Promise<SyncResult> {
   return apiSend<SyncResult>('POST', `/api/account/${id}/sync`)
 }
 
 // One-off historical pull for a date range (YYYY-MM-DD, inclusive), for
-// transactions predating an account's first cursor-based sync — see
-// docs/fio-api.md "The 90-day strong-authorization (SCA) rule". Refused by
-// the backend (409) when DISABLE_FIO_SYNC is set.
+// transactions predating an account's first cursor-based sync — data older
+// than 90 days needs a manual strong-authorization (SCA) unlock done first in
+// Fio's own Internet Banking. Refused by
+// the backend (409) in debug mode (DEBUG=true).
 export function backfillAccount(id: number, from: string, to: string): Promise<SyncResult> {
   return apiSend<SyncResult>('POST', `/api/account/${id}/backfill`, { from, to })
 }

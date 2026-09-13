@@ -46,7 +46,7 @@ func fakeFioServer(t *testing.T) *httptest.Server {
 	return server
 }
 
-func TestTriggerFioSync_Disabled(t *testing.T) {
+func TestTriggerFioSync_RefusedInDebugMode(t *testing.T) {
 	pool := dbtest.Pool(t)
 	queries := db.New(pool)
 	account := seedBankAccount(t, queries, "9300000007")
@@ -54,7 +54,7 @@ func TestTriggerFioSync_Disabled(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/account/"+itoa(account.ID)+"/sync", nil)
 	request.SetPathValue("id", itoa(account.ID))
-	TriggerFioSync(pool, "http://unused.invalid", testEncryptionKey, true, false)(recorder, request)
+	TriggerFioSync(pool, "http://unused.invalid", testEncryptionKey, true)(recorder, request)
 
 	if recorder.Code != http.StatusConflict {
 		t.Errorf("status = %d, want %d, body = %s", recorder.Code, http.StatusConflict, recorder.Body)
@@ -67,7 +67,7 @@ func TestTriggerFioSync_AccountNotFound(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/account/999999/sync", nil)
 	request.SetPathValue("id", "999999")
-	TriggerFioSync(pool, "http://unused.invalid", testEncryptionKey, false, false)(recorder, request)
+	TriggerFioSync(pool, "http://unused.invalid", testEncryptionKey, false)(recorder, request)
 
 	if recorder.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want %d, body = %s", recorder.Code, http.StatusNotFound, recorder.Body)
@@ -85,14 +85,14 @@ func TestTriggerFioSync_InactiveAccount(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/account/"+itoa(account.ID)+"/sync", nil)
 	request.SetPathValue("id", itoa(account.ID))
-	TriggerFioSync(pool, "http://unused.invalid", testEncryptionKey, false, false)(recorder, request)
+	TriggerFioSync(pool, "http://unused.invalid", testEncryptionKey, false)(recorder, request)
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d, body = %s", recorder.Code, http.StatusBadRequest, recorder.Body)
 	}
 }
 
-func TestBackfillAccount_Disabled(t *testing.T) {
+func TestBackfillAccount_RefusedInDebugMode(t *testing.T) {
 	pool := dbtest.Pool(t)
 	queries := db.New(pool)
 	account := seedBankAccount(t, queries, "9300000011")
@@ -101,7 +101,7 @@ func TestBackfillAccount_Disabled(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/account/"+itoa(account.ID)+"/backfill", body)
 	request.SetPathValue("id", itoa(account.ID))
-	BackfillAccount(pool, "http://unused.invalid", testEncryptionKey, true, false)(recorder, request)
+	BackfillAccount(pool, "http://unused.invalid", testEncryptionKey, true)(recorder, request)
 
 	if recorder.Code != http.StatusConflict {
 		t.Errorf("status = %d, want %d, body = %s", recorder.Code, http.StatusConflict, recorder.Body)
@@ -127,7 +127,7 @@ func TestBackfillAccount_Validation(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			request := httptest.NewRequest(http.MethodPost, "/account/"+itoa(account.ID)+"/backfill", strings.NewReader(tt.body))
 			request.SetPathValue("id", itoa(account.ID))
-			BackfillAccount(pool, "http://unused.invalid", testEncryptionKey, false, false)(recorder, request)
+			BackfillAccount(pool, "http://unused.invalid", testEncryptionKey, false)(recorder, request)
 			if recorder.Code != http.StatusBadRequest {
 				t.Errorf("status = %d, want %d, body = %s", recorder.Code, http.StatusBadRequest, recorder.Body)
 			}
@@ -142,7 +142,7 @@ func TestBackfillAccount_AccountNotFound(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/account/999999/backfill", body)
 	request.SetPathValue("id", "999999")
-	BackfillAccount(pool, "http://unused.invalid", testEncryptionKey, false, false)(recorder, request)
+	BackfillAccount(pool, "http://unused.invalid", testEncryptionKey, false)(recorder, request)
 
 	if recorder.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want %d, body = %s", recorder.Code, http.StatusNotFound, recorder.Body)
@@ -159,7 +159,7 @@ func TestBackfillAccount_SuccessRunsProcessingSynchronously(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/account/"+itoa(account.ID)+"/backfill", body)
 	request.SetPathValue("id", itoa(account.ID))
-	BackfillAccount(pool, fio.URL, testEncryptionKey, false, true)(recorder, request)
+	BackfillAccount(pool, fio.URL, testEncryptionKey, false)(recorder, request)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
@@ -185,11 +185,7 @@ func TestTriggerFioSync_Success(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/account/"+itoa(account.ID)+"/sync", nil)
 	request.SetPathValue("id", itoa(account.ID))
-	// debug=true routes through FetchPeriod rather than FetchNew — either
-	// endpoint hits the same fake server here, since fakeFioServer answers
-	// every path identically, but debug mode is what production local-dev
-	// sync actually uses (see internal/syncjob "In debug/dev mode").
-	TriggerFioSync(pool, fio.URL, testEncryptionKey, false, true)(recorder, request)
+	TriggerFioSync(pool, fio.URL, testEncryptionKey, false)(recorder, request)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)

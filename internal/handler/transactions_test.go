@@ -260,7 +260,7 @@ func TestCategorySummary_GroupsByCategoryAndDirection(t *testing.T) {
 		t.Fatalf("Outgoing = %+v, want one salary entry", got.Outgoing)
 	}
 	// SUM(ABS(amount)) — the stored -40.00 should come back as a positive 40,
-	// not a signed figure (see docs/logic-design.md "Transaction Category Summary").
+	// not a signed figure.
 	if total := parseAmount(t, got.Outgoing[0].Total); total != 40 {
 		t.Errorf("Outgoing salary total = %v, want 40 (positive, despite the negative stored amount)", total)
 	}

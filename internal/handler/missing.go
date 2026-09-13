@@ -27,11 +27,10 @@ type missingPaymentMember struct {
 
 // MissingPayments handles GET /payments/{year}/{month}/missing — the members
 // who were liable for the membership fee in that calendar month but have no
-// payment_coverage row for it (see docs/logic-design.md "Missed Payment
-// Detection"). Computed on read, no stored "missing" rows.
+// payment_coverage row for it. Computed on read, no stored "missing" rows.
 //
 // @Summary      Members missing a payment for one month
-// @Description  Requires the payment-history role. A waived month (see docs/logic-design.md "Payment Waivers") is excluded from this list, same as a paid one.
+// @Description  Requires the payment-history role. A waived month is excluded from this list, same as a paid one.
 // @Tags         payments
 // @Security     BearerAuth
 // @Produce      json
@@ -122,8 +121,7 @@ func MissingPaymentsInYear(queries *db.Queries) http.HandlerFunc {
 // the workplace-rep counterpart to MissingPayments, scoped to members sharing
 // any of the caller's Keycloak groups (looked up live via
 // Provider.UserGroupIDs) via workplace_executive_committee_sub instead of
-// every member. See docs/logic-design.md "Workplace-Scoped Payment History".
-// A caller in no workplace groups gets an empty list, not an error.
+// every member. A caller in no workplace groups gets an empty list, not an error.
 //
 // @Summary      Workplace-scoped: members missing a payment for one month
 // @Description  Requires the view-workplace-payment-history role. Scoped live to the caller's own Keycloak workplace group(s) via the Account API.

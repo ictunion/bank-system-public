@@ -14,8 +14,7 @@ import (
 )
 
 // AssignTransaction/UnassignTransaction open their own nested transactions on
-// the concrete *pgxpool.Pool (see docs/logic-design.md "Manual Assignment &
-// Coverage"), so dbtest.Tx's single-rolled-back-transaction trick can't hand
+// the concrete *pgxpool.Pool, so dbtest.Tx's single-rolled-back-transaction trick can't hand
 // them an isolated tx — these use dbtest.Pool instead, cleaned up by
 // truncation, not rollback.
 
@@ -123,8 +122,7 @@ func TestAssignTransaction_WithMemberDefaultsCoverageToMonthBeforeTransaction(t 
 	if len(got.CoveredMonths) != 1 {
 		t.Fatalf("CoveredMonths = %v, want exactly one entry (the month before the transaction's own)", got.CoveredMonths)
 	}
-	// Dues are paid a month in arrears (see docs/logic-design.md "Missed
-	// Payment Detection") — same convention processOne uses automatically.
+	// Dues are paid a month in arrears — same convention processOne uses automatically.
 	wantMonth := time.Now().AddDate(0, -1, 0)
 	if got.CoveredMonths[0].Year != wantMonth.Year() || got.CoveredMonths[0].Month != int(wantMonth.Month()) {
 		t.Errorf("CoveredMonths[0] = %+v, want {%d %d}", got.CoveredMonths[0], wantMonth.Year(), int(wantMonth.Month()))

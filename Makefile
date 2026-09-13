@@ -46,8 +46,8 @@ sqlc:
 
 # Regenerates internal/swaggerdocs from the @-annotation comments on
 # cmd/server/main.go (general API info) and internal/handler/*.go (one
-# @Router block per route). Dev-only doc — see docs/stack-overview.md and
-# config.EnableSwaggerDocs: the UI only mounts when ENABLE_SWAGGER_DOCS=true,
+# @Router block per route). Dev-only doc — see config.EnableSwaggerDocs: the
+# UI only mounts when ENABLE_SWAGGER_DOCS=true,
 # never in a production build. --parseInternal so swag can resolve response
 # types declared in internal/handler despite dir-scoping to the two package
 # paths that actually carry annotations.
@@ -66,7 +66,7 @@ db-test-init:
 migrate-test:
 	goose -dir migrations postgres "postgres://$(DB_USER):$(DB_PASSWORD)@localhost:$(DB_PORT)/$(DB_TEST_NAME)?sslmode=disable" up
 
-# See docs/testing.md — TEST_DATABASE_URL is deliberately separate from
+# TEST_DATABASE_URL is deliberately separate from
 # DATABASE_URL so a test-setup bug can never point at dev data by sharing a
 # variable name. -p 1 forces package test binaries to run one at a time:
 # `go test ./...` otherwise runs them concurrently, and every package shares
@@ -82,6 +82,16 @@ test: db-test-init migrate-test
 start:
 	@pg_ctl -D "$(PGDATA)" status >/dev/null 2>&1 || $(MAKE) db-start
 	go run ./cmd/server
+
+# Inserts local fixture data (members + raw_transactions, bypassing Fio/Orca
+# entirely) so there's something to develop against without a real bank
+# account or Orca instance — see cmd/seed/main.go. Idempotent, safe to
+# re-run. Run this instead of DEBUG=true, which now just skips the Fio sync
+# job rather than pulling any fake data of its own.
+.PHONY: seed
+seed:
+	@pg_ctl -D "$(PGDATA)" status >/dev/null 2>&1 || $(MAKE) db-start
+	go run ./cmd/seed
 
 .PHONY: build
 build:

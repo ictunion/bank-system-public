@@ -1,5 +1,7 @@
 // Package dbtest gives tests a real, migrated Postgres database instead of a
-// mocked *db.Queries — see docs/testing.md for why. TEST_DATABASE_URL points
+// mocked *db.Queries — a large share of this app's actual logic lives in the
+// SQL itself (views, generate_series-driven date math, array-scoped joins),
+// which mocking the query layer can't exercise. TEST_DATABASE_URL points
 // at it; `make test` sets that up (db-test-init + migrate-test) and passes
 // the var in, so tests never need to know how the database got there.
 package dbtest
@@ -27,7 +29,7 @@ func sharedPool(t *testing.T) *pgxpool.Pool {
 
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set — skipping DB-backed test (see docs/testing.md; run via `make test`)")
+		t.Skip("TEST_DATABASE_URL not set — skipping DB-backed test (run via `make test`)")
 	}
 
 	// One pool for the whole test binary, not one per test — pgxpool already
@@ -87,8 +89,8 @@ func Pool(t *testing.T) *pgxpool.Pool {
 // Only covers code that accepts a *db.Queries / db.DBTX. Code that requires
 // the concrete *pgxpool.Pool type (AssignTransaction, UnassignTransaction,
 // TriggerFioSync, and the syncjob package — all of which open their own
-// nested transactions internally) can't be handed this tx in its place; that
-// needs a different isolation strategy, not yet built — see docs/testing.md.
+// nested transactions internally) can't be handed this tx in its place; see
+// Pool below for that case instead.
 func Tx(t *testing.T) *db.Queries {
 	t.Helper()
 

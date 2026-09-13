@@ -1,9 +1,9 @@
 // Package processing turns raw_transactions into processed_transactions
 // (member match + category) and, for the default membership_fee case,
-// payment_coverage — the derived-data step described in db-design.md
-// "processed_transactions" and logic-design.md. Runs after both the Orca
-// and Fio syncs (see cmd/server/main.go) so member/payment-identifier and
-// transaction data are both fresh before matching.
+// payment_coverage — the derived-data step on top of the sync jobs. Runs
+// after both the Orca and Fio syncs (see cmd/server/main.go) so
+// member/payment-identifier and transaction data are both fresh before
+// matching.
 package processing
 
 import (
@@ -87,8 +87,7 @@ func processOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.
 
 	// Salary detection: substring match on "mzda" (Czech for wage/salary) in
 	// either free-text field payroll transactions were observed to carry it
-	// in — not error-proof, but a good-enough first version (see
-	// logic-design.md "Transaction Processing"). Only checked when not
+	// in — not error-proof, but a good-enough first version. Only checked when not
 	// already matched to a member above.
 	if category == "" && (containsMzda(rt.Comment) || containsMzda(rt.UserIdentification)) {
 		category = "salary"
@@ -121,8 +120,7 @@ func processOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.
 	}
 
 	if category == "membership_fee" && memberNumber != nil {
-		// Dues for month M are paid during month M+1 (see docs/logic-design.md
-		// "Missed Payment Detection") — a transaction received this month covers
+		// Dues for month M are paid during month M+1 — a transaction received this month covers
 		// *last* month's fee by default, not its own month. AssignTransaction's
 		// manual default follows the same convention; either can be overridden
 		// explicitly (there, via `covers` — not possible here, since automatic

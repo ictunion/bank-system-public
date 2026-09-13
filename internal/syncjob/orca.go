@@ -21,8 +21,8 @@ type OrcaResult struct {
 
 // RunOrcaSync pulls the full member list from Orca and upserts it into
 // `members`, recording the attempt in sync_orca_runs. Same idempotent-pull
-// shape as RunFioSync — see docs/orca-sync-members.md for why this is a full
-// pull every time rather than incremental.
+// shape as RunFioSync — a full pull every time rather than incremental, since
+// at member-list scale a daily full pull is cheap and needs no cursor.
 func RunOrcaSync(requestContext context.Context, pool *pgxpool.Pool, client *orca.OrcaClient) (result OrcaResult, err error) {
 	queries := db.New(pool)
 

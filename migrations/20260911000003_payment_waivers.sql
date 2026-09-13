@@ -6,7 +6,7 @@
 -- it retroactively, and nobody should be asked to. payment_waivers records
 -- an explicit admin decision to write a specific month off, separately from
 -- payment_coverage (which stays strictly "a real payment landed for this
--- month" — see docs/db-design.md `payment_coverage`). Keeping it a separate
+-- month"). Keeping it a separate
 -- table rather than a nullable processed_transaction_id on payment_coverage
 -- means every payment_coverage row still has real amount/date/transaction
 -- backing it (GetPaymentHistory's joins don't need to become outer joins),
@@ -14,7 +14,7 @@
 -- different tables with their own UNIQUE constraints.
 --
 -- reason is NOT NULL: with no admin-identity column anywhere in this schema
--- (see docs/logic-design.md — no audit trail exists for manual assignment
+-- (no audit trail exists for manual assignment
 -- either), the reason text is the only record of why a debt was written off.
 -- Forcing it non-empty keeps that record meaningful.
 CREATE TABLE payment_waivers (

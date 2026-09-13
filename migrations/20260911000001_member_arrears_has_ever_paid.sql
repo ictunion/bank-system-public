@@ -5,7 +5,7 @@
 -- "missed one month here and there" from "never started paying at all" (e.g.
 -- missed the onboarding email with bank details) — the same total_missed_months
 -- figure looks identical for both today, but they need very different
--- follow-up. See docs/logic-design.md "Missed Payment Detection".
+-- follow-up.
 CREATE OR REPLACE VIEW member_arrears AS
 SELECT
     m.member_number,

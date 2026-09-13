@@ -16,8 +16,7 @@ jobs:
       # Everything below runs through the same nix devShell (flake.nix) local
       # dev and the NixOS production server both use — go/goose/postgresql
       # versions here are exactly the ones flake.lock pins, not
-      # whatever ubuntu-latest happens to ship. See docs/testing.md and
-      # root CLAUDE.md ("Nix dev shell").
+      # whatever ubuntu-latest happens to ship.
       - uses: cachix/install-nix-action@v31
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}

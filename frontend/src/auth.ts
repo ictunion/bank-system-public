@@ -11,8 +11,7 @@ if (!url || !realm || !clientId) {
 }
 
 // One UserManager for the app. Authorization Code + PKCE (oidc-client-ts adds
-// the PKCE challenge automatically for response_type "code"). See
-// docs/frontend-auth.md for the required Keycloak client config.
+// the PKCE challenge automatically for response_type "code").
 export const userManager = new UserManager({
   authority: `${url}/realms/${realm}`,
   client_id: clientId,

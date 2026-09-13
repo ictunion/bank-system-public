@@ -8,8 +8,7 @@ interface AccessTokenClaims {
 const CLIENT_ID = import.meta.env.VITE_KEYCLOAK_CLIENT_ID
 
 // UI-only convenience (show/hide nav + actions) — the backend independently
-// enforces every role via handler.RequireRole regardless. See
-// docs/frontend-auth.md "Roles".
+// enforces every role via handler.RequireRole regardless.
 export function useHasRole(role: string): boolean {
   const auth = useAuth()
   const token = auth.user?.access_token

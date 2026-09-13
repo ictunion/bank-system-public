@@ -18,10 +18,6 @@ import (
 	"github.com/kubik/bank-system/internal/fio"
 )
 
-// fioSCAWindow is how far back Fio's classic API serves transactions without
-// requiring strong customer authorization (SCA) in Fio's own Internet Banking.
-const fioSCAWindow = 90 * 24 * time.Hour
-
 // Sentinel errors from SyncOneAccount — distinct from a Fio-API/DB failure so
 // handler.TriggerFioSync can map them to 404/400 instead of a generic 502.
 var (
@@ -71,7 +67,7 @@ func RunFioSync(requestContext context.Context, pool *pgxpool.Pool, fioAPIURL, e
 			continue
 		}
 		client := fio.NewClient(fioAPIURL, account.FioToken, debug)
-		result, err := syncAccount(requestContext, pool, queries, client, account.ID, debug)
+		result, err := syncAccount(requestContext, pool, queries, client, account.ID)
 		if err != nil {
 			log.Printf("fio sync: bank_account_id=%d failed: %v", account.ID, err)
 			continue
@@ -84,9 +80,9 @@ func RunFioSync(requestContext context.Context, pool *pgxpool.Pool, fioAPIURL, e
 // SyncOneAccount runs the same sync as one RunFioSync loop iteration, but for
 // a single account on demand — the admin "sync now" button (see
 // handler.TriggerFioSync), on top of the scheduled daily RunFioSync. Callers
-// are responsible for checking DISABLE_FIO_SYNC before calling this (see
-// config.DisableFioSync) — unlike the scheduled job, this has no scheduler
-// wrapper to do that check for it.
+// are responsible for checking config.Debug before calling this (local dev
+// has no real Fio account/token) — unlike the scheduled job, this has no
+// scheduler wrapper to do that check for it.
 func SyncOneAccount(requestContext context.Context, pool *pgxpool.Pool, fioAPIURL, encryptionKey string, bankAccountID int32, debug bool) (Result, error) {
 	queries := db.New(pool)
 
@@ -107,16 +103,16 @@ func SyncOneAccount(requestContext context.Context, pool *pgxpool.Pool, fioAPIUR
 	}
 
 	client := fio.NewClient(fioAPIURL, account.FioToken, debug)
-	return syncAccount(requestContext, pool, queries, client, account.ID, debug)
+	return syncAccount(requestContext, pool, queries, client, account.ID)
 }
 
 // BackfillAccount pulls transactions for one bank account across an explicit
 // date range via Fio's /periods/ endpoint — for history that predates an
-// account's first cursor-based sync (see docs/fio-api.md "The 90-day
-// strong-authorization (SCA) rule": data older than 90 days needs a manual
-// SCA unlock in Fio's own Internet Banking before this will return anything
-// for it). Unlike SyncOneAccount's FetchNew path, /periods/ never touches
-// Fio's server-side cursor, so this is safe to call before, after, or
+// account's first cursor-based sync. Data older than 90 days needs a manual
+// strong-authorization (SCA) unlock in Fio's own Internet Banking before this
+// will return anything for it. Unlike SyncOneAccount's FetchNew path,
+// /periods/ never touches Fio's server-side cursor, so this is safe to call
+// before, after, or
 // interleaved with the regular daily sync — raw_transactions' unique
 // constraint on (bank_account_id, fio_transaction_id) makes any overlap
 // between a backfill range and the cursor-based history idempotent, not a
@@ -192,7 +188,7 @@ func BackfillAccount(requestContext context.Context, pool *pgxpool.Pool, fioAPIU
 	}, nil
 }
 
-func syncAccount(requestContext context.Context, pool *pgxpool.Pool, queries *db.Queries, client *fio.FioClient, bankAccountID int32, debug bool) (result Result, err error) {
+func syncAccount(requestContext context.Context, pool *pgxpool.Pool, queries *db.Queries, client *fio.FioClient, bankAccountID int32) (result Result, err error) {
 	run, err := queries.CreateSyncFioRun(requestContext, bankAccountID)
 	if err != nil {
 		return Result{}, fmt.Errorf("creating sync_fio_runs row: %w", err)
@@ -212,19 +208,7 @@ func syncAccount(requestContext context.Context, pool *pgxpool.Pool, queries *db
 		}
 	}()
 
-	// In debug/dev mode, fetch only the last 90 days via /periods/ instead of
-	// the cursor-based /last/ — Fio requires strong authorization (SCA) in its
-	// own Internet Banking to serve anything older, which isn't practical for
-	// local dev. This never advances Fio's server-side cursor, so there's
-	// nothing to rewind on a failed insert below, and production (non-debug)
-	// keeps doing a full cursor-based sync.
-	var response *fio.TransactionsResponse
-	if debug {
-		now := time.Now()
-		response, err = client.FetchPeriod(requestContext, now.Add(-fioSCAWindow+24*time.Hour), now)
-	} else {
-		response, err = client.FetchNew(requestContext)
-	}
+	response, err := client.FetchNew(requestContext)
 	if err != nil {
 		finishRun(requestContext, queries, run.ID, "failed", 0, 0, err)
 		return Result{}, fmt.Errorf("fetching from fio: %w", err)
@@ -247,23 +231,17 @@ func syncAccount(requestContext context.Context, pool *pgxpool.Pool, queries *db
 	// back to the last transaction we know we have, so tomorrow's run re-fetches
 	// this batch instead of silently losing it — raw_transactions' unique
 	// constraint only guards against re-inserting rows we already received, not
-	// rows we never got a second chance at. Not applicable to the debug/periods
-	// path above since that never advanced any cursor.
-	var previousMaxID int64
-	if !debug {
-		previousMaxID, err = queries.GetMaxFioTransactionID(requestContext, bankAccountID)
-		if err != nil {
-			finishRun(requestContext, queries, run.ID, "failed", len(txs), 0, err)
-			return Result{}, fmt.Errorf("reading previous max fio_transaction_id: %w", err)
-		}
+	// rows we never got a second chance at.
+	previousMaxID, err := queries.GetMaxFioTransactionID(requestContext, bankAccountID)
+	if err != nil {
+		finishRun(requestContext, queries, run.ID, "failed", len(txs), 0, err)
+		return Result{}, fmt.Errorf("reading previous max fio_transaction_id: %w", err)
 	}
 
 	inserted, insertErr := insertTransactions(requestContext, pool, bankAccountID, txs)
 	if insertErr != nil {
-		if !debug {
-			if rewindErr := client.RewindTo(requestContext, previousMaxID); rewindErr != nil {
-				log.Printf("fio sync: bank_account_id=%d: rewind after failed insert also failed: %v", bankAccountID, rewindErr)
-			}
+		if rewindErr := client.RewindTo(requestContext, previousMaxID); rewindErr != nil {
+			log.Printf("fio sync: bank_account_id=%d: rewind after failed insert also failed: %v", bankAccountID, rewindErr)
 		}
 		finishRun(requestContext, queries, run.ID, "failed", len(txs), 0, insertErr)
 		return Result{}, fmt.Errorf("inserting raw_transactions: %w", insertErr)
@@ -277,9 +255,8 @@ func syncAccount(requestContext context.Context, pool *pgxpool.Pool, queries *db
 	}, nil
 }
 
-// insertTransactions runs the whole batch in one DB transaction, per
-// db-design.md ("Wrap each run in a DB transaction") — a partially-applied
-// batch never gets committed.
+// insertTransactions runs the whole batch in one DB transaction — a
+// partially-applied batch never gets committed.
 func insertTransactions(requestContext context.Context, pool *pgxpool.Pool, bankAccountID int32, txs []fio.Transaction) (int, error) {
 	tx, err := pool.Begin(requestContext)
 	if err != nil {

@@ -11,8 +11,7 @@ import (
 )
 
 type Querier interface {
-	// Manual categorization, with or without a member match (see
-	// docs/logic-design.md "Manual Assignment & Coverage") — member_number and
+	// Manual categorization, with or without a member match — member_number and
 	// matched_by are both nullable so a category-only edit (no member) just
 	// passes both as NULL. Coverage rows are managed separately by the caller in
 	// the same DB transaction.
@@ -81,14 +80,14 @@ type Querier interface {
 	GetCategory(ctx context.Context, name string) (TransactionCategory, error)
 	GetMaxFioTransactionID(ctx context.Context, bankAccountID int32) (int64, error)
 	GetMemberNumberBySub(ctx context.Context, sub pgtype.UUID) (int32, error)
-	// Backs the workplace-rep access path on GET /payments/{member_number}/history
-	// (see docs/logic-design.md "Payment History Endpoint"): a caller without the
+	// Backs the workplace-rep access path on GET /payments/{member_number}/history:
+	// a caller without the
 	// admin payment-history role can still see this member if the returned value
 	// is non-null and matches one of the caller's own Keycloak groups.
 	GetMemberWorkplaceSub(ctx context.Context, memberNumber int32) (pgtype.UUID, error)
 	GetPaymentHistory(ctx context.Context, memberNumber int32) ([]GetPaymentHistoryRow, error)
 	GetPaymentWaiver(ctx context.Context, arg GetPaymentWaiverParams) (GetPaymentWaiverRow, error)
-	// Budgeting view (see docs/logic-design.md "Transaction Category Summary"):
+	// Budgeting view:
 	// totals grouped by direction/category/currency only — no member_number, no
 	// counterparty, no per-transaction rows, so this is safe for the
 	// widely-held view-budget role (unlike ListTransactions). SUM(ABS(amount))
@@ -131,7 +130,7 @@ type Querier interface {
 	// [fee_start_date, upper bound] at month granularity, where upper bound is
 	// COALESCE(fee_stop_date, CURRENT_DATE) capped at CURRENT_DATE - 2 months: dues
 	// for month M are due by the end of month M+1 (a recurring one-month grace,
-	// not just onboarding — see docs/logic-design.md "Missed Payment Detection"),
+	// not just onboarding),
 	// so M only counts as liable-and-overdue once M+1 has also fully elapsed.
 	//
 	// total_missed_months comes from the member_arrears view: a total-arrears figure
@@ -141,7 +140,7 @@ type Querier interface {
 	// payment_coverage rows ever — distinguishes "never started paying" from
 	// "usually pays, missed a month" for follow-up prioritization.
 	// Rows are ordered by it descending ("top offenders first"), member_number
-	// breaking ties. See docs/logic-design.md "Missed Payment Detection".
+	// breaking ties.
 	ListMembersMissingPayment(ctx context.Context, arg ListMembersMissingPaymentParams) ([]MemberArrear, error)
 	// Workplace-rep counterpart to ListMembersMissingPayment — same shape and
 	// logic, scoped to members in any of the caller's workplace groups instead of
@@ -151,8 +150,7 @@ type Querier interface {
 	// the whole-year counterpart of ListMembersMissingPayment. Same
 	// {member_number, total_missed_months, has_ever_paid} shape and ordering;
 	// total_missed_months/has_ever_paid are still the full-liability-window
-	// figures (member_arrears view), not scoped to the year. See
-	// docs/logic-design.md "Missed Payment Detection".
+	// figures (member_arrears view), not scoped to the year.
 	ListMembersMissingPaymentInYear(ctx context.Context, year int32) ([]MemberArrear, error)
 	// Workplace-rep counterpart to ListMembersMissingPaymentInYear — same shape
 	// and logic, scoped to members in any of the caller's workplace groups.
@@ -160,22 +158,20 @@ type Querier interface {
 	// Admin transaction browser: processed_transactions enriched with their
 	// raw_transactions row, with optional filters. Every filter arg is nullable —
 	// NULL / omitted means "don't filter on this". total_count is the full match
-	// count ignoring LIMIT/OFFSET (window aggregate) so the caller can paginate. See
-	// docs/logic-design.md "Transaction Browser".
+	// count ignoring LIMIT/OFFSET (window aggregate) so the caller can paginate.
 	ListTransactions(ctx context.Context, arg ListTransactionsParams) ([]ListTransactionsRow, error)
 	ListUnprocessedTransactions(ctx context.Context) ([]RawTransaction, error)
 	// Every payment_waivers row across all members — backs the dedicated
 	// Waivers admin tab (list + delete + create), gated the same as manual
-	// transaction assignment (manage-transactions). See docs/logic-design.md
-	// "Payment Waivers". Newest first, same convention as ListWaiversForMember.
+	// transaction assignment (manage-transactions). Newest first, same convention
+	// as ListWaiversForMember.
 	ListWaivers(ctx context.Context) ([]ListWaiversRow, error)
 	// Backs the "why did this month stop showing up as missing" question on the
-	// payment history panel — see docs/logic-design.md "Payment Waivers".
+	// payment history panel.
 	ListWaiversForMember(ctx context.Context, memberNumber int32) ([]ListWaiversForMemberRow, error)
 	MemberExists(ctx context.Context, memberNumber int32) (bool, error)
 	// Guards CreatePaymentWaiver: a month with a real payment_coverage row
-	// doesn't need (and shouldn't get) a waiver — see docs/logic-design.md
-	// "Payment Waivers".
+	// doesn't need (and shouldn't get) a waiver.
 	PaymentCoverageExists(ctx context.Context, arg PaymentCoverageExistsParams) (bool, error)
 	// Mirrors members.fee_stop_date onto the default payment identifier's valid_to
 	// (variable_symbol == member_number): fee liability ended -> row closed with that

@@ -2,7 +2,6 @@
 // (https://fioapi.fio.cz/v1/rest/...) — token-in-URL auth, flat per-transaction
 // column JSON. Not to be confused with Fio's separate AISP v2 (PSD2) API, which
 // uses a different auth scheme and a nested ISO 20022-style response shape.
-// See docs/fio-api.md for the full API reference.
 package fio
 
 import (

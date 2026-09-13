@@ -38,7 +38,7 @@ type coveredMonth struct {
 
 // paymentHistoryEntry is either a real payment (ProcessedTransactionID > 0,
 // TransactionDate/Currency populated, Amount a real figure) or a waived
-// month (see docs/logic-design.md "Payment Waivers"): ProcessedTransactionID
+// month: ProcessedTransactionID
 // 0, TransactionDate/Currency empty, Amount the literal string "Waived".
 // Reusing the existing string Amount field this way — rather than adding a
 // new field/type — lets the frontend show a "Waived" label for that month
@@ -55,8 +55,7 @@ type paymentHistoryEntry struct {
 }
 
 // PaymentHistory handles GET /payments/{member_number}/history — a member's
-// payment history grouped by transaction (see docs/logic-design.md "Payment
-// History Endpoint"). Driven by payment_coverage, not processed_transactions
+// payment history grouped by transaction. Driven by payment_coverage, not processed_transactions
 // directly, so a lump-sum payment covering several months comes back as one
 // entry with several covered_months rather than one row per month.
 //

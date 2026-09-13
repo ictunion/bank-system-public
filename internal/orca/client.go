@@ -1,6 +1,5 @@
 // Package orca calls Orca's (in-house member API) machine-to-machine sync route,
-// `GET /sync/bank/members` — static bearer token auth, not Keycloak. See
-// docs/orca-sync-members.md for the full API contract.
+// `GET /sync/bank/members` — static bearer token auth, not Keycloak.
 package orca
 
 import (
@@ -65,8 +64,8 @@ type membersResponse struct {
 }
 
 // FetchMembers pulls the full member list. Orca has no incremental/cursor
-// mode for this route (see docs/orca-sync-members.md) — every call is a full
-// pull, upserted idempotently on our side.
+// mode for this route — every call is a full pull, upserted idempotently on
+// our side.
 func (c *OrcaClient) FetchMembers(requestContext context.Context) ([]Member, error) {
 	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, c.baseURL+"/sync/bank/members", nil)
 	if err != nil {

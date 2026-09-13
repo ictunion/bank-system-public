@@ -28,8 +28,7 @@ type AssignTransactionToMemberParams struct {
 	ID           int64   `json:"id"`
 }
 
-// Manual categorization, with or without a member match (see
-// docs/logic-design.md "Manual Assignment & Coverage") — member_number and
+// Manual categorization, with or without a member match — member_number and
 // matched_by are both nullable so a category-only edit (no member) just
 // passes both as NULL. Coverage rows are managed separately by the caller in
 // the same DB transaction.
@@ -553,8 +552,8 @@ const getMemberWorkplaceSub = `-- name: GetMemberWorkplaceSub :one
 SELECT workplace_executive_committee_sub FROM members WHERE member_number = $1
 `
 
-// Backs the workplace-rep access path on GET /payments/{member_number}/history
-// (see docs/logic-design.md "Payment History Endpoint"): a caller without the
+// Backs the workplace-rep access path on GET /payments/{member_number}/history:
+// a caller without the
 // admin payment-history role can still see this member if the returned value
 // is non-null and matches one of the caller's own Keycloak groups.
 func (q *Queries) GetMemberWorkplaceSub(ctx context.Context, memberNumber int32) (pgtype.UUID, error) {
@@ -670,7 +669,7 @@ type GetTransactionCategorySummaryRow struct {
 	Total     string `json:"total"`
 }
 
-// Budgeting view (see docs/logic-design.md "Transaction Category Summary"):
+// Budgeting view:
 // totals grouped by direction/category/currency only — no member_number, no
 // counterparty, no per-transaction rows, so this is safe for the
 // widely-held view-budget role (unlike ListTransactions). SUM(ABS(amount))
@@ -1173,7 +1172,7 @@ type ListMembersMissingPaymentParams struct {
 // [fee_start_date, upper bound] at month granularity, where upper bound is
 // COALESCE(fee_stop_date, CURRENT_DATE) capped at CURRENT_DATE - 2 months: dues
 // for month M are due by the end of month M+1 (a recurring one-month grace,
-// not just onboarding — see docs/logic-design.md "Missed Payment Detection"),
+// not just onboarding),
 // so M only counts as liable-and-overdue once M+1 has also fully elapsed.
 //
 // total_missed_months comes from the member_arrears view: a total-arrears figure
@@ -1183,7 +1182,7 @@ type ListMembersMissingPaymentParams struct {
 // payment_coverage rows ever — distinguishes "never started paying" from
 // "usually pays, missed a month" for follow-up prioritization.
 // Rows are ordered by it descending ("top offenders first"), member_number
-// breaking ties. See docs/logic-design.md "Missed Payment Detection".
+// breaking ties.
 func (q *Queries) ListMembersMissingPayment(ctx context.Context, arg ListMembersMissingPaymentParams) ([]MemberArrear, error) {
 	rows, err := q.db.Query(ctx, listMembersMissingPayment, arg.Year, arg.Month)
 	if err != nil {
@@ -1298,8 +1297,7 @@ ORDER BY ma.total_missed_months DESC, ma.member_number
 // the whole-year counterpart of ListMembersMissingPayment. Same
 // {member_number, total_missed_months, has_ever_paid} shape and ordering;
 // total_missed_months/has_ever_paid are still the full-liability-window
-// figures (member_arrears view), not scoped to the year. See
-// docs/logic-design.md "Missed Payment Detection".
+// figures (member_arrears view), not scoped to the year.
 func (q *Queries) ListMembersMissingPaymentInYear(ctx context.Context, year int32) ([]MemberArrear, error) {
 	rows, err := q.db.Query(ctx, listMembersMissingPaymentInYear, year)
 	if err != nil {
@@ -1452,8 +1450,7 @@ type ListTransactionsRow struct {
 // Admin transaction browser: processed_transactions enriched with their
 // raw_transactions row, with optional filters. Every filter arg is nullable —
 // NULL / omitted means "don't filter on this". total_count is the full match
-// count ignoring LIMIT/OFFSET (window aggregate) so the caller can paginate. See
-// docs/logic-design.md "Transaction Browser".
+// count ignoring LIMIT/OFFSET (window aggregate) so the caller can paginate.
 func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsParams) ([]ListTransactionsRow, error) {
 	rows, err := q.db.Query(ctx, listTransactions,
 		arg.Assigned,
@@ -1570,8 +1567,8 @@ type ListWaiversRow struct {
 
 // Every payment_waivers row across all members — backs the dedicated
 // Waivers admin tab (list + delete + create), gated the same as manual
-// transaction assignment (manage-transactions). See docs/logic-design.md
-// "Payment Waivers". Newest first, same convention as ListWaiversForMember.
+// transaction assignment (manage-transactions). Newest first, same convention
+// as ListWaiversForMember.
 func (q *Queries) ListWaivers(ctx context.Context) ([]ListWaiversRow, error) {
 	rows, err := q.db.Query(ctx, listWaivers)
 	if err != nil {
@@ -1613,7 +1610,7 @@ type ListWaiversForMemberRow struct {
 }
 
 // Backs the "why did this month stop showing up as missing" question on the
-// payment history panel — see docs/logic-design.md "Payment Waivers".
+// payment history panel.
 func (q *Queries) ListWaiversForMember(ctx context.Context, memberNumber int32) ([]ListWaiversForMemberRow, error) {
 	rows, err := q.db.Query(ctx, listWaiversForMember, memberNumber)
 	if err != nil {
@@ -1666,8 +1663,7 @@ type PaymentCoverageExistsParams struct {
 }
 
 // Guards CreatePaymentWaiver: a month with a real payment_coverage row
-// doesn't need (and shouldn't get) a waiver — see docs/logic-design.md
-// "Payment Waivers".
+// doesn't need (and shouldn't get) a waiver.
 func (q *Queries) PaymentCoverageExists(ctx context.Context, arg PaymentCoverageExistsParams) (bool, error) {
 	row := q.db.QueryRow(ctx, paymentCoverageExists, arg.MemberNumber, arg.CoversYear, arg.CoversMonth)
 	var exists bool

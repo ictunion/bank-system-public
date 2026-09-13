@@ -212,8 +212,8 @@ WHERE member_number = sqlc.arg(member_number)
 SELECT member_number FROM members WHERE sub = sqlc.arg(sub);
 
 -- name: GetMemberWorkplaceSub :one
--- Backs the workplace-rep access path on GET /payments/{member_number}/history
--- (see docs/logic-design.md "Payment History Endpoint"): a caller without the
+-- Backs the workplace-rep access path on GET /payments/{member_number}/history:
+-- a caller without the
 -- admin payment-history role can still see this member if the returned value
 -- is non-null and matches one of the caller's own Keycloak groups.
 SELECT workplace_executive_committee_sub FROM members WHERE member_number = sqlc.arg(member_number);
@@ -231,15 +231,15 @@ ORDER BY pc.covers_year DESC, pc.covers_month DESC;
 -- name: ListWaivers :many
 -- Every payment_waivers row across all members — backs the dedicated
 -- Waivers admin tab (list + delete + create), gated the same as manual
--- transaction assignment (manage-transactions). See docs/logic-design.md
--- "Payment Waivers". Newest first, same convention as ListWaiversForMember.
+-- transaction assignment (manage-transactions). Newest first, same convention
+-- as ListWaiversForMember.
 SELECT member_number, covers_year, covers_month, reason, created_at
 FROM payment_waivers
 ORDER BY created_at DESC;
 
 -- name: ListWaiversForMember :many
 -- Backs the "why did this month stop showing up as missing" question on the
--- payment history panel — see docs/logic-design.md "Payment Waivers".
+-- payment history panel.
 SELECT covers_year, covers_month, reason, created_at
 FROM payment_waivers
 WHERE member_number = sqlc.arg(member_number)
@@ -247,8 +247,7 @@ ORDER BY covers_year DESC, covers_month DESC;
 
 -- name: PaymentCoverageExists :one
 -- Guards CreatePaymentWaiver: a month with a real payment_coverage row
--- doesn't need (and shouldn't get) a waiver — see docs/logic-design.md
--- "Payment Waivers".
+-- doesn't need (and shouldn't get) a waiver.
 SELECT EXISTS (
     SELECT 1 FROM payment_coverage
     WHERE member_number = sqlc.arg(member_number)
@@ -288,7 +287,7 @@ WHERE member_number = sqlc.arg(member_number)
 -- [fee_start_date, upper bound] at month granularity, where upper bound is
 -- COALESCE(fee_stop_date, CURRENT_DATE) capped at CURRENT_DATE - 2 months: dues
 -- for month M are due by the end of month M+1 (a recurring one-month grace,
--- not just onboarding — see docs/logic-design.md "Missed Payment Detection"),
+-- not just onboarding),
 -- so M only counts as liable-and-overdue once M+1 has also fully elapsed.
 --
 -- total_missed_months comes from the member_arrears view: a total-arrears figure
@@ -298,7 +297,7 @@ WHERE member_number = sqlc.arg(member_number)
 -- payment_coverage rows ever — distinguishes "never started paying" from
 -- "usually pays, missed a month" for follow-up prioritization.
 -- Rows are ordered by it descending ("top offenders first"), member_number
--- breaking ties. See docs/logic-design.md "Missed Payment Detection".
+-- breaking ties.
 SELECT ma.member_number, ma.total_missed_months, ma.has_ever_paid
 FROM member_arrears ma
 JOIN members m ON m.member_number = ma.member_number
@@ -328,8 +327,7 @@ ORDER BY ma.total_missed_months DESC, ma.member_number;
 -- the whole-year counterpart of ListMembersMissingPayment. Same
 -- {member_number, total_missed_months, has_ever_paid} shape and ordering;
 -- total_missed_months/has_ever_paid are still the full-liability-window
--- figures (member_arrears view), not scoped to the year. See
--- docs/logic-design.md "Missed Payment Detection".
+-- figures (member_arrears view), not scoped to the year.
 SELECT ma.member_number, ma.total_missed_months, ma.has_ever_paid
 FROM member_arrears ma
 JOIN members m ON m.member_number = ma.member_number
@@ -459,8 +457,7 @@ ORDER BY rt.id;
 -- Admin transaction browser: processed_transactions enriched with their
 -- raw_transactions row, with optional filters. Every filter arg is nullable —
 -- NULL / omitted means "don't filter on this". total_count is the full match
--- count ignoring LIMIT/OFFSET (window aggregate) so the caller can paginate. See
--- docs/logic-design.md "Transaction Browser".
+-- count ignoring LIMIT/OFFSET (window aggregate) so the caller can paginate.
 SELECT
     pt.id,
     rt.transaction_date,
@@ -494,7 +491,7 @@ ORDER BY rt.transaction_date DESC, rt.id DESC
 LIMIT sqlc.arg(lim)::int OFFSET sqlc.arg(off)::int;
 
 -- name: GetTransactionCategorySummary :many
--- Budgeting view (see docs/logic-design.md "Transaction Category Summary"):
+-- Budgeting view:
 -- totals grouped by direction/category/currency only — no member_number, no
 -- counterparty, no per-transaction rows, so this is safe for the
 -- widely-held view-budget role (unlike ListTransactions). SUM(ABS(amount))
@@ -594,8 +591,7 @@ DELETE FROM transaction_categories WHERE name = sqlc.arg(name) AND is_mandatory 
 SELECT * FROM transaction_categories WHERE name = sqlc.arg(name);
 
 -- name: AssignTransactionToMember :one
--- Manual categorization, with or without a member match (see
--- docs/logic-design.md "Manual Assignment & Coverage") — member_number and
+-- Manual categorization, with or without a member match — member_number and
 -- matched_by are both nullable so a category-only edit (no member) just
 -- passes both as NULL. Coverage rows are managed separately by the caller in
 -- the same DB transaction.

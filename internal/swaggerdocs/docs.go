@@ -1255,7 +1255,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the payment-history role. A waived month (see docs/logic-design.md \"Payment Waivers\") is excluded from this list, same as a paid one.",
+                "description": "Requires the payment-history role. A waived month is excluded from this list, same as a paid one.",
                 "produces": [
                     "application/json"
                 ],

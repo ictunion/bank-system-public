@@ -7,7 +7,7 @@
 -- missing-payment queries built on the same window) treated a month as
 -- overdue the instant it started, which flagged the current — and even the
 -- still-within-grace previous — month as "missing" for essentially every
--- liable member. See docs/logic-design.md "Missed Payment Detection".
+-- liable member.
 --
 -- The cap only matters while a member is still actively liable (or recently
 -- stopped): for someone whose fee_stop_date is already well in the past, the

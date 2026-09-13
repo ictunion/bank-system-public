@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,28 +19,50 @@ import (
 const (
 	testIssuer   = "https://kc.example.test/realms/test"
 	testClientID = "bank-system"
+	testKid      = "test-key"
 )
 
 // newTestProvider builds a Provider with a locally generated RSA keypair —
-// no real Keycloak, no JWKS fetch (see docs/testing.md "Testing the auth
-// layer"). Returns the private key too, so the test can sign tokens against
-// it via signToken.
+// no real Keycloak, no JWKS fetch. Returns the private key too, so the test can sign tokens against
+// it via signToken. Keyed by testKid, same as signToken sets on the token
+// header — Provider now looks keys up by kid (see keyFor).
 func newTestProvider(t *testing.T) (*Provider, *rsa.PrivateKey) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generating RSA key: %v", err)
 	}
-	return &Provider{issuer: testIssuer, clientID: testClientID, key: &key.PublicKey}, key
+	return &Provider{
+		issuer:   testIssuer,
+		clientID: testClientID,
+		keys:     map[string]*rsa.PublicKey{testKid: &key.PublicKey},
+	}, key
 }
 
 func signToken(t *testing.T, key *rsa.PrivateKey, claims jwt.Claims) string {
 	t.Helper()
-	signed, err := jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(key)
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = testKid
+	signed, err := token.SignedString(key)
 	if err != nil {
 		t.Fatalf("signing token: %v", err)
 	}
 	return signed
+}
+
+// writeTestJWKS serves a one-key JWKS response under kid — a local
+// equivalent of keycloaktest's writeJWKS that this package can't import
+// (keycloaktest imports keycloak, and this file is package keycloak itself
+// — importing it back would cycle).
+func writeTestJWKS(w http.ResponseWriter, kid string, key *rsa.PublicKey) {
+	n := base64.RawURLEncoding.EncodeToString(key.N.Bytes())
+	e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes())
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"keys": []map[string]string{
+			{"kty": "RSA", "use": "sig", "kid": kid, "n": n, "e": e},
+		},
+	})
 }
 
 func validClaims() Claims {
@@ -228,5 +253,104 @@ func TestUserGroupIDs_NonOKStatus(t *testing.T) {
 
 	if _, err := provider.UserGroupIDs(context.Background(), "token"); err == nil {
 		t.Error("UserGroupIDs returned nil error on a 403 response, want an error")
+	}
+}
+
+// TestProvider_KeyRotation pins down the actual bug the kid/refresh rework
+// fixes: a token signed with a key that didn't exist yet when this process
+// last fetched the JWKS must still verify, by refetching on the cache miss
+// instead of requiring a restart.
+func TestProvider_KeyRotation(t *testing.T) {
+	oldKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generating RSA key: %v", err)
+	}
+	newKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generating RSA key: %v", err)
+	}
+
+	activeKid := "old-kid"
+	activeKey := oldKey
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /realms/rotation-test/protocol/openid-connect/certs", func(w http.ResponseWriter, r *http.Request) {
+		writeTestJWKS(w, activeKid, &activeKey.PublicKey)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider, err := NewProvider(server.URL, "rotation-test", testClientID)
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+
+	// Rotate: Keycloak now serves a new key under a new kid. This process
+	// hasn't refetched yet — its cache still only has "old-kid".
+	activeKid = "new-kid"
+	activeKey = newKey
+
+	claims := validClaims()
+	claims.Issuer = fmt.Sprintf("%s/realms/rotation-test", server.URL)
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = "new-kid"
+	signed, err := token.SignedString(newKey)
+	if err != nil {
+		t.Fatalf("signing token: %v", err)
+	}
+
+	if _, err := provider.Verify(signed); err != nil {
+		t.Errorf("Verify after rotation: %v, want success via keyFor's on-demand refresh", err)
+	}
+}
+
+// TestProvider_UnknownKidNeverResolves covers the other side: a kid that
+// isn't in the JWKS even after a refresh (forged, or a stale/unrelated
+// value) must still fail, not succeed against some fallback key.
+func TestProvider_UnknownKidNeverResolves(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generating RSA key: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /realms/unknown-kid-test/protocol/openid-connect/certs", func(w http.ResponseWriter, r *http.Request) {
+		writeTestJWKS(w, "known-kid", &key.PublicKey)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider, err := NewProvider(server.URL, "unknown-kid-test", testClientID)
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+
+	claims := validClaims()
+	claims.Issuer = fmt.Sprintf("%s/realms/unknown-kid-test", server.URL)
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = "totally-different-kid"
+	signed, err := token.SignedString(key)
+	if err != nil {
+		t.Fatalf("signing token: %v", err)
+	}
+
+	if _, err := provider.Verify(signed); err == nil {
+		t.Error("Verify with an unresolvable kid: got nil error, want a failure")
+	}
+}
+
+// TestVerify_MissingKidHeader covers a token with no kid at all — keyFor is
+// never reached, Verify must reject it outright rather than falling back to
+// some default key.
+func TestVerify_MissingKidHeader(t *testing.T) {
+	provider, key := newTestProvider(t)
+	claims := validClaims()
+
+	signed, err := jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(key)
+	if err != nil {
+		t.Fatalf("signing token: %v", err)
+	}
+
+	if _, err := provider.Verify(signed); err == nil {
+		t.Error("Verify with no kid header: got nil error, want a failure")
 	}
 }

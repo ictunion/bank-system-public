@@ -149,8 +149,7 @@ func TestRun_VariableSymbolMatchWritesCoverage(t *testing.T) {
 		t.Errorf("payment_coverage rows for member 900601 = %d, want 1", n)
 	}
 
-	// Dues are paid a month in arrears (see docs/logic-design.md "Missed
-	// Payment Detection") — a transaction received "now" defaults to covering
+	// Dues are paid a month in arrears — a transaction received "now" defaults to covering
 	// *last* month, not its own.
 	wantMonth := time.Now().AddDate(0, -1, 0)
 	gotYear, gotMonth := soleCoverageMonth(t, pool, 900601)

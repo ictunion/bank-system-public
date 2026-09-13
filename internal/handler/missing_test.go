@@ -160,9 +160,8 @@ func TestMissingPayments_HasEverPaidWhenMissingADifferentMonth(t *testing.T) {
 }
 
 // TestMissingPayments_OneMonthGracePeriod pins down the actual bug this test
-// guards against: dues for month M are paid during month M+1 (see
-// docs/logic-design.md "Missed Payment Detection"), so M only becomes
-// "missing" once M+1 has also fully elapsed. Computed relative to time.Now()
+// guards against: dues for month M are paid during month M+1, so M only
+// becomes "missing" once M+1 has also fully elapsed. Computed relative to time.Now()
 // rather than a fixed year/month so it stays meaningful whenever the suite
 // runs, unlike the fixed-2026 tests above.
 func TestMissingPayments_OneMonthGracePeriod(t *testing.T) {

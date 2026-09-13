@@ -52,8 +52,7 @@ type transactionListItem struct {
 }
 
 // ListTransactions handles GET /transactions — the admin transaction browser.
-// All filters are optional query params (see docs/logic-design.md "Transaction
-// Browser"): assigned (true|false), direction, category, matched_by,
+// All filters are optional query params: assigned (true|false), direction, category, matched_by,
 // member_number, from, to (YYYY-MM-DD), limit (<=500, default 100), offset.
 //
 // @Summary      Browse processed transactions
@@ -315,15 +314,14 @@ func GetTransaction(queries *db.Queries) http.HandlerFunc {
 }
 
 // AssignTransaction handles PUT /transactions/{id}/assignment — manual
-// categorization, in one DB transaction (see docs/logic-design.md "Manual
-// Assignment & Coverage"). member_number is optional: a lot of transactions
+// categorization, in one DB transaction. member_number is optional: a lot of transactions
 // (other_income/other_expense, even some salary rows) aren't tied to any
 // member, so this also serves as a category-only edit — omit member_number
 // to just change the category without matching anyone. matched_by is set to
 // 'manual' when a member is given, NULL otherwise. For category=membership_fee
 // *with* a member, the coverage rows are replaced with `covers` (or the month
 // before the transaction's own when `covers` is empty — dues are paid a month
-// in arrears, see docs/logic-design.md "Missed Payment Detection"); no member
+// in arrears); no member
 // or a non-fee category carries no coverage. A month already covered by a
 // *different* transaction is a 409.
 //
@@ -419,8 +417,7 @@ func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 			if len(request.Covers) > 0 {
 				months = request.Covers
 			} else {
-				// Dues for month M are paid during month M+1 (see
-				// docs/logic-design.md "Missed Payment Detection") — default to
+				// Dues for month M are paid during month M+1 — default to
 				// the month before the transaction's own, same convention
 				// processOne uses for automatic matches. Explicit `covers`
 				// above overrides this, same as it overrides the automatic case.
@@ -575,8 +572,7 @@ type categorySummaryResponse struct {
 }
 
 // CategorySummary handles GET /transactions/summary — totals grouped by
-// category and direction for the budgeting view (see docs/logic-design.md
-// "Transaction Category Summary"). Optional from/to (YYYY-MM-DD, inclusive)
+// category and direction for the budgeting view. Optional from/to (YYYY-MM-DD, inclusive)
 // query params scope it to a date range, same convention as ListTransactions.
 // Gated by RoleViewBudget rather than RoleListTransactions: unlike the
 // transaction browser, this never returns a member_number, counterparty, or

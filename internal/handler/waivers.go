@@ -25,8 +25,8 @@ type paymentWaiverResponse struct {
 }
 
 // WaivePayment handles POST /payments/{member_number}/waive — writes off one
-// month without a matching transaction (see docs/logic-design.md "Payment
-// Waivers"): a member who genuinely missed a payment years ago shouldn't be
+// month without a matching transaction: a member who genuinely missed a
+// payment years ago shouldn't be
 // chased forever, but there's nothing to match, so this records an explicit
 // admin decision instead of a payment_coverage row. Once waived, the month
 // stops appearing in missing-payment lists (member_arrears and the four

@@ -12,6 +12,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -38,8 +39,12 @@ type Config struct {
 	BankTokenEncryptionKey string
 
 	// Debug enables verbose logging of outgoing requests and incoming responses
-	// (method, URL, headers, bodies) for external calls, e.g. to Fio's API.
-	// Set via the DEBUG env var (any of "1", "true", "yes", case-insensitive).
+	// (method, URL, headers, bodies) for external calls, e.g. to Fio's API, and
+	// skips the Fio sync job entirely (no startup run, no daily 3am run, and the
+	// admin "sync now"/backfill buttons refuse with 409) — local dev has no real
+	// Fio account/token, so touching the live API would just fail or overwrite
+	// `make seed`'s fixture data. Set via the DEBUG env var (any of "1", "true",
+	// "yes", case-insensitive).
 	Debug bool
 
 	// EnableSwaggerDocs mounts the generated Swagger UI (see
@@ -51,13 +56,6 @@ type Config struct {
 	// ENABLE_SWAGGER_DOCS env var (any of "1", "true", "yes", case-insensitive).
 	EnableSwaggerDocs bool
 
-	// DisableFioSync skips starting the Fio sync job entirely (no startup run, no
-	// daily 3am run). For local dev when you don't want the live Fio API touched
-	// at all — e.g. after seeding fake raw_transactions data, so a server restart
-	// doesn't re-pull and re-insert real transactions over it. Set via the
-	// DISABLE_FIO_SYNC env var (any of "1", "true", "yes", case-insensitive).
-	DisableFioSync bool
-
 	// FioAPIURL is the base URL the Fio sync job builds every request against
 	// (see internal/fio.NewClient), e.g. https://fioapi.fio.cz/v1/rest in
 	// production. No default baked into the Go code — this env var is the
@@ -67,7 +65,7 @@ type Config struct {
 
 	// OrcaAPIURL is Orca's base URL, e.g. https://api.ictunion.cz or
 	// http://127.0.0.1:8000 for local dev. Used by the daily member sync job to
-	// call `GET {OrcaAPIURL}/sync/bank/members` (see docs/orca-sync-members.md).
+	// call `GET {OrcaAPIURL}/sync/bank/members`.
 	OrcaAPIURL string
 
 	// OrcaSyncToken authenticates the daily member sync job against Orca's
@@ -81,6 +79,9 @@ type Config struct {
 	// of ictunion's stack. ClientID is bank-system's own client ID in
 	// Keycloak — the audience every verified token must carry, and the key
 	// under which required roles are looked up (resource_access[ClientID]).
+	// KeycloakHost must be https:// unless it's localhost/127.0.0.1/::1 (see
+	// requireHTTPSExceptLoopback) — plain HTTP against a real Keycloak host
+	// exposes the JWKS fetch and forwarded bearer tokens to interception.
 	KeycloakHost     string
 	KeycloakRealm    string
 	KeycloakClientID string
@@ -88,6 +89,29 @@ type Config struct {
 
 func envBool(name string) bool {
 	return map[string]bool{"1": true, "true": true, "yes": true}[strings.ToLower(os.Getenv(name))]
+}
+
+// requireHTTPSExceptLoopback rejects rawURL unless it's https://, or plain
+// http:// against loopback (localhost/127.0.0.1/::1) — the one case with no
+// TLS cert available, since Keycloak normally runs on the same dev machine
+// (see .env.example). A real Keycloak host reachable over plain HTTP would
+// let a network-position attacker substitute the JWKS response (forging
+// tokens this service then accepts as valid — see internal/keycloak) or
+// read forwarded bearer tokens off the wire (internal/keycloak.Provider's
+// Account API calls forward the caller's own token).
+func requireHTTPSExceptLoopback(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if parsed.Scheme == "https" {
+		return nil
+	}
+	switch parsed.Hostname() {
+	case "localhost", "127.0.0.1", "::1":
+		return nil
+	}
+	return fmt.Errorf("must be https:// (got %q) — plain http is only allowed for localhost/127.0.0.1", rawURL)
 }
 
 func Load() (Config, error) {
@@ -127,6 +151,9 @@ func Load() (Config, error) {
 	if keycloakHost == "" {
 		return Config{}, fmt.Errorf("KEYCLOAK_HOST environment variable is required")
 	}
+	if err := requireHTTPSExceptLoopback(keycloakHost); err != nil {
+		return Config{}, fmt.Errorf("KEYCLOAK_HOST: %w", err)
+	}
 
 	keycloakRealm := os.Getenv("KEYCLOAK_REALM")
 	if keycloakRealm == "" {
@@ -144,7 +171,6 @@ func Load() (Config, error) {
 		BankTokenEncryptionKey: bankTokenEncryptionKey,
 		Debug:                  envBool("DEBUG"),
 		EnableSwaggerDocs:      envBool("ENABLE_SWAGGER_DOCS"),
-		DisableFioSync:         envBool("DISABLE_FIO_SYNC"),
 		FioAPIURL:              fioAPIURL,
 		OrcaAPIURL:             orcaAPIURL,
 		OrcaSyncToken:          orcaSyncToken,

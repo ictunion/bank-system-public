@@ -1,9 +1,8 @@
 // Package keycloaktest builds a real *keycloak.Provider backed by a local
 // RSA keypair and a fake Keycloak HTTP server (JWKS + Account API), for
-// tests that need one without a real Keycloak instance — see
-// docs/testing.md "Testing the auth layer". A sibling to internal/dbtest:
-// same idea (a real dependency, faked at the network edge) applied to
-// Keycloak instead of Postgres.
+// tests that need one without a real Keycloak instance. A sibling to
+// internal/dbtest: same idea (a real dependency, faked at the network edge)
+// applied to Keycloak instead of Postgres.
 package keycloaktest
 
 import (
@@ -23,10 +22,14 @@ import (
 	"github.com/kubik/bank-system/internal/keycloak"
 )
 
-// Realm/ClientID are fixed — nothing in these tests needs them to vary.
+// Realm/ClientID are fixed — nothing in these tests needs them to vary. Kid
+// is the fake JWKS's one signature key's ID — keycloak.Provider now looks
+// up keys by kid (see internal/keycloak), so the fake JWKS entry and every
+// token SignToken issues must agree on it.
 const (
 	Realm    = "test-realm"
 	ClientID = "bank-system"
+	Kid      = "test-key"
 )
 
 // Provider wraps a real *keycloak.Provider — every exported method
@@ -108,7 +111,9 @@ func (p *Provider) SignToken(t *testing.T, claims keycloak.Claims) string {
 		claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(time.Hour))
 	}
 
-	signed, err := jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(p.PrivateKey)
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = Kid
+	signed, err := token.SignedString(p.PrivateKey)
 	if err != nil {
 		t.Fatalf("signing test token: %v", err)
 	}
@@ -122,7 +127,7 @@ func writeJWKS(w http.ResponseWriter, key *rsa.PublicKey) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"keys": []map[string]string{
-			{"kty": "RSA", "use": "sig", "n": n, "e": e},
+			{"kty": "RSA", "use": "sig", "kid": Kid, "n": n, "e": e},
 		},
 	})
 }

@@ -36,3 +36,6 @@ go.work.sum
 # Claude Code
 CLAUDE.md
 .mcp.json
+
+# compiled binary from 'make build'
+/server
