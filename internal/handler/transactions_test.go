@@ -266,6 +266,40 @@ func TestCategorySummary_GroupsByCategoryAndDirection(t *testing.T) {
 	}
 }
 
+func TestCategorySummary_ExcludesInternalTransfer(t *testing.T) {
+	queries := dbtest.Tx(t)
+	account := seedBankAccount(t, queries, "9100000004")
+
+	seedTransaction(t, queries, account.ID, 3003, "100.00", "membership_fee", "incoming", nil)
+	// A transfer between our own bank_accounts isn't real income/expense —
+	// must be excluded from the summary entirely, not just zeroed, so it
+	// can't inflate either total.
+	seedTransaction(t, queries, account.ID, 3004, "500.00", "internal_transfer", "incoming", nil)
+	seedTransaction(t, queries, account.ID, 3005, "-500.00", "internal_transfer", "outgoing", nil)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/transactions/summary", nil)
+	CategorySummary(queries)(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	var got categorySummaryResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+
+	if len(got.Outgoing) != 0 {
+		t.Errorf("Outgoing = %+v, want empty — the only outgoing row is internal_transfer", got.Outgoing)
+	}
+	if len(got.Incoming) != 1 || got.Incoming[0].Category != "membership_fee" {
+		t.Fatalf("Incoming = %+v, want exactly one membership_fee entry, no internal_transfer", got.Incoming)
+	}
+	if total := parseAmount(t, got.Incoming[0].Total); total != 100 {
+		t.Errorf("Incoming membership_fee total = %v, want 100 (unaffected by the excluded internal_transfer row)", total)
+	}
+}
+
 func parseAmount(t *testing.T, s string) float64 {
 	t.Helper()
 	f, err := strconv.ParseFloat(s, 64)

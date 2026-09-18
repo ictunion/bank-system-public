@@ -8,6 +8,15 @@ SELECT id, fio_account_id, iban, currency, display_name, created_at,
        (deleted_at IS NULL)::boolean AS is_active
 FROM bank_accounts ORDER BY id;
 
+-- name: ListActiveBankAccountNumbers :many
+-- Internal use only (processing.go, self-transfer detection) — the account
+-- numbers of every non-soft-deleted bank account we hold, so a transaction
+-- whose counterparty is one of these can be recognized as a transfer between
+-- our own accounts rather than real income/expense. Soft-deleted accounts
+-- excluded deliberately: no live account there to be the other leg of a
+-- current transfer.
+SELECT fio_account_id FROM bank_accounts WHERE deleted_at IS NULL;
+
 -- name: ListBankAccountsWithToken :many
 -- Internal use only (the Fio sync job) — includes the decrypted Fio token.
 -- Includes soft-deleted accounts (is_active = false); the sync job itself is
@@ -556,7 +565,9 @@ LIMIT sqlc.arg(lim)::int OFFSET sqlc.arg(off)::int;
 -- counterparty, no per-transaction rows, so this is safe for the
 -- widely-held view-budget role (unlike ListTransactions). SUM(ABS(amount))
 -- so an "outgoing" total reads as a positive spend figure rather than the
--- signed value raw_transactions stores it as.
+-- signed value raw_transactions stores it as. internal_transfer excluded
+-- entirely — money moving between our own bank_accounts isn't real income or
+-- expense and would otherwise inflate both totals for the same transfer.
 SELECT
     pt.direction,
     pt.category,
@@ -564,7 +575,8 @@ SELECT
     COALESCE(SUM(ABS(rt.amount)), 0)::numeric AS total
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
-WHERE (sqlc.narg(date_from)::date IS NULL OR rt.transaction_date >= sqlc.narg(date_from)::date)
+WHERE pt.category != 'internal_transfer'
+  AND (sqlc.narg(date_from)::date IS NULL OR rt.transaction_date >= sqlc.narg(date_from)::date)
   AND (sqlc.narg(date_to)::date IS NULL OR rt.transaction_date <= sqlc.narg(date_to)::date)
 GROUP BY pt.direction, pt.category, rt.currency
 ORDER BY pt.direction, total DESC;

@@ -657,7 +657,8 @@ SELECT
     COALESCE(SUM(ABS(rt.amount)), 0)::numeric AS total
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
-WHERE ($1::date IS NULL OR rt.transaction_date >= $1::date)
+WHERE pt.category != 'internal_transfer'
+  AND ($1::date IS NULL OR rt.transaction_date >= $1::date)
   AND ($2::date IS NULL OR rt.transaction_date <= $2::date)
 GROUP BY pt.direction, pt.category, rt.currency
 ORDER BY pt.direction, total DESC
@@ -680,7 +681,9 @@ type GetTransactionCategorySummaryRow struct {
 // counterparty, no per-transaction rows, so this is safe for the
 // widely-held view-budget role (unlike ListTransactions). SUM(ABS(amount))
 // so an "outgoing" total reads as a positive spend figure rather than the
-// signed value raw_transactions stores it as.
+// signed value raw_transactions stores it as. internal_transfer excluded
+// entirely — money moving between our own bank_accounts isn't real income or
+// expense and would otherwise inflate both totals for the same transfer.
 func (q *Queries) GetTransactionCategorySummary(ctx context.Context, arg GetTransactionCategorySummaryParams) ([]GetTransactionCategorySummaryRow, error) {
 	rows, err := q.db.Query(ctx, getTransactionCategorySummary, arg.DateFrom, arg.DateTo)
 	if err != nil {
@@ -895,6 +898,36 @@ func (q *Queries) InsertRawTransaction(ctx context.Context, arg InsertRawTransac
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const listActiveBankAccountNumbers = `-- name: ListActiveBankAccountNumbers :many
+SELECT fio_account_id FROM bank_accounts WHERE deleted_at IS NULL
+`
+
+// Internal use only (processing.go, self-transfer detection) — the account
+// numbers of every non-soft-deleted bank account we hold, so a transaction
+// whose counterparty is one of these can be recognized as a transfer between
+// our own accounts rather than real income/expense. Soft-deleted accounts
+// excluded deliberately: no live account there to be the other leg of a
+// current transfer.
+func (q *Queries) ListActiveBankAccountNumbers(ctx context.Context) ([]string, error) {
+	rows, err := q.db.Query(ctx, listActiveBankAccountNumbers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var fio_account_id string
+		if err := rows.Scan(&fio_account_id); err != nil {
+			return nil, err
+		}
+		items = append(items, fio_account_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listBankAccounts = `-- name: ListBankAccounts :many

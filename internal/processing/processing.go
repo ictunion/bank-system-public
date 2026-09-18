@@ -37,9 +37,21 @@ func Run(requestContext context.Context, pool *pgxpool.Pool) (Result, error) {
 		return Result{}, fmt.Errorf("listing unprocessed transactions: %w", err)
 	}
 
+	// Fetched once per run, not per transaction — a transfer between our own
+	// accounts is recognized by its counterparty being one of these, see
+	// processOne. Soft-deleted accounts excluded (ListActiveBankAccountNumbers).
+	ourAccountNumbers, err := queries.ListActiveBankAccountNumbers(requestContext)
+	if err != nil {
+		return Result{}, fmt.Errorf("listing active bank account numbers: %w", err)
+	}
+	ourAccounts := make(map[string]bool, len(ourAccountNumbers))
+	for _, number := range ourAccountNumbers {
+		ourAccounts[number] = true
+	}
+
 	var result Result
 	for _, rt := range rows {
-		if err := processOne(requestContext, pool, queries, rt); err != nil {
+		if err := processOne(requestContext, pool, queries, rt, ourAccounts); err != nil {
 			result.TransactionsFailed++
 			log.Printf("processing: raw_transaction_id=%d: %v", rt.ID, err)
 			continue
@@ -56,7 +68,7 @@ func Run(requestContext context.Context, pool *pgxpool.Pool) (Result, error) {
 // committed processed_transactions row would silently and permanently drop
 // that month's coverage, since the row would no longer show up as
 // unprocessed on the next run.
-func processOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.Queries, rt db.RawTransaction) error {
+func processOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.Queries, rt db.RawTransaction, ourAccounts map[string]bool) error {
 	direction := "incoming"
 	if strings.HasPrefix(rt.Amount, "-") {
 		direction = "outgoing"
@@ -66,7 +78,17 @@ func processOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.
 	var matchedBy *string
 	category := ""
 
-	if rt.VariableSymbol != nil && *rt.VariableSymbol != "" {
+	// Transfer between our own bank_accounts: checked first, ahead of
+	// variable_symbol/salary, since it's the most specific signal available
+	// and shouldn't be shadowed by a coincidental VS collision. Matched on
+	// counter_account_number alone (no bank-code check — this app only syncs
+	// Fio accounts, so a mismatch here is unlikely; revisit if it misfires,
+	// same as the "mzda" salary heuristic below).
+	if rt.CounterAccountNumber != nil && ourAccounts[*rt.CounterAccountNumber] {
+		category = "internal_transfer"
+	}
+
+	if category == "" && rt.VariableSymbol != nil && *rt.VariableSymbol != "" {
 		member, err := queries.FindMemberByVariableSymbol(requestContext, db.FindMemberByVariableSymbolParams{
 			VariableSymbol:  *rt.VariableSymbol,
 			TransactionDate: rt.TransactionDate,

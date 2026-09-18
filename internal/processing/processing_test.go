@@ -47,6 +47,26 @@ func seedRawTransaction(t *testing.T, queries *db.Queries, bankAccountID int32, 
 	}
 }
 
+// seedTransferTransaction inserts a raw_transactions row with a
+// counter_account_number set (and optionally a variable_symbol) — for the
+// internal-transfer detection tests, which need a counterparty account
+// number to compare against ListActiveBankAccountNumbers.
+func seedTransferTransaction(t *testing.T, queries *db.Queries, bankAccountID int32, fioTransactionID int64, amount, counterAccountNumber string, variableSymbol *string) {
+	t.Helper()
+	if _, err := queries.InsertRawTransaction(context.Background(), db.InsertRawTransactionParams{
+		BankAccountID:        bankAccountID,
+		FioTransactionID:     fioTransactionID,
+		TransactionDate:      time.Now(),
+		Amount:               amount,
+		Currency:             "CZK",
+		CounterAccountNumber: &counterAccountNumber,
+		VariableSymbol:       variableSymbol,
+		RawPayload:           []byte("{}"),
+	}); err != nil {
+		t.Fatalf("InsertRawTransaction(fio_transaction_id=%d): %v", fioTransactionID, err)
+	}
+}
+
 func seedMemberWithIdentifier(t *testing.T, queries *db.Queries, memberNumber int32, variableSymbol string) {
 	t.Helper()
 	ctx := context.Background()
@@ -256,5 +276,110 @@ func TestRun_IsIdempotent(t *testing.T) {
 	}
 	if second.TransactionsProcessed != 0 || second.TransactionsFailed != 0 {
 		t.Errorf("second Run = %+v, want {0 0} — already-processed rows must not be reprocessed", second)
+	}
+}
+
+func TestRun_InternalTransferBetweenOwnAccounts(t *testing.T) {
+	pool := dbtest.Pool(t)
+	queries := db.New(pool)
+	accountA := seedBankAccount(t, queries, "9400000010")
+	accountB := seedBankAccount(t, queries, "9400000011")
+	// Both legs of the same transfer: the outgoing side on A (counterparty B)
+	// and the incoming side on B (counterparty A) — a real transfer between
+	// our own accounts produces one raw_transactions row per account.
+	seedTransferTransaction(t, queries, accountA.ID, 6010, "-1000.00", "9400000011", nil)
+	seedTransferTransaction(t, queries, accountB.ID, 6011, "1000.00", "9400000010", nil)
+
+	result, err := Run(context.Background(), pool)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.TransactionsProcessed != 2 || result.TransactionsFailed != 0 {
+		t.Fatalf("result = %+v, want {2 0}", result)
+	}
+
+	outgoingLeg := queryProcessed(t, pool, 6010)
+	if outgoingLeg.category != "internal_transfer" {
+		t.Errorf("outgoing leg category = %q, want internal_transfer", outgoingLeg.category)
+	}
+	if outgoingLeg.memberNumber != nil || outgoingLeg.matchedBy != nil {
+		t.Errorf("outgoing leg = %+v, want no member/matched_by", outgoingLeg)
+	}
+
+	incomingLeg := queryProcessed(t, pool, 6011)
+	if incomingLeg.category != "internal_transfer" {
+		t.Errorf("incoming leg category = %q, want internal_transfer", incomingLeg.category)
+	}
+	if incomingLeg.memberNumber != nil || incomingLeg.matchedBy != nil {
+		t.Errorf("incoming leg = %+v, want no member/matched_by", incomingLeg)
+	}
+}
+
+func TestRun_InternalTransferTakesPriorityOverVariableSymbolMatch(t *testing.T) {
+	pool := dbtest.Pool(t)
+	queries := db.New(pool)
+	accountA := seedBankAccount(t, queries, "9400000012")
+	seedBankAccount(t, queries, "9400000013")
+	seedMemberWithIdentifier(t, queries, 900603, "900603")
+	// Coincidentally carries a live member's variable_symbol, but the
+	// counterparty is one of our own accounts — internal_transfer must win,
+	// since it's checked first (see processOne).
+	seedTransferTransaction(t, queries, accountA.ID, 6012, "-500.00", "9400000013", strPtr("900603"))
+
+	if _, err := Run(context.Background(), pool); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got := queryProcessed(t, pool, 6012)
+	if got.category != "internal_transfer" {
+		t.Errorf("category = %q, want internal_transfer", got.category)
+	}
+	if got.memberNumber != nil {
+		t.Errorf("member_number = %v, want nil — internal_transfer must not also match a member", got.memberNumber)
+	}
+	if n := coverageMonthsFor(t, pool, 900603); n != 0 {
+		t.Errorf("payment_coverage rows for member 900603 = %d, want 0", n)
+	}
+}
+
+func TestRun_CounterAccountNotOursIsNotInternalTransfer(t *testing.T) {
+	pool := dbtest.Pool(t)
+	queries := db.New(pool)
+	account := seedBankAccount(t, queries, "9400000014")
+	// counter_account_number is set, but doesn't match any of our own
+	// bank_accounts — must fall through to the normal direction fallback,
+	// not be swept up as an internal transfer.
+	seedTransferTransaction(t, queries, account.ID, 6013, "150.00", "1111111111", nil)
+
+	if _, err := Run(context.Background(), pool); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got := queryProcessed(t, pool, 6013)
+	if got.category != "other_income" {
+		t.Errorf("category = %q, want other_income", got.category)
+	}
+}
+
+func TestRun_SoftDeletedAccountNotTreatedAsOurs(t *testing.T) {
+	pool := dbtest.Pool(t)
+	queries := db.New(pool)
+	account := seedBankAccount(t, queries, "9400000015")
+	deletedAccount := seedBankAccount(t, queries, "9400000016")
+	if rows, err := queries.DeleteBankAccount(context.Background(), deletedAccount.ID); err != nil || rows != 1 {
+		t.Fatalf("DeleteBankAccount(%d): rows=%d err=%v", deletedAccount.ID, rows, err)
+	}
+	// The counterparty account number used to be one of ours, but it's
+	// soft-deleted now — no live account there to be the other leg of a
+	// current transfer, so this must not be detected as internal_transfer.
+	seedTransferTransaction(t, queries, account.ID, 6014, "300.00", "9400000016", nil)
+
+	if _, err := Run(context.Background(), pool); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got := queryProcessed(t, pool, 6014)
+	if got.category != "other_income" {
+		t.Errorf("category = %q, want other_income (soft-deleted account shouldn't count as ours)", got.category)
 	}
 }
