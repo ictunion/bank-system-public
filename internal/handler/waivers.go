@@ -14,6 +14,11 @@ type waiveRequest struct {
 	Year   int    `json:"year"`
 	Month  int    `json:"month"`
 	Reason string `json:"reason"`
+	// EndYear/EndMonth are optional — together they turn a single-month waive
+	// into a range [Year/Month .. EndYear/EndMonth] inclusive. Both or
+	// neither: providing one without the other is a 400.
+	EndYear  *int `json:"end_year"`
+	EndMonth *int `json:"end_month"`
 }
 
 type paymentWaiverResponse struct {
@@ -22,6 +27,28 @@ type paymentWaiverResponse struct {
 	Month        int16  `json:"month"`
 	Reason       string `json:"reason"`
 	CreatedAt    string `json:"created_at"`
+}
+
+// waiveResponse is always the shape WavePayment returns now, whether the
+// request was a single month or a range — a single-month call just comes
+// back with exactly one Waived entry and an empty Skipped. Skipped lists the
+// months in a *range* request that already had a real payment_coverage row
+// (see WavePayment) and were therefore left alone rather than waived.
+type waiveResponse struct {
+	MemberNumber int32                   `json:"member_number"`
+	Waived       []paymentWaiverResponse `json:"waived"`
+	Skipped      []monthRef              `json:"skipped"`
+}
+
+// monthIndex turns a (year, month) pair into a single comparable/steppable
+// int (year*12+month) so a range can be walked and ordered without manual
+// month-rollover arithmetic scattered through the handler.
+func monthIndex(year, month int) int { return year*12 + month }
+
+func monthFromIndex(index int) (year, month int) {
+	year = (index - 1) / 12
+	month = index - year*12
+	return
 }
 
 // WaivePayment handles POST /payments/{member_number}/waive — writes off one
@@ -34,22 +61,32 @@ type paymentWaiverResponse struct {
 // counted as paid (has_ever_paid still reflects payment_coverage only).
 //
 // reason is required — with no admin-identity column anywhere in this
-// schema, it's the only record of why a debt was written off. A month
-// already covered by a real payment is a 400: waiving it would be
-// meaningless, and could mask a mismatch worth investigating instead.
+// schema, it's the only record of why a debt was written off.
+//
+// end_year/end_month (optional, both-or-neither) turn this into a range:
+// every month from year/month through end_year/end_month inclusive gets the
+// same reason. Within a range, a month already covered by a real payment is
+// silently *skipped* rather than erroring — the whole point of a range is
+// bulk convenience, and one matched month in the middle (e.g. member paid
+// April separately) shouldn't block writing off the rest. Without an end
+// (single-month request), that same situation is still a 400 as before:
+// waiving a paid month would be meaningless and could mask a mismatch worth
+// investigating, and a single deliberately-targeted month deserves that
+// pushback rather than a silent no-op.
+//
 // Gated by RoleManageTransactions — the same trust level as manually
 // re-assigning a transaction's coverage, since this is the same kind of
 // manual override of the payment record.
 //
-// @Summary      Write off a member's missed month
-// @Description  Requires the manage-transactions role. Idempotent (repeat calls keep the original reason). 400 if the month is already covered by a real payment.
+// @Summary      Write off a member's missed month (or range of months)
+// @Description  Requires the manage-transactions role. Idempotent per month (repeat calls keep the original reason). Without end_year/end_month, 400 if the month is already covered by a real payment; with them, such months are skipped instead (see the `skipped` field).
 // @Tags         payments
 // @Security     BearerAuth
 // @Accept       json
 // @Produce      json
 // @Param        member_number  path  int                        true  "Member number"
-// @Param        request        body  handler.waiveRequest  true  "Month to waive, and why"
-// @Success      200  {object}  handler.paymentWaiverResponse
+// @Param        request        body  handler.waiveRequest  true  "Month (or start/end range) to waive, and why"
+// @Success      200  {object}  handler.waiveResponse
 // @Failure      400,401,403  {object}  map[string]string
 // @Router       /payments/{member_number}/waive [post]
 func WaivePayment(queries *db.Queries) http.HandlerFunc {
@@ -76,6 +113,24 @@ func WaivePayment(queries *db.Queries) http.HandlerFunc {
 			return
 		}
 
+		isRange := request.EndYear != nil || request.EndMonth != nil
+		endYear, endMonth := request.Year, request.Month
+		if isRange {
+			if request.EndYear == nil || request.EndMonth == nil {
+				writeError(w, http.StatusBadRequest, "end_year and end_month must be provided together")
+				return
+			}
+			endYear, endMonth = *request.EndYear, *request.EndMonth
+			if endMonth < 1 || endMonth > 12 || endYear < 2000 || endYear > maxYear {
+				writeError(w, http.StatusBadRequest, "invalid end_year/end_month")
+				return
+			}
+			if monthIndex(endYear, endMonth) < monthIndex(request.Year, request.Month) {
+				writeError(w, http.StatusBadRequest, "end must be on or after start")
+				return
+			}
+		}
+
 		exists, err := queries.MemberExists(r.Context(), memberNumber)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to check member")
@@ -86,50 +141,62 @@ func WaivePayment(queries *db.Queries) http.HandlerFunc {
 			return
 		}
 
-		alreadyPaid, err := queries.PaymentCoverageExists(r.Context(), db.PaymentCoverageExistsParams{
-			MemberNumber: memberNumber,
-			CoversYear:   int32(request.Year),
-			CoversMonth:  int16(request.Month),
-		})
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to check coverage")
-			return
-		}
-		if alreadyPaid {
-			writeError(w, http.StatusBadRequest, "month is already covered by a payment")
-			return
+		response := waiveResponse{MemberNumber: memberNumber, Waived: []paymentWaiverResponse{}, Skipped: []monthRef{}}
+
+		for index := monthIndex(request.Year, request.Month); index <= monthIndex(endYear, endMonth); index++ {
+			year, month := monthFromIndex(index)
+
+			alreadyPaid, err := queries.PaymentCoverageExists(r.Context(), db.PaymentCoverageExistsParams{
+				MemberNumber: memberNumber,
+				CoversYear:   int32(year),
+				CoversMonth:  int16(month),
+			})
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to check coverage")
+				return
+			}
+			if alreadyPaid {
+				if !isRange {
+					writeError(w, http.StatusBadRequest, "month is already covered by a payment")
+					return
+				}
+				response.Skipped = append(response.Skipped, monthRef{Year: year, Month: month})
+				continue
+			}
+
+			if _, err := queries.CreatePaymentWaiver(r.Context(), db.CreatePaymentWaiverParams{
+				MemberNumber: memberNumber,
+				CoversYear:   int32(year),
+				CoversMonth:  int16(month),
+				Reason:       reason,
+			}); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to create waiver")
+				return
+			}
+
+			// ON CONFLICT DO NOTHING above means a repeat call for an
+			// already-waived month is a no-op — re-fetch either way to return
+			// the (first) reason on record, not the one just submitted.
+			waiver, err := queries.GetPaymentWaiver(r.Context(), db.GetPaymentWaiverParams{
+				MemberNumber: memberNumber,
+				CoversYear:   int32(year),
+				CoversMonth:  int16(month),
+			})
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load waiver")
+				return
+			}
+
+			response.Waived = append(response.Waived, paymentWaiverResponse{
+				MemberNumber: memberNumber,
+				Year:         waiver.CoversYear,
+				Month:        waiver.CoversMonth,
+				Reason:       waiver.Reason,
+				CreatedAt:    waiver.CreatedAt.Format(time.RFC3339),
+			})
 		}
 
-		if _, err := queries.CreatePaymentWaiver(r.Context(), db.CreatePaymentWaiverParams{
-			MemberNumber: memberNumber,
-			CoversYear:   int32(request.Year),
-			CoversMonth:  int16(request.Month),
-			Reason:       reason,
-		}); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to create waiver")
-			return
-		}
-
-		// ON CONFLICT DO NOTHING above means a repeat call for an already-waived
-		// month is a no-op — re-fetch either way to return the (first) reason on
-		// record, not the one just submitted.
-		waiver, err := queries.GetPaymentWaiver(r.Context(), db.GetPaymentWaiverParams{
-			MemberNumber: memberNumber,
-			CoversYear:   int32(request.Year),
-			CoversMonth:  int16(request.Month),
-		})
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to load waiver")
-			return
-		}
-
-		writeJSON(w, http.StatusOK, paymentWaiverResponse{
-			MemberNumber: memberNumber,
-			Year:         waiver.CoversYear,
-			Month:        waiver.CoversMonth,
-			Reason:       waiver.Reason,
-			CreatedAt:    waiver.CreatedAt.Format(time.RFC3339),
-		})
+		writeJSON(w, http.StatusOK, response)
 	}
 }
 

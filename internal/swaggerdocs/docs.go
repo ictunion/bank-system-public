@@ -1193,7 +1193,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the manage-transactions role. Idempotent (repeat calls keep the original reason). 400 if the month is already covered by a real payment.",
+                "description": "Requires the manage-transactions role. Idempotent per month (repeat calls keep the original reason). Without end_year/end_month, 400 if the month is already covered by a real payment; with them, such months are skipped instead (see the ` + "`" + `skipped` + "`" + ` field).",
                 "consumes": [
                     "application/json"
                 ],
@@ -1203,7 +1203,7 @@ const docTemplate = `{
                 "tags": [
                     "payments"
                 ],
-                "summary": "Write off a member's missed month",
+                "summary": "Write off a member's missed month (or range of months)",
                 "parameters": [
                     {
                         "type": "integer",
@@ -1213,7 +1213,7 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "description": "Month to waive, and why",
+                        "description": "Month (or start/end range) to waive, and why",
                         "name": "request",
                         "in": "body",
                         "required": true,
@@ -1226,7 +1226,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/handler.paymentWaiverResponse"
+                            "$ref": "#/definitions/handler.waiveResponse"
                         }
                     },
                     "400": {
@@ -2476,6 +2476,13 @@ const docTemplate = `{
         "handler.waiveRequest": {
             "type": "object",
             "properties": {
+                "end_month": {
+                    "type": "integer"
+                },
+                "end_year": {
+                    "description": "EndYear/EndMonth are optional — together they turn a single-month waive\ninto a range [Year/Month .. EndYear/EndMonth] inclusive. Both or\nneither: providing one without the other is a 400.",
+                    "type": "integer"
+                },
                 "month": {
                     "type": "integer"
                 },
@@ -2484,6 +2491,26 @@ const docTemplate = `{
                 },
                 "year": {
                     "type": "integer"
+                }
+            }
+        },
+        "handler.waiveResponse": {
+            "type": "object",
+            "properties": {
+                "member_number": {
+                    "type": "integer"
+                },
+                "skipped": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handler.monthRef"
+                    }
+                },
+                "waived": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handler.paymentWaiverResponse"
+                    }
                 }
             }
         }

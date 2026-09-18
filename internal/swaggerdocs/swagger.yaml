@@ -320,12 +320,33 @@ definitions:
     type: object
   handler.waiveRequest:
     properties:
+      end_month:
+        type: integer
+      end_year:
+        description: |-
+          EndYear/EndMonth are optional — together they turn a single-month waive
+          into a range [Year/Month .. EndYear/EndMonth] inclusive. Both or
+          neither: providing one without the other is a 400.
+        type: integer
       month:
         type: integer
       reason:
         type: string
       year:
         type: integer
+    type: object
+  handler.waiveResponse:
+    properties:
+      member_number:
+        type: integer
+      skipped:
+        items:
+          $ref: '#/definitions/handler.monthRef'
+        type: array
+      waived:
+        items:
+          $ref: '#/definitions/handler.paymentWaiverResponse'
+        type: array
     type: object
 info:
   contact: {}
@@ -849,15 +870,17 @@ paths:
     post:
       consumes:
       - application/json
-      description: Requires the manage-transactions role. Idempotent (repeat calls
-        keep the original reason). 400 if the month is already covered by a real payment.
+      description: Requires the manage-transactions role. Idempotent per month (repeat
+        calls keep the original reason). Without end_year/end_month, 400 if the month
+        is already covered by a real payment; with them, such months are skipped instead
+        (see the `skipped` field).
       parameters:
       - description: Member number
         in: path
         name: member_number
         required: true
         type: integer
-      - description: Month to waive, and why
+      - description: Month (or start/end range) to waive, and why
         in: body
         name: request
         required: true
@@ -869,7 +892,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/handler.paymentWaiverResponse'
+            $ref: '#/definitions/handler.waiveResponse'
         "400":
           description: Bad Request
           schema:
@@ -890,7 +913,7 @@ paths:
             type: object
       security:
       - BearerAuth: []
-      summary: Write off a member's missed month
+      summary: Write off a member's missed month (or range of months)
       tags:
       - payments
   /payments/{member_number}/waive/{year}/{month}:
