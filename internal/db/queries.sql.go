@@ -16,8 +16,9 @@ const assignTransactionToMember = `-- name: AssignTransactionToMember :one
 UPDATE processed_transactions
 SET member_number = $1,
     category = $2,
-    matched_by = $3
-WHERE id = $4
+    matched_by = $3,
+    admin_comment = $4
+WHERE id = $5
 RETURNING id
 `
 
@@ -25,18 +26,22 @@ type AssignTransactionToMemberParams struct {
 	MemberNumber *int32  `json:"member_number"`
 	Category     string  `json:"category"`
 	MatchedBy    *string `json:"matched_by"`
+	AdminComment *string `json:"admin_comment"`
 	ID           int64   `json:"id"`
 }
 
 // Manual categorization, with or without a member match — member_number and
 // matched_by are both nullable so a category-only edit (no member) just
 // passes both as NULL. Coverage rows are managed separately by the caller in
-// the same DB transaction.
+// the same DB transaction. admin_comment is also a full overwrite, same as
+// member_number — the caller (handler.AssignTransaction) always resends the
+// intended value, NULL clears it.
 func (q *Queries) AssignTransactionToMember(ctx context.Context, arg AssignTransactionToMemberParams) (int64, error) {
 	row := q.db.QueryRow(ctx, assignTransactionToMember,
 		arg.MemberNumber,
 		arg.Category,
 		arg.MatchedBy,
+		arg.AdminComment,
 		arg.ID,
 	)
 	var id int64
@@ -188,7 +193,7 @@ func (q *Queries) CreatePaymentWaiver(ctx context.Context, arg CreatePaymentWaiv
 const createProcessedTransaction = `-- name: CreateProcessedTransaction :one
 INSERT INTO processed_transactions (raw_transaction_id, member_number, category, direction, matched_by)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, raw_transaction_id, member_number, category, direction, matched_by, is_public_visible, processed_at
+RETURNING id, raw_transaction_id, member_number, category, direction, matched_by, is_public_visible, processed_at, admin_comment
 `
 
 type CreateProcessedTransactionParams struct {
@@ -217,6 +222,7 @@ func (q *Queries) CreateProcessedTransaction(ctx context.Context, arg CreateProc
 		&i.MatchedBy,
 		&i.IsPublicVisible,
 		&i.ProcessedAt,
+		&i.AdminComment,
 	)
 	return i, err
 }
@@ -718,7 +724,8 @@ SELECT
     rt.counter_account_name,
     rt.message_for_recipient,
     rt.user_identification,
-    rt.comment
+    rt.comment,
+    pt.admin_comment
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
 WHERE pt.id = $1
@@ -742,6 +749,7 @@ type GetTransactionDetailRow struct {
 	MessageForRecipient  *string   `json:"message_for_recipient"`
 	UserIdentification   *string   `json:"user_identification"`
 	Comment              *string   `json:"comment"`
+	AdminComment         *string   `json:"admin_comment"`
 }
 
 // One row for the transaction browser's detail / edit view — same columns as
@@ -768,6 +776,7 @@ func (q *Queries) GetTransactionDetail(ctx context.Context, id int64) (GetTransa
 		&i.MessageForRecipient,
 		&i.UserIdentification,
 		&i.Comment,
+		&i.AdminComment,
 	)
 	return i, err
 }
@@ -1007,6 +1016,229 @@ func (q *Queries) ListCategories(ctx context.Context) ([]TransactionCategory, er
 	for rows.Next() {
 		var i TransactionCategory
 		if err := rows.Scan(&i.Name, &i.IsMandatory, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCommentedTransactionsInMonth = `-- name: ListCommentedTransactionsInMonth :many
+SELECT pt.member_number, pt.id AS processed_transaction_id, rt.transaction_date,
+       rt.amount, rt.currency, pt.admin_comment
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE pt.member_number IS NOT NULL
+  AND pt.admin_comment IS NOT NULL
+  AND date_trunc('month', rt.transaction_date::timestamp)
+        = make_date($1::int, $2::int, 1)::timestamp
+ORDER BY rt.transaction_date, pt.id
+`
+
+type ListCommentedTransactionsInMonthParams struct {
+	Year  int32 `json:"year"`
+	Month int32 `json:"month"`
+}
+
+type ListCommentedTransactionsInMonthRow struct {
+	MemberNumber           *int32    `json:"member_number"`
+	ProcessedTransactionID int64     `json:"processed_transaction_id"`
+	TransactionDate        time.Time `json:"transaction_date"`
+	Amount                 string    `json:"amount"`
+	Currency               string    `json:"currency"`
+	AdminComment           *string   `json:"admin_comment"`
+}
+
+// Backs GET /payments/{year}/{month}/commented — every commented
+// (admin_comment IS NOT NULL) transaction matched to a member, dated in the
+// given month, regardless of whether that member is otherwise missing a
+// payment. Deliberately a separate endpoint/query from
+// ListMembersMissingPayment rather than folded into it — keeps "missing"
+// meaning strictly "no coverage row" and lets the caller (Orca) merge the
+// two client-side by member_number.
+func (q *Queries) ListCommentedTransactionsInMonth(ctx context.Context, arg ListCommentedTransactionsInMonthParams) ([]ListCommentedTransactionsInMonthRow, error) {
+	rows, err := q.db.Query(ctx, listCommentedTransactionsInMonth, arg.Year, arg.Month)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCommentedTransactionsInMonthRow
+	for rows.Next() {
+		var i ListCommentedTransactionsInMonthRow
+		if err := rows.Scan(
+			&i.MemberNumber,
+			&i.ProcessedTransactionID,
+			&i.TransactionDate,
+			&i.Amount,
+			&i.Currency,
+			&i.AdminComment,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCommentedTransactionsInMonthForWorkplace = `-- name: ListCommentedTransactionsInMonthForWorkplace :many
+SELECT pt.member_number, pt.id AS processed_transaction_id, rt.transaction_date,
+       rt.amount, rt.currency, pt.admin_comment
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+JOIN members m ON m.member_number = pt.member_number
+WHERE m.workplace_executive_committee_sub = ANY($1::uuid[])
+  AND pt.admin_comment IS NOT NULL
+  AND date_trunc('month', rt.transaction_date::timestamp)
+        = make_date($2::int, $3::int, 1)::timestamp
+ORDER BY rt.transaction_date, pt.id
+`
+
+type ListCommentedTransactionsInMonthForWorkplaceParams struct {
+	WorkplaceSubs []pgtype.UUID `json:"workplace_subs"`
+	Year          int32         `json:"year"`
+	Month         int32         `json:"month"`
+}
+
+type ListCommentedTransactionsInMonthForWorkplaceRow struct {
+	MemberNumber           *int32    `json:"member_number"`
+	ProcessedTransactionID int64     `json:"processed_transaction_id"`
+	TransactionDate        time.Time `json:"transaction_date"`
+	Amount                 string    `json:"amount"`
+	Currency               string    `json:"currency"`
+	AdminComment           *string   `json:"admin_comment"`
+}
+
+// Backs GET /payments/workplace/{year}/{month}/commented — see
+// ListCommentedTransactionsInMonth, scoped to the caller's workplace group(s)
+// the same way ListMembersMissingPaymentForWorkplace is.
+func (q *Queries) ListCommentedTransactionsInMonthForWorkplace(ctx context.Context, arg ListCommentedTransactionsInMonthForWorkplaceParams) ([]ListCommentedTransactionsInMonthForWorkplaceRow, error) {
+	rows, err := q.db.Query(ctx, listCommentedTransactionsInMonthForWorkplace, arg.WorkplaceSubs, arg.Year, arg.Month)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCommentedTransactionsInMonthForWorkplaceRow
+	for rows.Next() {
+		var i ListCommentedTransactionsInMonthForWorkplaceRow
+		if err := rows.Scan(
+			&i.MemberNumber,
+			&i.ProcessedTransactionID,
+			&i.TransactionDate,
+			&i.Amount,
+			&i.Currency,
+			&i.AdminComment,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCommentedTransactionsInYear = `-- name: ListCommentedTransactionsInYear :many
+SELECT pt.member_number, pt.id AS processed_transaction_id, rt.transaction_date,
+       rt.amount, rt.currency, pt.admin_comment
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE pt.member_number IS NOT NULL
+  AND pt.admin_comment IS NOT NULL
+  AND EXTRACT(YEAR FROM rt.transaction_date::timestamp)::int = $1::int
+ORDER BY rt.transaction_date, pt.id
+`
+
+type ListCommentedTransactionsInYearRow struct {
+	MemberNumber           *int32    `json:"member_number"`
+	ProcessedTransactionID int64     `json:"processed_transaction_id"`
+	TransactionDate        time.Time `json:"transaction_date"`
+	Amount                 string    `json:"amount"`
+	Currency               string    `json:"currency"`
+	AdminComment           *string   `json:"admin_comment"`
+}
+
+// Backs GET /payments/{year}/commented — see ListCommentedTransactionsInMonth,
+// year-scoped instead of month-scoped.
+func (q *Queries) ListCommentedTransactionsInYear(ctx context.Context, year int32) ([]ListCommentedTransactionsInYearRow, error) {
+	rows, err := q.db.Query(ctx, listCommentedTransactionsInYear, year)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCommentedTransactionsInYearRow
+	for rows.Next() {
+		var i ListCommentedTransactionsInYearRow
+		if err := rows.Scan(
+			&i.MemberNumber,
+			&i.ProcessedTransactionID,
+			&i.TransactionDate,
+			&i.Amount,
+			&i.Currency,
+			&i.AdminComment,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCommentedTransactionsInYearForWorkplace = `-- name: ListCommentedTransactionsInYearForWorkplace :many
+SELECT pt.member_number, pt.id AS processed_transaction_id, rt.transaction_date,
+       rt.amount, rt.currency, pt.admin_comment
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+JOIN members m ON m.member_number = pt.member_number
+WHERE m.workplace_executive_committee_sub = ANY($1::uuid[])
+  AND pt.admin_comment IS NOT NULL
+  AND EXTRACT(YEAR FROM rt.transaction_date::timestamp)::int = $2::int
+ORDER BY rt.transaction_date, pt.id
+`
+
+type ListCommentedTransactionsInYearForWorkplaceParams struct {
+	WorkplaceSubs []pgtype.UUID `json:"workplace_subs"`
+	Year          int32         `json:"year"`
+}
+
+type ListCommentedTransactionsInYearForWorkplaceRow struct {
+	MemberNumber           *int32    `json:"member_number"`
+	ProcessedTransactionID int64     `json:"processed_transaction_id"`
+	TransactionDate        time.Time `json:"transaction_date"`
+	Amount                 string    `json:"amount"`
+	Currency               string    `json:"currency"`
+	AdminComment           *string   `json:"admin_comment"`
+}
+
+// Backs GET /payments/workplace/{year}/commented — see
+// ListCommentedTransactionsInMonthForWorkplace, year-scoped instead of
+// month-scoped.
+func (q *Queries) ListCommentedTransactionsInYearForWorkplace(ctx context.Context, arg ListCommentedTransactionsInYearForWorkplaceParams) ([]ListCommentedTransactionsInYearForWorkplaceRow, error) {
+	rows, err := q.db.Query(ctx, listCommentedTransactionsInYearForWorkplace, arg.WorkplaceSubs, arg.Year)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCommentedTransactionsInYearForWorkplaceRow
+	for rows.Next() {
+		var i ListCommentedTransactionsInYearForWorkplaceRow
+		if err := rows.Scan(
+			&i.MemberNumber,
+			&i.ProcessedTransactionID,
+			&i.TransactionDate,
+			&i.Amount,
+			&i.Currency,
+			&i.AdminComment,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1399,6 +1631,7 @@ SELECT
     rt.message_for_recipient,
     rt.user_identification,
     rt.comment,
+    pt.admin_comment,
     count(*) OVER () AS total_count
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
@@ -1444,6 +1677,7 @@ type ListTransactionsRow struct {
 	MessageForRecipient  *string   `json:"message_for_recipient"`
 	UserIdentification   *string   `json:"user_identification"`
 	Comment              *string   `json:"comment"`
+	AdminComment         *string   `json:"admin_comment"`
 	TotalCount           int64     `json:"total_count"`
 }
 
@@ -1488,6 +1722,7 @@ func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsPara
 			&i.MessageForRecipient,
 			&i.UserIdentification,
 			&i.Comment,
+			&i.AdminComment,
 			&i.TotalCount,
 		); err != nil {
 			return nil, err

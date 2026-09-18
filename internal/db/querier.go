@@ -14,7 +14,9 @@ type Querier interface {
 	// Manual categorization, with or without a member match — member_number and
 	// matched_by are both nullable so a category-only edit (no member) just
 	// passes both as NULL. Coverage rows are managed separately by the caller in
-	// the same DB transaction.
+	// the same DB transaction. admin_comment is also a full overwrite, same as
+	// member_number — the caller (handler.AssignTransaction) always resends the
+	// intended value, NULL clears it.
 	AssignTransactionToMember(ctx context.Context, arg AssignTransactionToMemberParams) (int64, error)
 	CategoryExists(ctx context.Context, name string) (bool, error)
 	// fio_token is encrypted at rest via pgcrypto (pgp_sym_encrypt) using
@@ -117,6 +119,25 @@ type Querier interface {
 	// is NULL for any account not yet backfilled with a token.
 	ListBankAccountsWithToken(ctx context.Context, encryptionKey string) ([]ListBankAccountsWithTokenRow, error)
 	ListCategories(ctx context.Context) ([]TransactionCategory, error)
+	// Backs GET /payments/{year}/{month}/commented — every commented
+	// (admin_comment IS NOT NULL) transaction matched to a member, dated in the
+	// given month, regardless of whether that member is otherwise missing a
+	// payment. Deliberately a separate endpoint/query from
+	// ListMembersMissingPayment rather than folded into it — keeps "missing"
+	// meaning strictly "no coverage row" and lets the caller (Orca) merge the
+	// two client-side by member_number.
+	ListCommentedTransactionsInMonth(ctx context.Context, arg ListCommentedTransactionsInMonthParams) ([]ListCommentedTransactionsInMonthRow, error)
+	// Backs GET /payments/workplace/{year}/{month}/commented — see
+	// ListCommentedTransactionsInMonth, scoped to the caller's workplace group(s)
+	// the same way ListMembersMissingPaymentForWorkplace is.
+	ListCommentedTransactionsInMonthForWorkplace(ctx context.Context, arg ListCommentedTransactionsInMonthForWorkplaceParams) ([]ListCommentedTransactionsInMonthForWorkplaceRow, error)
+	// Backs GET /payments/{year}/commented — see ListCommentedTransactionsInMonth,
+	// year-scoped instead of month-scoped.
+	ListCommentedTransactionsInYear(ctx context.Context, year int32) ([]ListCommentedTransactionsInYearRow, error)
+	// Backs GET /payments/workplace/{year}/commented — see
+	// ListCommentedTransactionsInMonthForWorkplace, year-scoped instead of
+	// month-scoped.
+	ListCommentedTransactionsInYearForWorkplace(ctx context.Context, arg ListCommentedTransactionsInYearForWorkplaceParams) ([]ListCommentedTransactionsInYearForWorkplaceRow, error)
 	ListCoverageForTransaction(ctx context.Context, processedTransactionID int64) ([]ListCoverageForTransactionRow, error)
 	// Admin event log (GET /event-logs): sync_fio_runs and sync_orca_runs merged
 	// into one feed, newest first. No filters — just a simple paged log, same

@@ -358,7 +358,7 @@ const docTemplate = `{
                         }
                     },
                     "409": {
-                        "description": "sync disabled, or account inactive/has no token",
+                        "description": "debug mode, or account inactive/has no token",
                         "schema": {
                             "type": "object",
                             "additionalProperties": {
@@ -385,7 +385,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the manage-bank-accounts role. Refuses (409) when DISABLE_FIO_SYNC is set. Runs transaction processing synchronously afterward.",
+                "description": "Requires the manage-bank-accounts role. Refuses (409) in debug mode (DEBUG=true). Runs transaction processing synchronously afterward.",
                 "produces": [
                     "application/json"
                 ],
@@ -446,7 +446,7 @@ const docTemplate = `{
                         }
                     },
                     "409": {
-                        "description": "sync disabled, or account inactive/has no token",
+                        "description": "debug mode, or account inactive/has no token",
                         "schema": {
                             "type": "object",
                             "additionalProperties": {
@@ -816,6 +816,79 @@ const docTemplate = `{
                 }
             }
         },
+        "/payments/workplace/{year}/commented": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Requires the view-workplace-payment-history role. Scoped live to the caller's own Keycloak workplace group(s) via the Account API.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payments"
+                ],
+                "summary": "Workplace-scoped: commented transactions in a year",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "1 to current year + 1",
+                        "name": "year",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/handler.commentedTransaction"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Keycloak Account API call failed",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/payments/workplace/{year}/missing": {
             "get": {
                 "security": [
@@ -847,6 +920,86 @@ const docTemplate = `{
                             "type": "array",
                             "items": {
                                 "$ref": "#/definitions/handler.missingPaymentMember"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Keycloak Account API call failed",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/payments/workplace/{year}/{month}/commented": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Requires the view-workplace-payment-history role. Scoped live to the caller's own Keycloak workplace group(s) via the Account API.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payments"
+                ],
+                "summary": "Workplace-scoped: commented transactions in one month",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "1 to current year + 1",
+                        "name": "year",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "1 to 12",
+                        "name": "month",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/handler.commentedTransaction"
                             }
                         }
                     },
@@ -1184,6 +1337,70 @@ const docTemplate = `{
                 }
             }
         },
+        "/payments/{year}/commented": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Requires the payment-history role. Every admin_comment'd transaction dated in this year, independent of missed-payment status.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payments"
+                ],
+                "summary": "Commented transactions in a year",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "1 to current year + 1",
+                        "name": "year",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/handler.commentedTransaction"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/payments/{year}/missing": {
             "get": {
                 "security": [
@@ -1215,6 +1432,77 @@ const docTemplate = `{
                             "type": "array",
                             "items": {
                                 "$ref": "#/definitions/handler.missingPaymentMember"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/payments/{year}/{month}/commented": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Requires the payment-history role. Every admin_comment'd transaction dated in this month, independent of missed-payment status.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payments"
+                ],
+                "summary": "Commented transactions in one month",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "1 to current year + 1",
+                        "name": "year",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "1 to 12",
+                        "name": "month",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/handler.commentedTransaction"
                             }
                         }
                     },
@@ -1570,7 +1858,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the manage-transactions role. member_number optional (category-only edit if omitted); covers optional (defaults to the month before the transaction's own).",
+                "description": "Requires the manage-transactions role. member_number optional (category-only edit if omitted); covers optional (defaults to the month before the transaction's own); admin_comment optional staff note, omit or empty string to clear.",
                 "consumes": [
                     "application/json"
                 ],
@@ -1590,7 +1878,7 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "description": "New member/category/coverage",
+                        "description": "New member/category/coverage/admin_comment",
                         "name": "request",
                         "in": "body",
                         "required": true,
@@ -1721,6 +2009,10 @@ const docTemplate = `{
         "handler.assignTransactionRequest": {
             "type": "object",
             "properties": {
+                "admin_comment": {
+                    "description": "optional staff note; omit or empty string to clear, full overwrite like member_number",
+                    "type": "string"
+                },
                 "category": {
                     "description": "optional, defaults to \"membership_fee\"",
                     "type": "string"
@@ -1818,6 +2110,29 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "total": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.commentedTransaction": {
+            "type": "object",
+            "properties": {
+                "admin_comment": {
+                    "type": "string"
+                },
+                "amount": {
+                    "type": "string"
+                },
+                "currency": {
+                    "type": "string"
+                },
+                "member_number": {
+                    "type": "integer"
+                },
+                "processed_transaction_id": {
+                    "type": "integer"
+                },
+                "transaction_date": {
                     "type": "string"
                 }
             }
@@ -2006,6 +2321,9 @@ const docTemplate = `{
         "handler.transactionDetail": {
             "type": "object",
             "properties": {
+                "admin_comment": {
+                    "type": "string"
+                },
                 "amount": {
                     "type": "string"
                 },
@@ -2068,6 +2386,9 @@ const docTemplate = `{
         "handler.transactionListItem": {
             "type": "object",
             "properties": {
+                "admin_comment": {
+                    "type": "string"
+                },
                 "amount": {
                     "type": "string"
                 },
