@@ -8,6 +8,15 @@ SELECT id, fio_account_id, iban, currency, display_name, created_at,
        (deleted_at IS NULL)::boolean AS is_active
 FROM bank_accounts ORDER BY id;
 
+-- name: ListActiveBankAccountNumbers :many
+-- Internal use only (processing.go, self-transfer detection) — the account
+-- numbers of every non-soft-deleted bank account we hold, so a transaction
+-- whose counterparty is one of these can be recognized as a transfer between
+-- our own accounts rather than real income/expense. Soft-deleted accounts
+-- excluded deliberately: no live account there to be the other leg of a
+-- current transfer.
+SELECT fio_account_id FROM bank_accounts WHERE deleted_at IS NULL;
+
 -- name: ListBankAccountsWithToken :many
 -- Internal use only (the Fio sync job) — includes the decrypted Fio token.
 -- Includes soft-deleted accounts (is_active = false); the sync job itself is
@@ -322,6 +331,24 @@ WHERE date_trunc('month', m.fee_start_date::timestamp)
   )
 ORDER BY ma.total_missed_months DESC, ma.member_number;
 
+-- name: ListCommentedTransactionsInMonth :many
+-- Backs GET /payments/{year}/{month}/commented — every commented
+-- (admin_comment IS NOT NULL) transaction matched to a member, dated in the
+-- given month, regardless of whether that member is otherwise missing a
+-- payment. Deliberately a separate endpoint/query from
+-- ListMembersMissingPayment rather than folded into it — keeps "missing"
+-- meaning strictly "no coverage row" and lets the caller (Orca) merge the
+-- two client-side by member_number.
+SELECT pt.member_number, pt.id AS processed_transaction_id, rt.transaction_date,
+       rt.amount, rt.currency, pt.admin_comment
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE pt.member_number IS NOT NULL
+  AND pt.admin_comment IS NOT NULL
+  AND date_trunc('month', rt.transaction_date::timestamp)
+        = make_date(sqlc.arg(year)::int, sqlc.arg(month)::int, 1)::timestamp
+ORDER BY rt.transaction_date, pt.id;
+
 -- name: ListMembersMissingPaymentInYear :many
 -- Members who missed at least one liable month during the given calendar year —
 -- the whole-year counterpart of ListMembersMissingPayment. Same
@@ -360,6 +387,18 @@ WHERE EXISTS (
 )
 ORDER BY ma.total_missed_months DESC, ma.member_number;
 
+-- name: ListCommentedTransactionsInYear :many
+-- Backs GET /payments/{year}/commented — see ListCommentedTransactionsInMonth,
+-- year-scoped instead of month-scoped.
+SELECT pt.member_number, pt.id AS processed_transaction_id, rt.transaction_date,
+       rt.amount, rt.currency, pt.admin_comment
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE pt.member_number IS NOT NULL
+  AND pt.admin_comment IS NOT NULL
+  AND EXTRACT(YEAR FROM rt.transaction_date::timestamp)::int = sqlc.arg(year)::int
+ORDER BY rt.transaction_date, pt.id;
+
 -- name: ListMembersMissingPaymentForWorkplace :many
 -- Workplace-rep counterpart to ListMembersMissingPayment — same shape and
 -- logic, scoped to members in any of the caller's workplace groups instead of
@@ -388,6 +427,21 @@ WHERE m.workplace_executive_committee_sub = ANY(sqlc.arg(workplace_subs)::uuid[]
         AND pw.covers_month = sqlc.arg(month)::int
   )
 ORDER BY ma.total_missed_months DESC, ma.member_number;
+
+-- name: ListCommentedTransactionsInMonthForWorkplace :many
+-- Backs GET /payments/workplace/{year}/{month}/commented — see
+-- ListCommentedTransactionsInMonth, scoped to the caller's workplace group(s)
+-- the same way ListMembersMissingPaymentForWorkplace is.
+SELECT pt.member_number, pt.id AS processed_transaction_id, rt.transaction_date,
+       rt.amount, rt.currency, pt.admin_comment
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+JOIN members m ON m.member_number = pt.member_number
+WHERE m.workplace_executive_committee_sub = ANY(sqlc.arg(workplace_subs)::uuid[])
+  AND pt.admin_comment IS NOT NULL
+  AND date_trunc('month', rt.transaction_date::timestamp)
+        = make_date(sqlc.arg(year)::int, sqlc.arg(month)::int, 1)::timestamp
+ORDER BY rt.transaction_date, pt.id;
 
 -- name: ListMembersMissingPaymentInYearForWorkplace :many
 -- Workplace-rep counterpart to ListMembersMissingPaymentInYear — same shape
@@ -424,6 +478,20 @@ WHERE m.workplace_executive_committee_sub = ANY(sqlc.arg(workplace_subs)::uuid[]
     )
 )
 ORDER BY ma.total_missed_months DESC, ma.member_number;
+
+-- name: ListCommentedTransactionsInYearForWorkplace :many
+-- Backs GET /payments/workplace/{year}/commented — see
+-- ListCommentedTransactionsInMonthForWorkplace, year-scoped instead of
+-- month-scoped.
+SELECT pt.member_number, pt.id AS processed_transaction_id, rt.transaction_date,
+       rt.amount, rt.currency, pt.admin_comment
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+JOIN members m ON m.member_number = pt.member_number
+WHERE m.workplace_executive_committee_sub = ANY(sqlc.arg(workplace_subs)::uuid[])
+  AND pt.admin_comment IS NOT NULL
+  AND EXTRACT(YEAR FROM rt.transaction_date::timestamp)::int = sqlc.arg(year)::int
+ORDER BY rt.transaction_date, pt.id;
 
 -- name: CreateSyncOrcaRun :one
 INSERT INTO sync_orca_runs (status)
@@ -476,6 +544,7 @@ SELECT
     rt.message_for_recipient,
     rt.user_identification,
     rt.comment,
+    pt.admin_comment,
     count(*) OVER () AS total_count
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
@@ -496,7 +565,9 @@ LIMIT sqlc.arg(lim)::int OFFSET sqlc.arg(off)::int;
 -- counterparty, no per-transaction rows, so this is safe for the
 -- widely-held view-budget role (unlike ListTransactions). SUM(ABS(amount))
 -- so an "outgoing" total reads as a positive spend figure rather than the
--- signed value raw_transactions stores it as.
+-- signed value raw_transactions stores it as. internal_transfer excluded
+-- entirely — money moving between our own bank_accounts isn't real income or
+-- expense and would otherwise inflate both totals for the same transfer.
 SELECT
     pt.direction,
     pt.category,
@@ -504,7 +575,8 @@ SELECT
     COALESCE(SUM(ABS(rt.amount)), 0)::numeric AS total
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
-WHERE (sqlc.narg(date_from)::date IS NULL OR rt.transaction_date >= sqlc.narg(date_from)::date)
+WHERE pt.category != 'internal_transfer'
+  AND (sqlc.narg(date_from)::date IS NULL OR rt.transaction_date >= sqlc.narg(date_from)::date)
   AND (sqlc.narg(date_to)::date IS NULL OR rt.transaction_date <= sqlc.narg(date_to)::date)
 GROUP BY pt.direction, pt.category, rt.currency
 ORDER BY pt.direction, total DESC;
@@ -553,7 +625,8 @@ SELECT
     rt.counter_account_name,
     rt.message_for_recipient,
     rt.user_identification,
-    rt.comment
+    rt.comment,
+    pt.admin_comment
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
 WHERE pt.id = sqlc.arg(id);
@@ -594,11 +667,14 @@ SELECT * FROM transaction_categories WHERE name = sqlc.arg(name);
 -- Manual categorization, with or without a member match — member_number and
 -- matched_by are both nullable so a category-only edit (no member) just
 -- passes both as NULL. Coverage rows are managed separately by the caller in
--- the same DB transaction.
+-- the same DB transaction. admin_comment is also a full overwrite, same as
+-- member_number — the caller (handler.AssignTransaction) always resends the
+-- intended value, NULL clears it.
 UPDATE processed_transactions
 SET member_number = sqlc.arg(member_number),
     category = sqlc.arg(category),
-    matched_by = sqlc.narg(matched_by)
+    matched_by = sqlc.narg(matched_by),
+    admin_comment = sqlc.arg(admin_comment)
 WHERE id = sqlc.arg(id)
 RETURNING id;
 

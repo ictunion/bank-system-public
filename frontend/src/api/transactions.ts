@@ -22,7 +22,10 @@ export interface TransactionListItem {
   counter_account_name: string | null
   message_for_recipient: string | null
   user_identification: string | null
+  /** Fio's own bank-statement comment (column 25) — not staff-authored, see admin_comment */
   comment: string | null
+  /** staff-authored note, editable via assignTransaction — distinct from Fio's comment above */
+  admin_comment: string | null
 }
 
 export interface TransactionsResponse {
@@ -79,6 +82,8 @@ export interface AssignPayload {
   category?: Category
   /** only for category === 'membership_fee' with a member_number; empty = the transaction's own month */
   covers?: MonthRef[]
+  /** staff note; full overwrite like member_number — omit or send '' to clear */
+  admin_comment?: string
 }
 
 /** 409 body from assignTransaction when a month is already covered elsewhere. */

@@ -64,6 +64,7 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
   const [months, setMonths] = useState<MonthRef[]>(
     detail.covered_months.length ? detail.covered_months : [monthOf(detail.transaction_date)],
   )
+  const [adminComment, setAdminComment] = useState(detail.admin_comment ?? '')
 
   const done = () => {
     qc.invalidateQueries({ queryKey: ['transactions'] })
@@ -80,6 +81,7 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
         member_number: hasMember ? Number(memberNumber) : undefined,
         category,
         covers: coverable ? months : undefined,
+        admin_comment: adminComment,
       }),
     onSuccess: done,
   })
@@ -140,6 +142,16 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
           value={memberNumber}
           onChange={(e) => setMemberNumber(e.target.value)}
           autoFocus
+        />
+      </label>
+
+      <label style={field}>
+        Admin note (optional)
+        <input
+          type="text"
+          value={adminComment}
+          placeholder="e.g. missing VS"
+          onChange={(e) => setAdminComment(e.target.value)}
         />
       </label>
 

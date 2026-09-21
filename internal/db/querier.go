@@ -14,7 +14,9 @@ type Querier interface {
 	// Manual categorization, with or without a member match — member_number and
 	// matched_by are both nullable so a category-only edit (no member) just
 	// passes both as NULL. Coverage rows are managed separately by the caller in
-	// the same DB transaction.
+	// the same DB transaction. admin_comment is also a full overwrite, same as
+	// member_number — the caller (handler.AssignTransaction) always resends the
+	// intended value, NULL clears it.
 	AssignTransactionToMember(ctx context.Context, arg AssignTransactionToMemberParams) (int64, error)
 	CategoryExists(ctx context.Context, name string) (bool, error)
 	// fio_token is encrypted at rest via pgcrypto (pgp_sym_encrypt) using
@@ -92,7 +94,9 @@ type Querier interface {
 	// counterparty, no per-transaction rows, so this is safe for the
 	// widely-held view-budget role (unlike ListTransactions). SUM(ABS(amount))
 	// so an "outgoing" total reads as a positive spend figure rather than the
-	// signed value raw_transactions stores it as.
+	// signed value raw_transactions stores it as. internal_transfer excluded
+	// entirely — money moving between our own bank_accounts isn't real income or
+	// expense and would otherwise inflate both totals for the same transfer.
 	GetTransactionCategorySummary(ctx context.Context, arg GetTransactionCategorySummaryParams) ([]GetTransactionCategorySummaryRow, error)
 	// One row for the transaction browser's detail / edit view — same columns as
 	// ListTransactions minus the window count. Covered months come from
@@ -103,6 +107,13 @@ type Querier interface {
 	// report it, rather than silently dropping it.
 	InsertCoverageRow(ctx context.Context, arg InsertCoverageRowParams) (int64, error)
 	InsertRawTransaction(ctx context.Context, arg InsertRawTransactionParams) (int64, error)
+	// Internal use only (processing.go, self-transfer detection) — the account
+	// numbers of every non-soft-deleted bank account we hold, so a transaction
+	// whose counterparty is one of these can be recognized as a transfer between
+	// our own accounts rather than real income/expense. Soft-deleted accounts
+	// excluded deliberately: no live account there to be the other leg of a
+	// current transfer.
+	ListActiveBankAccountNumbers(ctx context.Context) ([]string, error)
 	// Admin-facing list (GET /account) — deliberately excludes the Fio token.
 	// Includes soft-deleted accounts (is_active = false) so admins still see them
 	// in the UI, crossed out, as a record that the account used to exist. For the
@@ -117,6 +128,25 @@ type Querier interface {
 	// is NULL for any account not yet backfilled with a token.
 	ListBankAccountsWithToken(ctx context.Context, encryptionKey string) ([]ListBankAccountsWithTokenRow, error)
 	ListCategories(ctx context.Context) ([]TransactionCategory, error)
+	// Backs GET /payments/{year}/{month}/commented — every commented
+	// (admin_comment IS NOT NULL) transaction matched to a member, dated in the
+	// given month, regardless of whether that member is otherwise missing a
+	// payment. Deliberately a separate endpoint/query from
+	// ListMembersMissingPayment rather than folded into it — keeps "missing"
+	// meaning strictly "no coverage row" and lets the caller (Orca) merge the
+	// two client-side by member_number.
+	ListCommentedTransactionsInMonth(ctx context.Context, arg ListCommentedTransactionsInMonthParams) ([]ListCommentedTransactionsInMonthRow, error)
+	// Backs GET /payments/workplace/{year}/{month}/commented — see
+	// ListCommentedTransactionsInMonth, scoped to the caller's workplace group(s)
+	// the same way ListMembersMissingPaymentForWorkplace is.
+	ListCommentedTransactionsInMonthForWorkplace(ctx context.Context, arg ListCommentedTransactionsInMonthForWorkplaceParams) ([]ListCommentedTransactionsInMonthForWorkplaceRow, error)
+	// Backs GET /payments/{year}/commented — see ListCommentedTransactionsInMonth,
+	// year-scoped instead of month-scoped.
+	ListCommentedTransactionsInYear(ctx context.Context, year int32) ([]ListCommentedTransactionsInYearRow, error)
+	// Backs GET /payments/workplace/{year}/commented — see
+	// ListCommentedTransactionsInMonthForWorkplace, year-scoped instead of
+	// month-scoped.
+	ListCommentedTransactionsInYearForWorkplace(ctx context.Context, arg ListCommentedTransactionsInYearForWorkplaceParams) ([]ListCommentedTransactionsInYearForWorkplaceRow, error)
 	ListCoverageForTransaction(ctx context.Context, processedTransactionID int64) ([]ListCoverageForTransactionRow, error)
 	// Admin event log (GET /event-logs): sync_fio_runs and sync_orca_runs merged
 	// into one feed, newest first. No filters — just a simple paged log, same

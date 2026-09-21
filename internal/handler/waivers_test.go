@@ -28,10 +28,17 @@ func TestWaivePayment_Success(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
 	}
-	var got paymentWaiverResponse
-	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+	var response waiveResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}
+	if len(response.Skipped) != 0 {
+		t.Errorf("Skipped = %+v, want empty (single-month request)", response.Skipped)
+	}
+	if len(response.Waived) != 1 {
+		t.Fatalf("Waived = %+v, want exactly one entry", response.Waived)
+	}
+	got := response.Waived[0]
 	if got.MemberNumber != memberNumber || got.Year != 2022 || got.Month != 6 {
 		t.Errorf("got %+v, want member=%d year=2022 month=6", got, memberNumber)
 	}
@@ -66,11 +73,14 @@ func TestWaivePayment_IdempotentKeepsFirstReason(t *testing.T) {
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
 		}
-		var got paymentWaiverResponse
-		if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		var response waiveResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 			t.Fatalf("decoding response: %v", err)
 		}
-		return got
+		if len(response.Waived) != 1 {
+			t.Fatalf("Waived = %+v, want exactly one entry", response.Waived)
+		}
+		return response.Waived[0]
 	}
 
 	first := waive("first reason")
@@ -278,6 +288,181 @@ func TestListWaivers_ListsAcrossMembers(t *testing.T) {
 	}
 	if byMember[memberB].Reason != "member B's reason" {
 		t.Errorf("member B's reason = %q", byMember[memberB].Reason)
+	}
+}
+
+func TestWaivePayment_RangeWaivesEveryMonthInclusive(t *testing.T) {
+	queries := dbtest.Tx(t)
+	const memberNumber = int32(910050)
+	feeStart := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedMember(t, queries, memberNumber, &feeStart)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/payments/x/waive",
+		bytes.NewBufferString(`{"year":2026,"month":2,"end_year":2026,"end_month":6,"reason":"range test"}`))
+	request.SetPathValue("member_number", itoa(memberNumber))
+	WaivePayment(queries)(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	var response waiveResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(response.Skipped) != 0 {
+		t.Errorf("Skipped = %+v, want empty — nothing else covers any of these months", response.Skipped)
+	}
+	wantMonths := []int16{2, 3, 4, 5, 6}
+	if len(response.Waived) != len(wantMonths) {
+		t.Fatalf("Waived = %+v, want %d months (Feb..Jun inclusive)", response.Waived, len(wantMonths))
+	}
+	for i, month := range wantMonths {
+		got := response.Waived[i]
+		if got.Year != 2026 || got.Month != month || got.Reason != "range test" {
+			t.Errorf("Waived[%d] = %+v, want year=2026 month=%d reason=%q", i, got, month, "range test")
+		}
+	}
+
+	waivers, err := queries.ListWaiversForMember(context.Background(), memberNumber)
+	if err != nil {
+		t.Fatalf("ListWaiversForMember: %v", err)
+	}
+	if len(waivers) != 5 {
+		t.Errorf("len(waivers) = %d, want 5", len(waivers))
+	}
+}
+
+func TestWaivePayment_RangeSkipsAlreadyCoveredMonth(t *testing.T) {
+	queries := dbtest.Tx(t)
+	const memberNumber = int32(910051)
+	feeStart := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedMember(t, queries, memberNumber, &feeStart)
+
+	// April already has a real payment — must be skipped, not waived, and
+	// the rest of the range (Feb, Mar, May, Jun) must still go through.
+	account := seedBankAccount(t, queries, "9200000021")
+	member := memberNumber
+	pt := seedTransaction(t, queries, account.ID, 9102, "500.00", "membership_fee", "incoming", &member)
+	if _, err := queries.InsertCoverageRow(context.Background(), db.InsertCoverageRowParams{
+		ProcessedTransactionID: pt.ID,
+		MemberNumber:           memberNumber,
+		CoversYear:             2026,
+		CoversMonth:            4,
+	}); err != nil {
+		t.Fatalf("InsertCoverageRow: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/payments/x/waive",
+		bytes.NewBufferString(`{"year":2026,"month":2,"end_year":2026,"end_month":6,"reason":"range test"}`))
+	request.SetPathValue("member_number", itoa(memberNumber))
+	WaivePayment(queries)(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	var response waiveResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(response.Skipped) != 1 || response.Skipped[0].Year != 2026 || response.Skipped[0].Month != 4 {
+		t.Fatalf("Skipped = %+v, want exactly [{2026 4}]", response.Skipped)
+	}
+	wantWaivedMonths := []int16{2, 3, 5, 6}
+	if len(response.Waived) != len(wantWaivedMonths) {
+		t.Fatalf("Waived = %+v, want months %v (April excluded)", response.Waived, wantWaivedMonths)
+	}
+	for i, month := range wantWaivedMonths {
+		if response.Waived[i].Month != month {
+			t.Errorf("Waived[%d].Month = %d, want %d", i, response.Waived[i].Month, month)
+		}
+	}
+
+	// No waiver row for April — it was skipped, not written.
+	if _, err := queries.GetPaymentWaiver(context.Background(), db.GetPaymentWaiverParams{
+		MemberNumber: memberNumber,
+		CoversYear:   2026,
+		CoversMonth:  4,
+	}); err == nil {
+		t.Errorf("expected no waiver row for the already-covered month (April), but one exists")
+	}
+}
+
+func TestWaivePayment_RangeEndBeforeStartIsRejected(t *testing.T) {
+	queries := dbtest.Tx(t)
+	const memberNumber = int32(910052)
+	feeStart := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedMember(t, queries, memberNumber, &feeStart)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/payments/x/waive",
+		bytes.NewBufferString(`{"year":2026,"month":6,"end_year":2026,"end_month":2,"reason":"x"}`))
+	request.SetPathValue("member_number", itoa(memberNumber))
+	WaivePayment(queries)(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (end before start): body = %s", recorder.Code, recorder.Body)
+	}
+}
+
+func TestWaivePayment_RangeRequiresBothEndFields(t *testing.T) {
+	queries := dbtest.Tx(t)
+	const memberNumber = int32(910053)
+	feeStart := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedMember(t, queries, memberNumber, &feeStart)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/payments/x/waive",
+		bytes.NewBufferString(`{"year":2026,"month":2,"end_year":2026,"reason":"x"}`))
+	request.SetPathValue("member_number", itoa(memberNumber))
+	WaivePayment(queries)(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (end_month missing while end_year given): body = %s", recorder.Code, recorder.Body)
+	}
+}
+
+func TestWaivePayment_RangeIsIdempotentPerMonth(t *testing.T) {
+	queries := dbtest.Tx(t)
+	const memberNumber = int32(910054)
+	feeStart := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedMember(t, queries, memberNumber, &feeStart)
+
+	run := func(reason string) waiveResponse {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/payments/x/waive",
+			bytes.NewBufferString(`{"year":2026,"month":2,"end_year":2026,"end_month":3,"reason":"`+reason+`"}`))
+		request.SetPathValue("member_number", itoa(memberNumber))
+		WaivePayment(queries)(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
+		}
+		var response waiveResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decoding response: %v", err)
+		}
+		return response
+	}
+
+	first := run("first reason")
+	second := run("second reason")
+	if len(first.Waived) != 2 || len(second.Waived) != 2 {
+		t.Fatalf("first=%+v second=%+v, want 2 waived months each run", first, second)
+	}
+	for i := range first.Waived {
+		if second.Waived[i].Reason != first.Waived[i].Reason {
+			t.Errorf("month %d: second run's reason = %q, want unchanged %q",
+				i, second.Waived[i].Reason, first.Waived[i].Reason)
+		}
+	}
+
+	waivers, err := queries.ListWaiversForMember(context.Background(), memberNumber)
+	if err != nil {
+		t.Fatalf("ListWaiversForMember: %v", err)
+	}
+	if len(waivers) != 2 {
+		t.Errorf("len(waivers) = %d, want 2 (repeat range call must not duplicate)", len(waivers))
 	}
 }
 

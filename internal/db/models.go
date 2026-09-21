@@ -71,6 +71,7 @@ type ProcessedTransaction struct {
 	MatchedBy        *string   `json:"matched_by"`
 	IsPublicVisible  bool      `json:"is_public_visible"`
 	ProcessedAt      time.Time `json:"processed_at"`
+	AdminComment     *string   `json:"admin_comment"`
 }
 
 type RawTransaction struct {

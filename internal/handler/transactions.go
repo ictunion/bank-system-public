@@ -49,6 +49,7 @@ type transactionListItem struct {
 	MessageForRecipient  *string `json:"message_for_recipient"`
 	UserIdentification   *string `json:"user_identification"`
 	Comment              *string `json:"comment"`
+	AdminComment         *string `json:"admin_comment"`
 }
 
 // ListTransactions handles GET /transactions — the admin transaction browser.
@@ -179,6 +180,7 @@ func ListTransactions(queries *db.Queries) http.HandlerFunc {
 				MessageForRecipient:  row.MessageForRecipient,
 				UserIdentification:   row.UserIdentification,
 				Comment:              row.Comment,
+				AdminComment:         row.AdminComment,
 			})
 		}
 
@@ -226,9 +228,10 @@ type transactionDetail struct {
 }
 
 type assignTransactionRequest struct {
-	MemberNumber *int32     `json:"member_number"` // optional; omit for a category-only edit, no member match
-	Category     *string    `json:"category"`      // optional, defaults to "membership_fee"
-	Covers       []monthRef `json:"covers"`        // optional; empty = the transaction's own month
+	MemberNumber *int32     `json:"member_number"`  // optional; omit for a category-only edit, no member match
+	Category     *string    `json:"category"`       // optional, defaults to "membership_fee"
+	Covers       []monthRef `json:"covers"`         // optional; empty = the transaction's own month
+	AdminComment *string    `json:"admin_comment"`  // optional staff note; omit or empty string to clear, full overwrite like member_number
 }
 
 func parseTransactionID(r *http.Request) (int64, bool) {
@@ -258,6 +261,7 @@ func detailRowToItem(row db.GetTransactionDetailRow) transactionListItem {
 		MessageForRecipient:  row.MessageForRecipient,
 		UserIdentification:   row.UserIdentification,
 		Comment:              row.Comment,
+		AdminComment:         row.AdminComment,
 	}
 }
 
@@ -323,16 +327,17 @@ func GetTransaction(queries *db.Queries) http.HandlerFunc {
 // before the transaction's own when `covers` is empty — dues are paid a month
 // in arrears); no member
 // or a non-fee category carries no coverage. A month already covered by a
-// *different* transaction is a 409.
+// *different* transaction is a 409. admin_comment is a full overwrite too,
+// independent of member/category/covers — omit or send "" to clear it.
 //
 // @Summary      Manually match/categorize a transaction
-// @Description  Requires the manage-transactions role. member_number optional (category-only edit if omitted); covers optional (defaults to the month before the transaction's own).
+// @Description  Requires the manage-transactions role. member_number optional (category-only edit if omitted); covers optional (defaults to the month before the transaction's own); admin_comment optional staff note, omit or empty string to clear.
 // @Tags         transactions
 // @Security     BearerAuth
 // @Accept       json
 // @Produce      json
 // @Param        id       path  int                                true  "processed_transactions ID"
-// @Param        request  body  handler.assignTransactionRequest  true  "New member/category/coverage"
+// @Param        request  body  handler.assignTransactionRequest  true  "New member/category/coverage/admin_comment"
 // @Success      200  {object}  handler.transactionDetail
 // @Failure      400,401,403  {object}  map[string]string
 // @Failure      404  {object}  map[string]string
@@ -440,11 +445,17 @@ func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 			matchedBy = &manual
 		}
 
+		adminComment := request.AdminComment
+		if adminComment != nil && *adminComment == "" {
+			adminComment = nil
+		}
+
 		if _, err := txQueries.AssignTransactionToMember(r.Context(), db.AssignTransactionToMemberParams{
 			ID:           id,
 			MemberNumber: request.MemberNumber,
 			Category:     category,
 			MatchedBy:    matchedBy,
+			AdminComment: adminComment,
 		}); errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "transaction not found")
 			return

@@ -5,7 +5,7 @@ import { categoryLabel, fetchCategories } from './api/categories'
 import { fetchTransactions, type TransactionQuery } from './api/transactions'
 
 const PAGE_SIZE = 100
-const COLUMNS = ['Date', 'Amount', 'Dir', 'Category', 'Member', 'VS', 'Counterparty', 'Message', ''] as const
+const COLUMNS = ['Date', 'Amount', 'Dir', 'Category', 'Member', 'VS', 'Counterparty', 'Message', 'Admin note', ''] as const
 
 interface Filters {
   from: string
@@ -226,6 +226,7 @@ export function TransactionsTable() {
                 <td style={td}>{t.variable_symbol ?? '—'}</td>
                 <td style={td}>{t.counter_account_name ?? t.counter_account_number ?? '—'}</td>
                 <td style={td}>{t.message_for_recipient ?? t.comment ?? '—'}</td>
+                <td style={td}>{t.admin_comment ?? '—'}</td>
                 <td style={td}>
                   <button onClick={() => setEditingId(t.id)}>Edit</button>
                 </td>
