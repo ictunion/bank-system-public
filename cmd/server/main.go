@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/rs/cors"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
 
 	"github.com/kubik/bank-system/internal/config"
@@ -169,9 +170,25 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/api/", http.StripPrefix("/api", api))
 
+	// rs/cors treats an empty AllowedOrigins as "allow every origin" (its
+	// zero-value default), the opposite of what we want when
+	// CorsAllowedOrigins is unset — so only wrap with it when there's an
+	// actual allow-list. Cross-origin callers (e.g. Orca's own frontend)
+	// need this; this API's own frontend is always same-origin (nginx/Vite
+	// both proxy /api/ alongside it) and never needs CORS headers at all.
+	var apiHandler http.Handler = mux
+	if len(appConfig.CorsAllowedOrigins) > 0 {
+		apiHandler = cors.New(cors.Options{
+			AllowedOrigins: appConfig.CorsAllowedOrigins,
+			AllowedMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete},
+			AllowedHeaders: []string{"Authorization", "Content-Type"},
+			MaxAge:         600,
+		}).Handler(mux)
+	}
+
 	server := &http.Server{
 		Addr:    appConfig.Addr,
-		Handler: handler.Recover(handler.MaxBodySize(handler.MaxRequestBodySize, mux)),
+		Handler: handler.Recover(handler.MaxBodySize(handler.MaxRequestBodySize, apiHandler)),
 		// Slowloris mitigation: without these, a client that trickles bytes (or
 		// never sends any) can hold a connection — and the goroutine serving it
 		// — open indefinitely. ReadHeaderTimeout/ReadTimeout bound how long a

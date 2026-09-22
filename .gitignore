@@ -21,6 +21,7 @@ go.work.sum
 !.env.example
 
 # Nix
+.envrc
 .direnv/
 .gopath/
 

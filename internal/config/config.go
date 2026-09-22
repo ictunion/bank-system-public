@@ -85,6 +85,12 @@ type Config struct {
 	KeycloakHost     string
 	KeycloakRealm    string
 	KeycloakClientID string
+
+	// CorsAllowedOrigins is an exact-match allow-list of browser origins
+	// permitted to call this API cross-origin (e.g. https://orca.ictunion.cz). 
+	// Optional, comma-separated, empty by default: no origin 
+	// needs to be here unless another site calls in from a browser.
+	CorsAllowedOrigins []string
 }
 
 func envBool(name string) bool {
@@ -165,6 +171,13 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("KEYCLOAK_CLIENT_ID environment variable is required")
 	}
 
+	var corsAllowedOrigins []string
+	for _, origin := range strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",") {
+		if origin = strings.TrimSpace(origin); origin != "" {
+			corsAllowedOrigins = append(corsAllowedOrigins, origin)
+		}
+	}
+
 	return Config{
 		DatabaseURL:            databaseURL,
 		Addr:                   ":" + port,
@@ -177,5 +190,6 @@ func Load() (Config, error) {
 		KeycloakHost:           keycloakHost,
 		KeycloakRealm:          keycloakRealm,
 		KeycloakClientID:       keycloakClientID,
+		CorsAllowedOrigins:     corsAllowedOrigins,
 	}, nil
 }
