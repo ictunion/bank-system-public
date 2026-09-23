@@ -8,6 +8,7 @@ import {
   deleteBankAccount,
   fetchBankAccounts,
   triggerFioSync,
+  triggerProcessing,
   updateBankAccount,
 } from './api/bankAccounts'
 import { Overlay } from './Overlay'
@@ -15,6 +16,7 @@ import { Overlay } from './Overlay'
 const COLUMNS = ['Fio account', 'Name', 'Currency', 'IBAN', 'Token', 'Created', ''] as const
 
 export function BankAccountsPage() {
+  const qc = useQueryClient()
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<BankAccount | null>(null)
   const [backfilling, setBackfilling] = useState<BankAccount | null>(null)
@@ -24,11 +26,32 @@ export function BankAccountsPage() {
     queryFn: fetchBankAccounts,
   })
 
+  // Not scoped to one account — re-runs matching for every raw_transactions
+  // row that doesn't have a processed_transactions row yet (see
+  // api/bankAccounts.ts triggerProcessing). Invalidate the transaction
+  // browser's cache too so a subsequent visit shows freshly matched rows.
+  const runProcessing = useMutation({
+    mutationFn: triggerProcessing,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['transactions'] }),
+  })
+
   return (
     <section>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
         <h2 style={{ margin: 0 }}>Bank accounts</h2>
-        <button onClick={() => setAdding(true)}>Add bank account</button>
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'baseline' }}>
+          {runProcessing.error && <span style={{ color: '#b00' }}>{errMessage(runProcessing.error)}</span>}
+          {runProcessing.data && (
+            <span style={{ color: '#080' }}>
+              Processed {runProcessing.data.transactions_processed}
+              {runProcessing.data.transactions_failed > 0 ? ` (${runProcessing.data.transactions_failed} failed)` : ''}
+            </span>
+          )}
+          <button disabled={runProcessing.isPending} onClick={() => runProcessing.mutate()}>
+            {runProcessing.isPending ? 'Running…' : 'Run processing'}
+          </button>
+          <button onClick={() => setAdding(true)}>Add bank account</button>
+        </div>
       </div>
 
       {isPending ? (

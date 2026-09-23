@@ -67,3 +67,16 @@ export function triggerFioSync(id: number): Promise<SyncResult> {
 export function backfillAccount(id: number, from: string, to: string): Promise<SyncResult> {
   return apiSend<SyncResult>('POST', `/api/account/${id}/backfill`, { from, to })
 }
+
+export interface ProcessingResult {
+  transactions_processed: number
+  transactions_failed: number
+}
+
+// Manual "run processing" trigger — not scoped to one account, re-runs
+// matching for every raw_transactions row that doesn't have a
+// processed_transactions row yet. Unlike sync/backfill, works fine in debug
+// mode too (it never touches Fio, only already-stored raw_transactions).
+export function triggerProcessing(): Promise<ProcessingResult> {
+  return apiSend<ProcessingResult>('POST', '/api/processing/run')
+}
