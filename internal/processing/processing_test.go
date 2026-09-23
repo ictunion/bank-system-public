@@ -179,6 +179,34 @@ func TestRun_VariableSymbolMatchWritesCoverage(t *testing.T) {
 	}
 }
 
+// TestRun_VariableSymbolMatchStripsLeadingZeroes covers Fio sometimes
+// zero-padding a variable symbol (e.g. "00900602" for VS 900602) — the stored
+// member_payment_identifiers row is unpadded (seeded from member_number, an
+// int), so matching must strip leading zeroes off the transaction's VS first.
+func TestRun_VariableSymbolMatchStripsLeadingZeroes(t *testing.T) {
+	pool := dbtest.Pool(t)
+	queries := db.New(pool)
+	account := seedBankAccount(t, queries, "9400000009")
+	seedMemberWithIdentifier(t, queries, 900602, "900602")
+	seedRawTransaction(t, queries, account.ID, 6009, "500.00", strPtr("00900602"), nil)
+
+	result, err := Run(context.Background(), pool)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.TransactionsProcessed != 1 || result.TransactionsFailed != 0 {
+		t.Fatalf("result = %+v, want {1 0}", result)
+	}
+
+	got := queryProcessed(t, pool, 6009)
+	if got.category != "membership_fee" {
+		t.Errorf("category = %q, want membership_fee", got.category)
+	}
+	if got.memberNumber == nil || *got.memberNumber != 900602 {
+		t.Errorf("member_number = %v, want 900602", got.memberNumber)
+	}
+}
+
 func TestRun_SecondPaymentInSameMonthGetsNoCoverageRowOfItsOwn(t *testing.T) {
 	pool := dbtest.Pool(t)
 	queries := db.New(pool)
