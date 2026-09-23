@@ -1676,8 +1676,14 @@ WHERE ($1::boolean IS NULL
   AND ($5::int IS NULL OR pt.member_number = $5::int)
   AND ($6::date IS NULL OR rt.transaction_date >= $6::date)
   AND ($7::date IS NULL OR rt.transaction_date <= $7::date)
+  AND ($8::text IS NULL OR (
+        rt.counter_account_name ILIKE '%' || $8::text || '%'
+        OR rt.counter_account_number ILIKE '%' || $8::text || '%'
+        OR rt.message_for_recipient ILIKE '%' || $8::text || '%'
+        OR rt.comment ILIKE '%' || $8::text || '%'
+      ))
 ORDER BY rt.transaction_date DESC, rt.id DESC
-LIMIT $9::int OFFSET $8::int
+LIMIT $10::int OFFSET $9::int
 `
 
 type ListTransactionsParams struct {
@@ -1688,6 +1694,7 @@ type ListTransactionsParams struct {
 	MemberNumber *int32      `json:"member_number"`
 	DateFrom     pgtype.Date `json:"date_from"`
 	DateTo       pgtype.Date `json:"date_to"`
+	Search       *string     `json:"search"`
 	Off          int32       `json:"off"`
 	Lim          int32       `json:"lim"`
 }
@@ -1727,6 +1734,7 @@ func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsPara
 		arg.MemberNumber,
 		arg.DateFrom,
 		arg.DateTo,
+		arg.Search,
 		arg.Off,
 		arg.Lim,
 	)

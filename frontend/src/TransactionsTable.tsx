@@ -1,4 +1,4 @@
-import { type CSSProperties, useState } from 'react'
+import { type CSSProperties, useEffect, useRef, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { AssignDialog } from './AssignDialog'
@@ -6,6 +6,7 @@ import { categoryLabel, fetchCategories } from './api/categories'
 import { fetchTransactions, type TransactionQuery } from './api/transactions'
 
 const PAGE_SIZE = 100
+const DEBOUNCE_MS = 500
 const COLUMNS = ['Date', 'Amount', 'Dir', 'Category', 'Member', 'VS', 'Counterparty', 'Message', 'Admin note', ''] as const
 
 interface Filters {
@@ -16,6 +17,7 @@ interface Filters {
   category: string
   matchedBy: '' | 'variable_symbol' | 'manual' | 'amount_heuristic'
   memberNumber: string
+  search: string
 }
 
 function ymd(d: Date): string {
@@ -36,6 +38,7 @@ function defaultFilters(): Filters {
     category: '',
     matchedBy: '',
     memberNumber: '',
+    search: '',
   }
 }
 
@@ -61,6 +64,7 @@ function filtersFromParams(params: URLSearchParams, defaults: Filters): Filters 
     category: params.get('category') ?? '',
     matchedBy: pick(params.get('matched_by'), MATCHED_BY_VALUES),
     memberNumber: params.get('member_number') ?? '',
+    search: params.get('search') ?? '',
   }
 }
 
@@ -78,8 +82,104 @@ function paramsFromFilters(f: Filters, offset: number): URLSearchParams {
   if (f.category) params.set('category', f.category)
   if (f.matchedBy) params.set('matched_by', f.matchedBy)
   if (f.memberNumber.trim()) params.set('member_number', f.memberNumber.trim())
+  if (f.search.trim()) params.set('search', f.search.trim())
   if (offset > 0) params.set('offset', String(offset))
   return params
+}
+
+// useDebouncedCommit backs a "typing" filter field (search, member number):
+// the input shows every keystroke immediately (draft), but onCommit — the
+// thing that actually updates the URL/query — only fires DEBOUNCE_MS after
+// typing stops. If the committed value changes from elsewhere (Reset button,
+// browser back/forward, or this same commit landing) the draft resyncs and
+// any in-flight timer is cancelled, so a stale keystroke can't overwrite a
+// reset that happened while the timer was still pending.
+function useDebouncedCommit(committed: string, onCommit: (value: string) => void, delayMs: number): [string, (value: string) => void] {
+  const [draft, setDraft] = useState(committed)
+  const timeoutRef = useRef<ReturnType<typeof setTimeout>>()
+
+  useEffect(() => {
+    setDraft(committed)
+    clearTimeout(timeoutRef.current)
+  }, [committed])
+
+  useEffect(() => () => clearTimeout(timeoutRef.current), [])
+
+  const handleChange = (value: string) => {
+    setDraft(value)
+    clearTimeout(timeoutRef.current)
+    timeoutRef.current = setTimeout(() => onCommit(value), delayMs)
+  }
+
+  return [draft, handleChange]
+}
+
+// DateField listens to the native "change" event, not React's onChange
+// (which fires on every keystroke while typing a date, including
+// empty/partial values mid-edit) — change only fires once a value is
+// complete. That's still not "done editing" on its own though: scrolling the
+// mouse wheel over the month/day/year spinner segment fires a genuine change
+// on every tick, since each tick already lands on a complete, different
+// valid date — the browser has no separate signal for "still fiddling" vs
+// "settled". So the commit itself is debounced the same DEBOUNCE_MS as
+// search/member#, just re-armed by change instead of by every keystroke —
+// rapid scroll ticks coalesce into one commit after they stop, a single
+// calendar-day pick or a fully-typed date behaves the same way with one tick
+// to debounce.
+// Uncontrolled (defaultValue) on purpose, mounted once — no `key`-forced
+// remount on commit: recreating the <input> mid-interaction (e.g. while its
+// native calendar popup is open) previously caused a spurious extra fire.
+// The listener is attached once (onCommit read from a ref, not a dependency)
+// so it doesn't get torn down/re-added on every parent render either. An
+// external value change (Reset, browser back/forward) is applied
+// imperatively to the DOM node instead, and only when it actually differs,
+// so it never stomps on an interaction already in progress.
+function DateField({
+  label,
+  value,
+  min,
+  max,
+  onCommit,
+}: {
+  label: string
+  value: string
+  min?: string
+  max?: string
+  onCommit: (value: string) => void
+}) {
+  const ref = useRef<HTMLInputElement>(null)
+  const onCommitRef = useRef(onCommit)
+  onCommitRef.current = onCommit
+  const timeoutRef = useRef<ReturnType<typeof setTimeout>>()
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const handleChange = () => {
+      clearTimeout(timeoutRef.current)
+      timeoutRef.current = setTimeout(() => onCommitRef.current(el.value), DEBOUNCE_MS)
+    }
+    el.addEventListener('change', handleChange)
+    return () => {
+      el.removeEventListener('change', handleChange)
+      clearTimeout(timeoutRef.current)
+    }
+  }, [])
+
+  useEffect(() => {
+    const el = ref.current
+    if (el && el.value !== value) {
+      el.value = value
+    }
+    clearTimeout(timeoutRef.current)
+  }, [value])
+
+  return (
+    <label>
+      {label}{' '}
+      <input ref={ref} type="date" defaultValue={value} min={min} max={max} />
+    </label>
+  )
 }
 
 function toQuery(f: Filters, offset: number): TransactionQuery {
@@ -94,6 +194,7 @@ function toQuery(f: Filters, offset: number): TransactionQuery {
     category: f.category || undefined,
     matchedBy: f.matchedBy || undefined,
     memberNumber: f.memberNumber.trim() && Number.isInteger(mn) && mn > 0 ? mn : undefined,
+    search: f.search.trim() || undefined,
   }
 }
 
@@ -109,13 +210,23 @@ export function TransactionsTable() {
 
   // Any filter change resets to the first page. replace: true so typing in
   // the member-number box doesn't spam browser history with one entry per
-  // keystroke — the URL still reflects current state either way.
+  // keystroke — the URL still reflects current state either way. Reads prev
+  // (not the closured `filters`) so two fields committing close together
+  // (e.g. a debounced search commit landing right after a date field's)
+  // can't clobber each other with a stale snapshot.
   const update = (patch: Partial<Filters>) => {
-    setSearchParams(paramsFromFilters({ ...filters, ...patch }, 0), { replace: true })
+    setSearchParams((prev) => paramsFromFilters({ ...filtersFromParams(prev, defaults), ...patch }, 0), { replace: true })
   }
   const reset = () => {
     setSearchParams(new URLSearchParams(), { replace: true })
   }
+
+  const [searchDraft, handleSearchChange] = useDebouncedCommit(filters.search, (v) => update({ search: v }), DEBOUNCE_MS)
+  const [memberNumberDraft, handleMemberNumberChange] = useDebouncedCommit(
+    filters.memberNumber,
+    (v) => update({ memberNumber: v }),
+    DEBOUNCE_MS,
+  )
 
   const query = toQuery(filters, offset)
 
@@ -129,24 +240,8 @@ export function TransactionsTable() {
 
   const filterRowEl = (
     <div style={filterRow}>
-      <label>
-        From{' '}
-        <input
-          type="date"
-          value={filters.from}
-          max={filters.to || undefined}
-          onChange={(e) => update({ from: e.target.value })}
-        />
-      </label>
-      <label>
-        To{' '}
-        <input
-          type="date"
-          value={filters.to}
-          min={filters.from || undefined}
-          onChange={(e) => update({ to: e.target.value })}
-        />
-      </label>
+      <DateField label="From" value={filters.from} max={filters.to || undefined} onCommit={(v) => update({ from: v })} />
+      <DateField label="To" value={filters.to} min={filters.from || undefined} onCommit={(v) => update({ to: v })} />
 
       <Select
         label="Assigned"
@@ -188,9 +283,19 @@ export function TransactionsTable() {
           type="number"
           min="1"
           step="1"
-          value={filters.memberNumber}
-          onChange={(e) => update({ memberNumber: e.target.value })}
+          value={memberNumberDraft}
+          onChange={(e) => handleMemberNumberChange(e.target.value)}
           style={{ width: '5rem' }}
+        />
+      </label>
+      <label>
+        Search{' '}
+        <input
+          type="text"
+          placeholder="Counterparty or message"
+          value={searchDraft}
+          onChange={(e) => handleSearchChange(e.target.value)}
+          style={{ width: '14rem' }}
         />
       </label>
 

@@ -556,6 +556,12 @@ WHERE (sqlc.narg(assigned)::boolean IS NULL
   AND (sqlc.narg(member_number)::int IS NULL OR pt.member_number = sqlc.narg(member_number)::int)
   AND (sqlc.narg(date_from)::date IS NULL OR rt.transaction_date >= sqlc.narg(date_from)::date)
   AND (sqlc.narg(date_to)::date IS NULL OR rt.transaction_date <= sqlc.narg(date_to)::date)
+  AND (sqlc.narg(search)::text IS NULL OR (
+        rt.counter_account_name ILIKE '%' || sqlc.narg(search)::text || '%'
+        OR rt.counter_account_number ILIKE '%' || sqlc.narg(search)::text || '%'
+        OR rt.message_for_recipient ILIKE '%' || sqlc.narg(search)::text || '%'
+        OR rt.comment ILIKE '%' || sqlc.narg(search)::text || '%'
+      ))
 ORDER BY rt.transaction_date DESC, rt.id DESC
 LIMIT sqlc.arg(lim)::int OFFSET sqlc.arg(off)::int;
 

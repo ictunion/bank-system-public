@@ -54,7 +54,8 @@ type transactionListItem struct {
 
 // ListTransactions handles GET /transactions — the admin transaction browser.
 // All filters are optional query params: assigned (true|false), direction, category, matched_by,
-// member_number, from, to (YYYY-MM-DD), limit (<=500, default 100), offset.
+// member_number, from, to (YYYY-MM-DD), search (substring, counterparty/message/comment),
+// limit (<=500, default 100), offset.
 //
 // @Summary      Browse processed transactions
 // @Description  Requires the list-transactions role. All filters optional and combinable.
@@ -68,6 +69,7 @@ type transactionListItem struct {
 // @Param        member_number  query  int     false  "One member's transactions"
 // @Param        from           query  string  false  "YYYY-MM-DD, inclusive"
 // @Param        to             query  string  false  "YYYY-MM-DD, inclusive"
+// @Param        search         query  string  false  "Case-insensitive substring match against counterparty name/number or message/comment"
 // @Param        limit          query  int     false  "Default 100, capped at 500"
 // @Param        offset         query  int     false  "Default 0"
 // @Success      200  {object}  handler.transactionsResponse
@@ -125,6 +127,10 @@ func ListTransactions(queries *db.Queries) http.HandlerFunc {
 		if params.DateTo, ok = dateParam(queryParams.Get("to")); !ok {
 			writeError(w, http.StatusBadRequest, "to must be YYYY-MM-DD")
 			return
+		}
+
+		if s := queryParams.Get("search"); s != "" {
+			params.Search = &s
 		}
 
 		if s := queryParams.Get("limit"); s != "" {

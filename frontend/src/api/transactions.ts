@@ -50,6 +50,8 @@ export interface TransactionQuery {
   category?: Category
   matchedBy?: MatchedBy
   memberNumber?: number
+  /** case-insensitive substring match against counterparty name/number or message/comment */
+  search?: string
 }
 
 export function fetchTransactions(q: TransactionQuery = {}): Promise<TransactionsResponse> {
@@ -63,6 +65,7 @@ export function fetchTransactions(q: TransactionQuery = {}): Promise<Transaction
   if (q.category) params.set('category', q.category)
   if (q.matchedBy) params.set('matched_by', q.matchedBy)
   if (q.memberNumber != null) params.set('member_number', String(q.memberNumber))
+  if (q.search) params.set('search', q.search)
   const qs = params.toString()
   return apiGet<TransactionsResponse>(`/api/transactions${qs ? `?${qs}` : ''}`)
 }
