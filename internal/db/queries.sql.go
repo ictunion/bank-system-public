@@ -977,25 +977,33 @@ func (q *Queries) ListActiveBankAccountNumbers(ctx context.Context) ([]string, e
 const listBankAccounts = `-- name: ListBankAccounts :many
 SELECT id, fio_account_id, iban, currency, display_name, created_at,
        (fio_token_encrypted IS NOT NULL)::boolean AS has_token,
-       (deleted_at IS NULL)::boolean AS is_active
+       (deleted_at IS NULL)::boolean AS is_active,
+       balance, balance_as_of
 FROM bank_accounts ORDER BY id
 `
 
 type ListBankAccountsRow struct {
-	ID           int32     `json:"id"`
-	FioAccountID string    `json:"fio_account_id"`
-	Iban         *string   `json:"iban"`
-	Currency     string    `json:"currency"`
-	DisplayName  string    `json:"display_name"`
-	CreatedAt    time.Time `json:"created_at"`
-	HasToken     bool      `json:"has_token"`
-	IsActive     bool      `json:"is_active"`
+	ID           int32              `json:"id"`
+	FioAccountID string             `json:"fio_account_id"`
+	Iban         *string            `json:"iban"`
+	Currency     string             `json:"currency"`
+	DisplayName  string             `json:"display_name"`
+	CreatedAt    time.Time          `json:"created_at"`
+	HasToken     bool               `json:"has_token"`
+	IsActive     bool               `json:"is_active"`
+	Balance      pgtype.Numeric     `json:"balance"`
+	BalanceAsOf  pgtype.Timestamptz `json:"balance_as_of"`
 }
 
 // Admin-facing list (GET /account) — deliberately excludes the Fio token.
 // Includes soft-deleted accounts (is_active = false) so admins still see them
 // in the UI, crossed out, as a record that the account used to exist. For the
-// token itself, see ListBankAccountsWithToken (internal use only).
+// token itself, see ListBankAccountsWithToken (internal use only). balance/
+// balance_as_of are both null until the account's first successful sync
+// (see UpdateBankAccountBalance) — nullable numeric/timestamptz fall back to
+// pgtype.Numeric/pgtype.Timestamptz rather than the plain-string/time.Time
+// sqlc overrides (those only apply to NOT NULL columns), so the handler
+// converts them to nullable JSON strings itself.
 func (q *Queries) ListBankAccounts(ctx context.Context) ([]ListBankAccountsRow, error) {
 	rows, err := q.db.Query(ctx, listBankAccounts)
 	if err != nil {
@@ -1014,6 +1022,8 @@ func (q *Queries) ListBankAccounts(ctx context.Context) ([]ListBankAccountsRow, 
 			&i.CreatedAt,
 			&i.HasToken,
 			&i.IsActive,
+			&i.Balance,
+			&i.BalanceAsOf,
 		); err != nil {
 			return nil, err
 		}
@@ -1727,6 +1737,54 @@ func (q *Queries) ListMembersMissingPaymentInYearForWorkplace(ctx context.Contex
 	return items, nil
 }
 
+const listRematchCandidates = `-- name: ListRematchCandidates :many
+SELECT pt.id, rt.variable_symbol, rt.transaction_date
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE pt.member_number IS NULL
+  AND pt.category != 'internal_transfer'
+  AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
+  AND rt.variable_symbol IS NOT NULL AND rt.variable_symbol != ''
+`
+
+type ListRematchCandidatesRow struct {
+	ID              int64     `json:"id"`
+	VariableSymbol  *string   `json:"variable_symbol"`
+	TransactionDate time.Time `json:"transaction_date"`
+}
+
+// Backs POST /processing/run action=rematch_unmatched — currently-unmatched
+// processed transactions worth re-checking against member_payment_identifiers,
+// for when a member's liability window was wrong at original processing time
+// (a bad fee_start_date pulled from Orca) and has since been corrected
+// upstream and re-synced (see "Orca member sync"). Skips
+// matched_by = 'manual' (never override an admin's explicit decision, same
+// rule as elsewhere in this schema) and category = 'internal_transfer' (that
+// precedence is fixed by processOne, not up for re-evaluation here — see
+// ReclassifyInternalTransfers for the transfer side of the same idea).
+// member_number IS NULL already implies matched_by IS NULL in practice
+// (matched_by is only ever set alongside a member_number) — the explicit
+// matched_by check is just defensive.
+func (q *Queries) ListRematchCandidates(ctx context.Context) ([]ListRematchCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listRematchCandidates)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRematchCandidatesRow
+	for rows.Next() {
+		var i ListRematchCandidatesRow
+		if err := rows.Scan(&i.ID, &i.VariableSymbol, &i.TransactionDate); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTransactions = `-- name: ListTransactions :many
 SELECT
     pt.id,
@@ -2027,6 +2085,28 @@ func (q *Queries) PaymentCoverageExists(ctx context.Context, arg PaymentCoverage
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const rematchTransactionToMember = `-- name: RematchTransactionToMember :exec
+UPDATE processed_transactions
+SET member_number = $1,
+    category = 'membership_fee',
+    matched_by = 'variable_symbol'
+WHERE id = $2
+`
+
+type RematchTransactionToMemberParams struct {
+	MemberNumber *int32 `json:"member_number"`
+	ID           int64  `json:"id"`
+}
+
+// Only touches member_number/category/matched_by — deliberately leaves
+// admin_comment untouched (unlike AssignTransactionToMember, which always
+// full-overwrites it), since this is an automatic re-match, not an admin
+// action with a comment of its own to record.
+func (q *Queries) RematchTransactionToMember(ctx context.Context, arg RematchTransactionToMemberParams) error {
+	_, err := q.db.Exec(ctx, rematchTransactionToMember, arg.MemberNumber, arg.ID)
+	return err
 }
 
 const syncDefaultPaymentIdentifierValidTo = `-- name: SyncDefaultPaymentIdentifierValidTo :exec

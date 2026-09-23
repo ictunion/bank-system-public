@@ -629,6 +629,38 @@ WHERE variable_symbol = sqlc.arg(variable_symbol)
 ORDER BY valid_from DESC
 LIMIT 1;
 
+-- name: ListRematchCandidates :many
+-- Backs POST /processing/run action=rematch_unmatched — currently-unmatched
+-- processed transactions worth re-checking against member_payment_identifiers,
+-- for when a member's liability window was wrong at original processing time
+-- (a bad fee_start_date pulled from Orca) and has since been corrected
+-- upstream and re-synced (see "Orca member sync"). Skips
+-- matched_by = 'manual' (never override an admin's explicit decision, same
+-- rule as elsewhere in this schema) and category = 'internal_transfer' (that
+-- precedence is fixed by processOne, not up for re-evaluation here — see
+-- ReclassifyInternalTransfers for the transfer side of the same idea).
+-- member_number IS NULL already implies matched_by IS NULL in practice
+-- (matched_by is only ever set alongside a member_number) — the explicit
+-- matched_by check is just defensive.
+SELECT pt.id, rt.variable_symbol, rt.transaction_date
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE pt.member_number IS NULL
+  AND pt.category != 'internal_transfer'
+  AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
+  AND rt.variable_symbol IS NOT NULL AND rt.variable_symbol != '';
+
+-- name: RematchTransactionToMember :exec
+-- Only touches member_number/category/matched_by — deliberately leaves
+-- admin_comment untouched (unlike AssignTransactionToMember, which always
+-- full-overwrites it), since this is an automatic re-match, not an admin
+-- action with a comment of its own to record.
+UPDATE processed_transactions
+SET member_number = sqlc.arg(member_number),
+    category = 'membership_fee',
+    matched_by = 'variable_symbol'
+WHERE id = sqlc.arg(id);
+
 -- name: CreateProcessedTransaction :one
 INSERT INTO processed_transactions (raw_transaction_id, member_number, category, direction, matched_by)
 VALUES (sqlc.arg(raw_transaction_id), sqlc.narg(member_number), sqlc.arg(category), sqlc.arg(direction), sqlc.narg(matched_by))

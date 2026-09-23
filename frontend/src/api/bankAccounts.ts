@@ -76,7 +76,7 @@ export function backfillAccount(id: number, from: string, to: string): Promise<S
 // — see internal/handler/processing.go. `succeeded`/`failed` mean whatever
 // that action's own unit of work is; new actions reuse this same shape
 // rather than getting a bespoke response type each.
-type ProcessingAction = 'run' | 'reclassify_internal_transfers'
+type ProcessingAction = 'run' | 'reclassify_internal_transfers' | 'rematch_unmatched'
 
 interface ProcessingActionResult {
   action: ProcessingAction
@@ -118,4 +118,23 @@ export interface ReclassifyResult {
 export async function reclassifyInternalTransfers(): Promise<ReclassifyResult> {
   const result = await runProcessingAction('reclassify_internal_transfers')
   return { reclassified: result.succeeded, failed: result.failed }
+}
+
+export interface RematchResult {
+  matched: number
+  failed: number
+}
+
+// Re-checks already-processed but still-unmatched transactions against
+// member_payment_identifiers and matches one to a member if it now resolves
+// — for a member whose fee_start_date was wrong in Orca at the time their
+// earlier transactions were processed, since corrected and re-synced (see
+// internal/processing/processing.go RematchUnmatched). Only re-checks the
+// matching step itself — run this *after* the corrected Orca data has
+// synced (automatic, daily 3am, or a restart), not instead of it. Skips
+// manually-matched transactions and anything already internal_transfer;
+// safe/idempotent to call repeatedly. Needs manage-transactions.
+export async function rematchUnmatched(): Promise<RematchResult> {
+  const result = await runProcessingAction('rematch_unmatched')
+  return { matched: result.succeeded, failed: result.failed }
 }

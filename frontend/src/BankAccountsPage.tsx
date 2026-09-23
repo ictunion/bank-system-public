@@ -8,6 +8,7 @@ import {
   deleteBankAccount,
   fetchBankAccounts,
   reclassifyInternalTransfers,
+  rematchUnmatched,
   triggerFioSync,
   triggerProcessing,
   updateBankAccount,
@@ -59,6 +60,15 @@ export function BankAccountsPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['transactions'] }),
   })
 
+  // Also rewrites already-processed rows (a member whose fee_start_date was
+  // wrong in Orca when their earlier transactions were processed, since
+  // corrected and re-synced — see api/bankAccounts.ts rematchUnmatched), so
+  // same manage-transactions gate and its own explicit button as reclassify.
+  const rematch = useMutation({
+    mutationFn: rematchUnmatched,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['transactions'] }),
+  })
+
   return (
     <section>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
@@ -85,10 +95,25 @@ export function BankAccountsPage() {
               )}
               <button
                 disabled={reclassify.isPending}
-                title="Re-check already-processed transactions against the current account list — fixes a transfer synced before its counterparty account was added"
+                title="Re-check already-processed transactions against the current account list"
                 onClick={() => reclassify.mutate()}
               >
                 {reclassify.isPending ? 'Reclassifying…' : 'Reclassify internal transfers'}
+              </button>
+
+              {rematch.error && <span style={{ color: '#b00' }}>{errMessage(rematch.error)}</span>}
+              {rematch.data && (
+                <span style={{ color: '#080' }}>
+                  Matched {rematch.data.matched}
+                  {rematch.data.failed > 0 ? ` (${rematch.data.failed} failed)` : ''}
+                </span>
+              )}
+              <button
+                disabled={rematch.isPending}
+                title="Re-check already-processed but still-unmatched transactions against members"
+                onClick={() => rematch.mutate()}
+              >
+                {rematch.isPending ? 'Rematching…' : 'Rematch unmatched transactions'}
               </button>
             </>
           )}

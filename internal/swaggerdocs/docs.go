@@ -22,7 +22,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the manage-bank-accounts role. Excludes the Fio token itself, only whether one is set.",
+                "description": "Requires the manage-bank-accounts role. Excludes the Fio token itself, only whether one is set. balance/balance_as_of are both null until the account's first successful sync.",
                 "produces": [
                     "application/json"
                 ],
@@ -1614,7 +1614,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires manage-bank-accounts or manage-transactions (which, depends on the action). Body selects the action: \"run\" (re-run matching for unprocessed transactions, needs manage-bank-accounts) or \"reclassify_internal_transfers\" (re-check already-processed transactions against the current bank_accounts roster, needs manage-transactions).",
+                "description": "Requires manage-bank-accounts or manage-transactions (which, depends on the action). Body selects the action: \"run\" (re-run matching for unprocessed transactions, needs manage-bank-accounts), \"reclassify_internal_transfers\" (re-check already-processed transactions against the current bank_accounts roster, needs manage-transactions), or \"rematch_unmatched\" (re-check already-processed-but-unmatched transactions against member_payment_identifiers, needs manage-transactions).",
                 "consumes": [
                     "application/json"
                 ],
@@ -2127,6 +2127,13 @@ const docTemplate = `{
         "handler.bankAccountResponse": {
             "type": "object",
             "properties": {
+                "balance": {
+                    "description": "Balance/BalanceAsOf are both nil until the account's first successful\nsync — see bank_accounts.balance in \"Database schema\" (CLAUDE.md).",
+                    "type": "string"
+                },
+                "balance_as_of": {
+                    "type": "string"
+                },
                 "created_at": {
                     "type": "string"
                 },

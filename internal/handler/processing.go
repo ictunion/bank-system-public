@@ -40,7 +40,7 @@ type processingActionResponse struct {
 // manage-transactions write, same as PUT /transactions/{id}/assignment).
 //
 // @Summary      Run an on-demand processing action
-// @Description  Requires manage-bank-accounts or manage-transactions (which, depends on the action). Body selects the action: "run" (re-run matching for unprocessed transactions, needs manage-bank-accounts) or "reclassify_internal_transfers" (re-check already-processed transactions against the current bank_accounts roster, needs manage-transactions).
+// @Description  Requires manage-bank-accounts or manage-transactions (which, depends on the action). Body selects the action: "run" (re-run matching for unprocessed transactions, needs manage-bank-accounts), "reclassify_internal_transfers" (re-check already-processed transactions against the current bank_accounts roster, needs manage-transactions), or "rematch_unmatched" (re-check already-processed-but-unmatched transactions against member_payment_identifiers, needs manage-transactions).
 // @Tags         transactions
 // @Security     BearerAuth
 // @Accept       json
@@ -94,6 +94,22 @@ func RunProcessing(pool *pgxpool.Pool, provider *keycloak.Provider) http.Handler
 			writeJSON(w, http.StatusOK, processingActionResponse{
 				Action:    request.Action,
 				Succeeded: result.Reclassified,
+				Failed:    result.Failed,
+			})
+
+		case "rematch_unmatched":
+			if !provider.HasRole(claims, keycloak.RoleManageTransactions) {
+				writeError(w, http.StatusForbidden, "not authorized")
+				return
+			}
+			result, err := processing.RematchUnmatched(r.Context(), pool)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "rematch failed: "+err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, processingActionResponse{
+				Action:    request.Action,
+				Succeeded: result.Matched,
 				Failed:    result.Failed,
 			})
 

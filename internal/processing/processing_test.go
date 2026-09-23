@@ -514,3 +514,189 @@ func TestReclassifyInternalTransfers_SkipsManuallyMatchedRows(t *testing.T) {
 		t.Errorf("category = %q, want unchanged other_expense", got.category)
 	}
 }
+
+// seedRawTransactionOnDate is seedRawTransaction with an explicit
+// transaction_date — RematchUnmatched's tests need transactions dated well
+// before "now" to simulate a member whose liability window was wrong at
+// original processing time.
+func seedRawTransactionOnDate(t *testing.T, queries *db.Queries, bankAccountID int32, fioTransactionID int64, amount string, variableSymbol *string, transactionDate time.Time) {
+	t.Helper()
+	if _, err := queries.InsertRawTransaction(context.Background(), db.InsertRawTransactionParams{
+		BankAccountID:    bankAccountID,
+		FioTransactionID: fioTransactionID,
+		TransactionDate:  transactionDate,
+		Amount:           amount,
+		Currency:         "CZK",
+		VariableSymbol:   variableSymbol,
+		RawPayload:       []byte("{}"),
+	}); err != nil {
+		t.Fatalf("InsertRawTransaction(fio_transaction_id=%d): %v", fioTransactionID, err)
+	}
+}
+
+// TestRematchUnmatched_MatchesAfterMemberStartDateCorrected reproduces the
+// real reported bug: a member's fee_start_date was wrong in Orca (too late),
+// so member_payment_identifiers had no row covering their actual, earlier
+// payments — those transactions processed as unmatched other_income. Once
+// Orca's data is corrected and re-synced (simulated here directly via
+// EnsureDefaultPaymentIdentifier, same call the Orca sync itself makes),
+// RematchUnmatched must find and fix them.
+func TestRematchUnmatched_MatchesAfterMemberStartDateCorrected(t *testing.T) {
+	pool := dbtest.Pool(t)
+	queries := db.New(pool)
+	account := seedBankAccount(t, queries, "9400000021")
+	const memberNumber = int32(900610)
+
+	// Wrong fee_start_date (too recent) — the transaction below, dated 6
+	// months ago, predates this window entirely, so it won't match yet.
+	wrongStart := time.Now().AddDate(0, -2, 0)
+	if err := queries.UpsertMember(context.Background(), db.UpsertMemberParams{
+		MemberNumber: memberNumber,
+		FeeStartDate: pgtype.Date{Time: wrongStart, Valid: true},
+		Active:       true,
+	}); err != nil {
+		t.Fatalf("UpsertMember: %v", err)
+	}
+	if err := queries.EnsureDefaultPaymentIdentifier(context.Background(), db.EnsureDefaultPaymentIdentifierParams{
+		MemberNumber:   memberNumber,
+		VariableSymbol: "900610",
+		ValidFrom:      wrongStart,
+	}); err != nil {
+		t.Fatalf("EnsureDefaultPaymentIdentifier (wrong): %v", err)
+	}
+
+	oldTransactionDate := time.Now().AddDate(0, -6, 0)
+	seedRawTransactionOnDate(t, queries, account.ID, 6021, "500.00", strPtr("900610"), oldTransactionDate)
+
+	if _, err := Run(context.Background(), pool); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	before := queryProcessed(t, pool, 6021)
+	if before.category != "other_income" || before.memberNumber != nil {
+		t.Fatalf("before correction: got %+v, want unmatched other_income", before)
+	}
+
+	// The correction: a real Orca sync re-runs EnsureDefaultPaymentIdentifier
+	// with the fixed fee_start_date. Its ON CONFLICT target is
+	// (variable_symbol, valid_from), so a changed valid_from inserts a
+	// *second* row rather than updating the first — see CLAUDE.md "Orca
+	// member sync".
+	correctedStart := time.Now().AddDate(-1, 0, 0)
+	if err := queries.EnsureDefaultPaymentIdentifier(context.Background(), db.EnsureDefaultPaymentIdentifierParams{
+		MemberNumber:   memberNumber,
+		VariableSymbol: "900610",
+		ValidFrom:      correctedStart,
+	}); err != nil {
+		t.Fatalf("EnsureDefaultPaymentIdentifier (corrected): %v", err)
+	}
+
+	result, err := RematchUnmatched(context.Background(), pool)
+	if err != nil {
+		t.Fatalf("RematchUnmatched: %v", err)
+	}
+	if result.Matched != 1 || result.Failed != 0 {
+		t.Fatalf("result = %+v, want {1 0}", result)
+	}
+
+	got := queryProcessed(t, pool, 6021)
+	if got.category != "membership_fee" {
+		t.Errorf("category = %q, want membership_fee", got.category)
+	}
+	if got.memberNumber == nil || *got.memberNumber != memberNumber {
+		t.Errorf("member_number = %v, want %d", got.memberNumber, memberNumber)
+	}
+	if got.matchedBy == nil || *got.matchedBy != "variable_symbol" {
+		t.Errorf("matched_by = %v, want variable_symbol", got.matchedBy)
+	}
+	if n := coverageMonthsFor(t, pool, memberNumber); n != 1 {
+		t.Errorf("payment_coverage rows for member %d = %d, want 1", memberNumber, n)
+	}
+
+	// Idempotent: nothing left to rematch on a second call.
+	second, err := RematchUnmatched(context.Background(), pool)
+	if err != nil {
+		t.Fatalf("second RematchUnmatched: %v", err)
+	}
+	if second.Matched != 0 || second.Failed != 0 {
+		t.Errorf("second result = %+v, want {0 0}", second)
+	}
+}
+
+// TestRematchUnmatched_SkipsManuallyMatchedRows makes sure an admin's
+// explicit manual match/category is never silently overridden even if a
+// member now happens to resolve for that variable symbol/date.
+func TestRematchUnmatched_SkipsManuallyMatchedRows(t *testing.T) {
+	pool := dbtest.Pool(t)
+	queries := db.New(pool)
+	account := seedBankAccount(t, queries, "9400000022")
+
+	oldTransactionDate := time.Now().AddDate(0, -6, 0)
+	seedRawTransactionOnDate(t, queries, account.ID, 6022, "500.00", strPtr("900611"), oldTransactionDate)
+	if _, err := Run(context.Background(), pool); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	setMatchedBy(t, pool, 6022, "manual")
+
+	seedMemberWithIdentifier(t, queries, 900611, "900611")
+
+	result, err := RematchUnmatched(context.Background(), pool)
+	if err != nil {
+		t.Fatalf("RematchUnmatched: %v", err)
+	}
+	if result.Matched != 0 || result.Failed != 0 {
+		t.Fatalf("result = %+v, want {0 0} — manually-matched rows must be skipped", result)
+	}
+
+	got := queryProcessed(t, pool, 6022)
+	if got.category != "other_income" {
+		t.Errorf("category = %q, want unchanged other_income", got.category)
+	}
+}
+
+// TestRematchUnmatched_SkipsInternalTransfer makes sure a transaction already
+// categorized internal_transfer is never reconsidered for member matching,
+// even if its variable_symbol happens to coincide with a live member's — same
+// precedence rule processOne itself enforces (see
+// TestRun_InternalTransferTakesPriorityOverVariableSymbolMatch).
+func TestRematchUnmatched_SkipsInternalTransfer(t *testing.T) {
+	pool := dbtest.Pool(t)
+	queries := db.New(pool)
+	accountA := seedBankAccount(t, queries, "9400000023")
+	seedBankAccount(t, queries, "9400000024")
+	seedMemberWithIdentifier(t, queries, 900612, "900612")
+
+	oldTransactionDate := time.Now().AddDate(0, -6, 0)
+	if _, err := queries.InsertRawTransaction(context.Background(), db.InsertRawTransactionParams{
+		BankAccountID:        accountA.ID,
+		FioTransactionID:     6023,
+		TransactionDate:      oldTransactionDate,
+		Amount:               "-500.00",
+		Currency:             "CZK",
+		CounterAccountNumber: strPtr("9400000024"),
+		VariableSymbol:       strPtr("900612"),
+		RawPayload:           []byte("{}"),
+	}); err != nil {
+		t.Fatalf("InsertRawTransaction: %v", err)
+	}
+
+	if _, err := Run(context.Background(), pool); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	before := queryProcessed(t, pool, 6023)
+	if before.category != "internal_transfer" {
+		t.Fatalf("before: category = %q, want internal_transfer", before.category)
+	}
+
+	result, err := RematchUnmatched(context.Background(), pool)
+	if err != nil {
+		t.Fatalf("RematchUnmatched: %v", err)
+	}
+	if result.Matched != 0 || result.Failed != 0 {
+		t.Fatalf("result = %+v, want {0 0} — internal_transfer rows must be skipped", result)
+	}
+
+	got := queryProcessed(t, pool, 6023)
+	if got.category != "internal_transfer" || got.memberNumber != nil {
+		t.Errorf("got = %+v, want unchanged internal_transfer with no member", got)
+	}
+}
