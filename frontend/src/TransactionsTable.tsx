@@ -1,5 +1,6 @@
 import { type CSSProperties, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import { AssignDialog } from './AssignDialog'
 import { categoryLabel, fetchCategories } from './api/categories'
 import { fetchTransactions, type TransactionQuery } from './api/transactions'
@@ -38,6 +39,49 @@ function defaultFilters(): Filters {
   }
 }
 
+const ASSIGNED_VALUES = ['true', 'false'] as const
+const DIRECTION_VALUES = ['incoming', 'outgoing'] as const
+const MATCHED_BY_VALUES = ['variable_symbol', 'manual', 'amount_heuristic'] as const
+
+function pick<T extends string>(value: string | null, allowed: readonly T[]): T | '' {
+  return value != null && (allowed as readonly string[]).includes(value) ? (value as T) : ''
+}
+
+// Filters/offset live entirely in the URL's query string (react-router
+// useSearchParams), not React state — that's what makes the current view
+// linkable/shareable as-is, and a page reload/back-button restore it for free.
+// Param names mirror the API's own query params (see api/transactions.ts) so
+// the URL reads the same as the request it drives.
+function filtersFromParams(params: URLSearchParams, defaults: Filters): Filters {
+  return {
+    from: params.get('from') ?? defaults.from,
+    to: params.get('to') ?? defaults.to,
+    assigned: pick(params.get('assigned'), ASSIGNED_VALUES),
+    direction: pick(params.get('direction'), DIRECTION_VALUES),
+    category: params.get('category') ?? '',
+    matchedBy: pick(params.get('matched_by'), MATCHED_BY_VALUES),
+    memberNumber: params.get('member_number') ?? '',
+  }
+}
+
+function offsetFromParams(params: URLSearchParams): number {
+  const raw = Number(params.get('offset'))
+  return Number.isInteger(raw) && raw > 0 ? raw : 0
+}
+
+function paramsFromFilters(f: Filters, offset: number): URLSearchParams {
+  const params = new URLSearchParams()
+  if (f.from) params.set('from', f.from)
+  if (f.to) params.set('to', f.to)
+  if (f.assigned) params.set('assigned', f.assigned)
+  if (f.direction) params.set('direction', f.direction)
+  if (f.category) params.set('category', f.category)
+  if (f.matchedBy) params.set('matched_by', f.matchedBy)
+  if (f.memberNumber.trim()) params.set('member_number', f.memberNumber.trim())
+  if (offset > 0) params.set('offset', String(offset))
+  return params
+}
+
 function toQuery(f: Filters, offset: number): TransactionQuery {
   const mn = Number(f.memberNumber)
   return {
@@ -55,20 +99,22 @@ function toQuery(f: Filters, offset: number): TransactionQuery {
 
 export function TransactionsTable() {
   const [defaults] = useState(defaultFilters)
-  const [filters, setFilters] = useState<Filters>(defaults)
-  const [offset, setOffset] = useState(0)
+  const [searchParams, setSearchParams] = useSearchParams()
   const [editingId, setEditingId] = useState<number | null>(null)
+
+  const filters = filtersFromParams(searchParams, defaults)
+  const offset = offsetFromParams(searchParams)
 
   const modified = JSON.stringify(filters) !== JSON.stringify(defaults)
 
-  // Any filter change resets to the first page.
+  // Any filter change resets to the first page. replace: true so typing in
+  // the member-number box doesn't spam browser history with one entry per
+  // keystroke — the URL still reflects current state either way.
   const update = (patch: Partial<Filters>) => {
-    setFilters((f) => ({ ...f, ...patch }))
-    setOffset(0)
+    setSearchParams(paramsFromFilters({ ...filters, ...patch }, 0), { replace: true })
   }
   const reset = () => {
-    setFilters(defaults)
-    setOffset(0)
+    setSearchParams(new URLSearchParams(), { replace: true })
   }
 
   const query = toQuery(filters, offset)
@@ -177,7 +223,7 @@ export function TransactionsTable() {
   const pager = needsPager ? (
     <div style={pagerStyle}>
       <button
-        onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}
+        onClick={() => setSearchParams(paramsFromFilters(filters, Math.max(0, offset - PAGE_SIZE)), { replace: true })}
         disabled={offset === 0 || isPlaceholderData}
       >
         ← Prev
@@ -186,7 +232,7 @@ export function TransactionsTable() {
         {rangeFrom}–{rangeTo} of {total}
       </span>
       <button
-        onClick={() => setOffset((o) => o + PAGE_SIZE)}
+        onClick={() => setSearchParams(paramsFromFilters(filters, offset + PAGE_SIZE), { replace: true })}
         disabled={rangeTo >= total || isPlaceholderData}
       >
         Next →
