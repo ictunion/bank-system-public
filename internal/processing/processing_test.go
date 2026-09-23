@@ -622,6 +622,47 @@ func TestRematchUnmatched_MatchesAfterMemberStartDateCorrected(t *testing.T) {
 	}
 }
 
+// TestRematchUnmatched_StripsLeadingZeroes covers the same Fio
+// zero-padded-variable-symbol quirk as TestRun_VariableSymbolMatchStripsLeadingZeroes
+// (e.g. "00900613" for VS 900613), but on the rematch path — a real
+// regression once: the zero-stripping fix was only applied in processOne,
+// not in rematchOne, so an already-processed zero-padded-VS transaction
+// stayed unmatched forever even after RematchUnmatched should have fixed it.
+func TestRematchUnmatched_StripsLeadingZeroes(t *testing.T) {
+	pool := dbtest.Pool(t)
+	queries := db.New(pool)
+	account := seedBankAccount(t, queries, "9400000025")
+	// No member 900613 exists yet — this transaction can't match at
+	// processing time regardless of VS padding.
+	seedRawTransaction(t, queries, account.ID, 6024, "500.00", strPtr("00900613"), nil)
+
+	if _, err := Run(context.Background(), pool); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	before := queryProcessed(t, pool, 6024)
+	if before.category != "other_income" || before.memberNumber != nil {
+		t.Fatalf("before: got %+v, want unmatched other_income", before)
+	}
+
+	seedMemberWithIdentifier(t, queries, 900613, "900613")
+
+	result, err := RematchUnmatched(context.Background(), pool)
+	if err != nil {
+		t.Fatalf("RematchUnmatched: %v", err)
+	}
+	if result.Matched != 1 || result.Failed != 0 {
+		t.Fatalf("result = %+v, want {1 0}", result)
+	}
+
+	got := queryProcessed(t, pool, 6024)
+	if got.category != "membership_fee" {
+		t.Errorf("category = %q, want membership_fee", got.category)
+	}
+	if got.memberNumber == nil || *got.memberNumber != 900613 {
+		t.Errorf("member_number = %v, want 900613", got.memberNumber)
+	}
+}
+
 // TestRematchUnmatched_SkipsManuallyMatchedRows makes sure an admin's
 // explicit manual match/category is never silently overridden even if a
 // member now happens to resolve for that variable symbol/date.

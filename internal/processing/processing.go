@@ -89,17 +89,8 @@ func processOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.
 	}
 
 	if category == "" && rt.VariableSymbol != nil && *rt.VariableSymbol != "" {
-		// Fio sometimes zero-pads the variable symbol (e.g. "00000123" for VS
-		// 123), but member_payment_identifiers stores it unpadded (Orca sync
-		// seeds it from member_number, an int, with no padding) — strip
-		// leading zeroes before matching, not at insert time, so
-		// raw_transactions stays an untouched mirror of Fio's response.
-		normalizedVariableSymbol := strings.TrimLeft(*rt.VariableSymbol, "0")
-		if normalizedVariableSymbol == "" {
-			normalizedVariableSymbol = "0"
-		}
 		member, err := queries.FindMemberByVariableSymbol(requestContext, db.FindMemberByVariableSymbolParams{
-			VariableSymbol:  normalizedVariableSymbol,
+			VariableSymbol:  normalizeVariableSymbol(*rt.VariableSymbol),
 			TransactionDate: rt.TransactionDate,
 		})
 		switch {
@@ -187,6 +178,21 @@ func processOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.
 
 func containsMzda(field *string) bool {
 	return field != nil && strings.Contains(strings.ToLower(*field), "mzda")
+}
+
+// normalizeVariableSymbol strips leading zeroes Fio sometimes pads a
+// variable symbol with (e.g. "00000123" for VS 123) — member_payment_identifiers
+// stores it unpadded (Orca sync seeds it from member_number, an int, with no
+// padding). Used by every variable_symbol match against
+// member_payment_identifiers (processOne and rematchOne alike) — not applied
+// at insert time, so raw_transactions stays an untouched mirror of Fio's
+// response.
+func normalizeVariableSymbol(variableSymbol string) string {
+	normalized := strings.TrimLeft(variableSymbol, "0")
+	if normalized == "" {
+		return "0"
+	}
+	return normalized
 }
 
 // ReclassifyResult summarizes one ReclassifyInternalTransfers run.
@@ -305,7 +311,7 @@ func RematchUnmatched(requestContext context.Context, pool *pgxpool.Pool) (Remat
 // rather than failing the row.
 func rematchOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.Queries, candidate db.ListRematchCandidatesRow) (matched bool, err error) {
 	member, err := queries.FindMemberByVariableSymbol(requestContext, db.FindMemberByVariableSymbolParams{
-		VariableSymbol:  *candidate.VariableSymbol,
+		VariableSymbol:  normalizeVariableSymbol(*candidate.VariableSymbol),
 		TransactionDate: candidate.TransactionDate,
 	})
 	switch {
