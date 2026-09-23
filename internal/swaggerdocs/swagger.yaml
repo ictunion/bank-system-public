@@ -203,6 +203,20 @@ definitions:
       year:
         type: integer
     type: object
+  handler.processingActionResponse:
+    properties:
+      action:
+        type: string
+      failed:
+        type: integer
+      succeeded:
+        type: integer
+    type: object
+  handler.processingRunRequest:
+    properties:
+      action:
+        type: string
+    type: object
   handler.syncResultResponse:
     properties:
       bank_account_id:
@@ -1408,6 +1422,58 @@ paths:
       summary: 'Workplace-scoped: members who missed a payment in a year'
       tags:
       - payments
+  /processing/run:
+    post:
+      consumes:
+      - application/json
+      description: 'Requires manage-bank-accounts or manage-transactions (which, depends
+        on the action). Body selects the action: "run" (re-run matching for unprocessed
+        transactions, needs manage-bank-accounts) or "reclassify_internal_transfers"
+        (re-check already-processed transactions against the current bank_accounts
+        roster, needs manage-transactions).'
+      parameters:
+      - description: Which action to run
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.processingRunRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.processingActionResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Run an on-demand processing action
+      tags:
+      - transactions
   /transactions:
     get:
       description: Requires the list-transactions role. All filters optional and combinable.
@@ -1439,6 +1505,11 @@ paths:
       - description: YYYY-MM-DD, inclusive
         in: query
         name: to
+        type: string
+      - description: Case-insensitive substring match against counterparty name/number
+          or message/comment
+        in: query
+        name: search
         type: string
       - description: Default 100, capped at 500
         in: query

@@ -154,6 +154,16 @@ type Querier interface {
 	// detail is the bank account's display name for a fio_sync row, NULL for
 	// orca_sync (there's no per-account breakdown for the member sync).
 	ListEventLogs(ctx context.Context, arg ListEventLogsParams) ([]ListEventLogsRow, error)
+	// Rows categorized before their counterparty's bank_accounts row existed —
+	// internal-transfer detection (processing.go) only ever sees the roster as
+	// of the moment a transaction was first processed, and a processed row is
+	// never revisited on its own (see ListUnprocessedTransactions), so adding a
+	// second/new account later leaves earlier transfers to/from it permanently
+	// miscategorized. Excludes matched_by = 'manual' — never silently override
+	// an admin's explicit decision, same rule as elsewhere in this schema (see
+	// payment_waivers, admin_comment). Excludes already-internal_transfer rows
+	// so a repeat run only touches what's still wrong.
+	ListInternalTransferCandidates(ctx context.Context, accountNumbers []string) ([]int64, error)
 	// Members who were liable for the membership fee in the given year/month but
 	// have no payment_coverage row for it. "Liable" = fee_start_date is set (the
 	// member_arrears view enforces this) and the target month falls within

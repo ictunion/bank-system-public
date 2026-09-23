@@ -7,16 +7,19 @@ import {
   createBankAccount,
   deleteBankAccount,
   fetchBankAccounts,
+  reclassifyInternalTransfers,
   triggerFioSync,
   triggerProcessing,
   updateBankAccount,
 } from './api/bankAccounts'
 import { Overlay } from './Overlay'
+import { useHasRole } from './roles'
 
 const COLUMNS = ['Fio account', 'Name', 'Currency', 'IBAN', 'Token', 'Created', ''] as const
 
 export function BankAccountsPage() {
   const qc = useQueryClient()
+  const canManageTransactions = useHasRole('manage-transactions')
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<BankAccount | null>(null)
   const [backfilling, setBackfilling] = useState<BankAccount | null>(null)
@@ -35,6 +38,16 @@ export function BankAccountsPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['transactions'] }),
   })
 
+  // Separate from runProcessing: rewrites already-processed rows (a transfer
+  // synced/processed before its counterparty account was registered here —
+  // see api/bankAccounts.ts reclassifyInternalTransfers), so it needs
+  // manage-transactions, not manage-bank-accounts, and gets its own explicit
+  // button rather than running automatically.
+  const reclassify = useMutation({
+    mutationFn: reclassifyInternalTransfers,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['transactions'] }),
+  })
+
   return (
     <section>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
@@ -50,6 +63,24 @@ export function BankAccountsPage() {
           <button disabled={runProcessing.isPending} onClick={() => runProcessing.mutate()}>
             {runProcessing.isPending ? 'Running…' : 'Run processing'}
           </button>
+          {canManageTransactions && (
+            <>
+              {reclassify.error && <span style={{ color: '#b00' }}>{errMessage(reclassify.error)}</span>}
+              {reclassify.data && (
+                <span style={{ color: '#080' }}>
+                  Reclassified {reclassify.data.reclassified}
+                  {reclassify.data.failed > 0 ? ` (${reclassify.data.failed} failed)` : ''}
+                </span>
+              )}
+              <button
+                disabled={reclassify.isPending}
+                title="Re-check already-processed transactions against the current account list — fixes a transfer synced before its counterparty account was added"
+                onClick={() => reclassify.mutate()}
+              >
+                {reclassify.isPending ? 'Reclassifying…' : 'Reclassify internal transfers'}
+              </button>
+            </>
+          )}
           <button onClick={() => setAdding(true)}>Add bank account</button>
         </div>
       </div>

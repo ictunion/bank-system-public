@@ -1607,6 +1607,81 @@ const docTemplate = `{
                 }
             }
         },
+        "/processing/run": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Requires manage-bank-accounts or manage-transactions (which, depends on the action). Body selects the action: \"run\" (re-run matching for unprocessed transactions, needs manage-bank-accounts) or \"reclassify_internal_transfers\" (re-check already-processed transactions against the current bank_accounts roster, needs manage-transactions).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "transactions"
+                ],
+                "summary": "Run an on-demand processing action",
+                "parameters": [
+                    {
+                        "description": "Which action to run",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.processingRunRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handler.processingActionResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/transactions": {
             "get": {
                 "security": [
@@ -1663,6 +1738,12 @@ const docTemplate = `{
                         "type": "string",
                         "description": "YYYY-MM-DD, inclusive",
                         "name": "to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Case-insensitive substring match against counterparty name/number or message/comment",
+                        "name": "search",
                         "in": "query"
                     },
                     {
@@ -2295,6 +2376,28 @@ const docTemplate = `{
                 },
                 "year": {
                     "type": "integer"
+                }
+            }
+        },
+        "handler.processingActionResponse": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string"
+                },
+                "failed": {
+                    "type": "integer"
+                },
+                "succeeded": {
+                    "type": "integer"
+                }
+            }
+        },
+        "handler.processingRunRequest": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string"
                 }
             }
         },

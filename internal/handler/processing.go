@@ -1,48 +1,104 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kubik/bank-system/internal/keycloak"
 	"github.com/kubik/bank-system/internal/processing"
 )
 
-type processingResultResponse struct {
-	TransactionsProcessed int `json:"transactions_processed"`
-	TransactionsFailed    int `json:"transactions_failed"`
+type processingRunRequest struct {
+	Action string `json:"action"`
 }
 
-// TriggerProcessing handles POST /processing/run — an admin "run processing"
-// button that re-runs transaction processing/matching on demand, independent
-// of any one bank account. On top of the scheduled daily cycle (see
-// cmd/server/main.go) and the synchronous run TriggerFioSync/BackfillAccount
-// already do right after a sync, this covers cases where waiting for the
-// next raw_transactions insert isn't good enough — e.g. after manually
-// editing member_payment_identifiers, or after a matching-logic change.
-// processing.Run only ever touches raw_transactions rows that don't have a
-// processed_transactions row yet, so this is idempotent and safe to call any
-// time.
+// processingActionResponse is the one response shape every action returns —
+// Succeeded/Failed means whatever that action's own unit of work is
+// (transactions processed for "run", transactions reclassified for
+// "reclassify_internal_transfers"). Keeping one generic {action, succeeded,
+// failed} contract, rather than a bespoke shape per action, is what lets new
+// actions get added here later without changing the response contract too.
+type processingActionResponse struct {
+	Action    string `json:"action"`
+	Succeeded int    `json:"succeeded"`
+	Failed    int    `json:"failed"`
+}
+
+// RunProcessing handles POST /processing/run — a single admin-triggered entry
+// point for on-demand processing actions, dispatched on the JSON body's
+// "action" field rather than one route per action, since more actions are
+// expected to be added here over time (see cmd/server/main.go) and each one
+// would otherwise need its own route wired through the same
+// RequireAnyRole/role-check boilerplate. Route-level auth
+// (RequireAnyRole(RoleManageBankAccounts, RoleManageTransactions)) only
+// establishes the caller holds *some* processing-admin capability; each
+// action below checks the specific role it actually needs itself, since
+// different actions can require different roles (a plain re-match is a
+// bank-accounts-admin concern, but reclassifying already-processed rows is a
+// manage-transactions write, same as PUT /transactions/{id}/assignment).
 //
-// @Summary      Trigger transaction processing/matching on demand
-// @Description  Requires the manage-bank-accounts role. Processes every raw_transactions row that doesn't have a processed_transactions row yet — idempotent, safe to call any time, not scoped to one bank account.
+// @Summary      Run an on-demand processing action
+// @Description  Requires manage-bank-accounts or manage-transactions (which, depends on the action). Body selects the action: "run" (re-run matching for unprocessed transactions, needs manage-bank-accounts) or "reclassify_internal_transfers" (re-check already-processed transactions against the current bank_accounts roster, needs manage-transactions).
 // @Tags         transactions
 // @Security     BearerAuth
+// @Accept       json
 // @Produce      json
-// @Success      200  {object}  handler.processingResultResponse
-// @Failure      401,403  {object}  map[string]string
+// @Param        request  body  handler.processingRunRequest  true  "Which action to run"
+// @Success      200  {object}  handler.processingActionResponse
+// @Failure      400,401,403  {object}  map[string]string
 // @Failure      500  {object}  map[string]string
 // @Router       /processing/run [post]
-func TriggerProcessing(pool *pgxpool.Pool) http.HandlerFunc {
+func RunProcessing(pool *pgxpool.Pool, provider *keycloak.Provider) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		result, err := processing.Run(r.Context(), pool)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "processing failed: "+err.Error())
+		var request processingRunRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
-		writeJSON(w, http.StatusOK, processingResultResponse{
-			TransactionsProcessed: result.TransactionsProcessed,
-			TransactionsFailed:    result.TransactionsFailed,
-		})
+
+		claims, ok := ClaimsFromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusForbidden, "not authorized")
+			return
+		}
+
+		switch request.Action {
+		case "run":
+			if !provider.HasRole(claims, keycloak.RoleManageBankAccounts) {
+				writeError(w, http.StatusForbidden, "not authorized")
+				return
+			}
+			result, err := processing.Run(r.Context(), pool)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "processing failed: "+err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, processingActionResponse{
+				Action:    request.Action,
+				Succeeded: result.TransactionsProcessed,
+				Failed:    result.TransactionsFailed,
+			})
+
+		case "reclassify_internal_transfers":
+			if !provider.HasRole(claims, keycloak.RoleManageTransactions) {
+				writeError(w, http.StatusForbidden, "not authorized")
+				return
+			}
+			result, err := processing.ReclassifyInternalTransfers(r.Context(), pool)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "reclassification failed: "+err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, processingActionResponse{
+				Action:    request.Action,
+				Succeeded: result.Reclassified,
+				Failed:    result.Failed,
+			})
+
+		default:
+			writeError(w, http.StatusBadRequest, "unknown action: "+request.Action)
+		}
 	}
 }

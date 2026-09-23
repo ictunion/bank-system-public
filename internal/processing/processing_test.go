@@ -411,3 +411,106 @@ func TestRun_SoftDeletedAccountNotTreatedAsOurs(t *testing.T) {
 		t.Errorf("category = %q, want other_income (soft-deleted account shouldn't count as ours)", got.category)
 	}
 }
+
+func setMatchedBy(t *testing.T, pool *pgxpool.Pool, fioTransactionID int64, matchedBy string) {
+	t.Helper()
+	tag, err := pool.Exec(context.Background(), `
+		UPDATE processed_transactions SET matched_by = $2
+		FROM raw_transactions rt
+		WHERE processed_transactions.raw_transaction_id = rt.id AND rt.fio_transaction_id = $1
+	`, fioTransactionID, matchedBy)
+	if err != nil {
+		t.Fatalf("setMatchedBy(fio_transaction_id=%d): %v", fioTransactionID, err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("setMatchedBy(fio_transaction_id=%d): affected %d rows, want 1", fioTransactionID, tag.RowsAffected())
+	}
+}
+
+// TestReclassifyInternalTransfers_FixesTransferProcessedBeforeCounterpartyAccountExisted
+// reproduces the real bug: a transfer's counterparty account gets registered
+// in bank_accounts *after* the transfer was already synced and processed —
+// internal-transfer detection in Run only ever sees the roster as of that
+// moment, so it's miscategorized, and Run alone can never fix it afterward
+// since it skips already-processed rows.
+func TestReclassifyInternalTransfers_FixesTransferProcessedBeforeCounterpartyAccountExisted(t *testing.T) {
+	pool := dbtest.Pool(t)
+	queries := db.New(pool)
+	accountA := seedBankAccount(t, queries, "9400000017")
+	// accountB doesn't exist yet — the transfer's counterparty isn't
+	// recognized as ours at processing time.
+	seedTransferTransaction(t, queries, accountA.ID, 6015, "-750.00", "9400000018", nil)
+
+	if _, err := Run(context.Background(), pool); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	before := queryProcessed(t, pool, 6015)
+	if before.category != "other_expense" {
+		t.Fatalf("category before accountB exists = %q, want other_expense", before.category)
+	}
+
+	// Re-running Run() alone must not fix it — it only touches unprocessed rows.
+	if _, err := Run(context.Background(), pool); err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if got := queryProcessed(t, pool, 6015); got.category != "other_expense" {
+		t.Fatalf("category after a second Run = %q, want still other_expense (Run must not revisit processed rows)", got.category)
+	}
+
+	seedBankAccount(t, queries, "9400000018")
+
+	result, err := ReclassifyInternalTransfers(context.Background(), pool)
+	if err != nil {
+		t.Fatalf("ReclassifyInternalTransfers: %v", err)
+	}
+	if result.Reclassified != 1 || result.Failed != 0 {
+		t.Fatalf("result = %+v, want {1 0}", result)
+	}
+
+	got := queryProcessed(t, pool, 6015)
+	if got.category != "internal_transfer" {
+		t.Errorf("category = %q, want internal_transfer", got.category)
+	}
+	if got.memberNumber != nil || got.matchedBy != nil {
+		t.Errorf("got = %+v, want no member/matched_by", got)
+	}
+
+	// Idempotent: nothing left to reclassify on a second call.
+	second, err := ReclassifyInternalTransfers(context.Background(), pool)
+	if err != nil {
+		t.Fatalf("second ReclassifyInternalTransfers: %v", err)
+	}
+	if second.Reclassified != 0 || second.Failed != 0 {
+		t.Errorf("second result = %+v, want {0 0}", second)
+	}
+}
+
+// TestReclassifyInternalTransfers_SkipsManuallyMatchedRows makes sure an
+// admin's explicit manual match is never silently overridden, even if the
+// counterparty later turns out to be one of our own accounts.
+func TestReclassifyInternalTransfers_SkipsManuallyMatchedRows(t *testing.T) {
+	pool := dbtest.Pool(t)
+	queries := db.New(pool)
+	accountA := seedBankAccount(t, queries, "9400000019")
+	seedTransferTransaction(t, queries, accountA.ID, 6016, "-200.00", "9400000020", nil)
+
+	if _, err := Run(context.Background(), pool); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	setMatchedBy(t, pool, 6016, "manual")
+
+	seedBankAccount(t, queries, "9400000020")
+
+	result, err := ReclassifyInternalTransfers(context.Background(), pool)
+	if err != nil {
+		t.Fatalf("ReclassifyInternalTransfers: %v", err)
+	}
+	if result.Reclassified != 0 || result.Failed != 0 {
+		t.Fatalf("result = %+v, want {0 0} — manually-matched rows must be skipped", result)
+	}
+
+	got := queryProcessed(t, pool, 6016)
+	if got.category != "other_expense" {
+		t.Errorf("category = %q, want unchanged other_expense", got.category)
+	}
+}

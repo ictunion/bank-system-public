@@ -188,3 +188,68 @@ func processOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.
 func containsMzda(field *string) bool {
 	return field != nil && strings.Contains(strings.ToLower(*field), "mzda")
 }
+
+// ReclassifyResult summarizes one ReclassifyInternalTransfers run.
+type ReclassifyResult struct {
+	Reclassified int
+	Failed       int
+}
+
+// ReclassifyInternalTransfers re-checks already-processed transactions
+// against the *current* bank_accounts roster and flips any that are now
+// recognizable as a transfer between our own accounts to
+// category=internal_transfer. Unlike Run, this deliberately revisits rows
+// that already have a processed_transactions row — internal-transfer
+// detection in processOne only ever sees the roster as of the moment a
+// transaction was first processed (see ListActiveBankAccountNumbers there),
+// so a transaction synced/processed before a second (or newly taken-over)
+// bank account was registered here stays miscategorized forever otherwise,
+// even after the account is added and Run is called again. Skips
+// matched_by='manual' rows (never override an admin's explicit decision) and
+// anything already internal_transfer, so repeat calls are safe/idempotent —
+// only ever touching what's still wrong.
+func ReclassifyInternalTransfers(requestContext context.Context, pool *pgxpool.Pool) (ReclassifyResult, error) {
+	queries := db.New(pool)
+
+	ourAccountNumbers, err := queries.ListActiveBankAccountNumbers(requestContext)
+	if err != nil {
+		return ReclassifyResult{}, fmt.Errorf("listing active bank account numbers: %w", err)
+	}
+
+	candidateIDs, err := queries.ListInternalTransferCandidates(requestContext, ourAccountNumbers)
+	if err != nil {
+		return ReclassifyResult{}, fmt.Errorf("listing internal transfer candidates: %w", err)
+	}
+
+	var result ReclassifyResult
+	for _, id := range candidateIDs {
+		if err := reclassifyOne(requestContext, pool, id); err != nil {
+			result.Failed++
+			log.Printf("reclassify internal transfers: processed_transaction_id=%d: %v", id, err)
+			continue
+		}
+		result.Reclassified++
+	}
+	return result, nil
+}
+
+func reclassifyOne(requestContext context.Context, pool *pgxpool.Pool, processedTransactionID int64) error {
+	tx, err := pool.Begin(requestContext)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(requestContext)
+	txQueries := db.New(tx)
+
+	if err := txQueries.DeleteCoverageForTransaction(requestContext, processedTransactionID); err != nil {
+		return fmt.Errorf("clearing coverage: %w", err)
+	}
+	if _, err := txQueries.UnassignTransaction(requestContext, db.UnassignTransactionParams{
+		ID:       processedTransactionID,
+		Category: "internal_transfer",
+	}); err != nil {
+		return fmt.Errorf("updating category: %w", err)
+	}
+
+	return tx.Commit(requestContext)
+}

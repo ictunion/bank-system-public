@@ -697,6 +697,23 @@ RETURNING id;
 -- name: DeleteCoverageForTransaction :exec
 DELETE FROM payment_coverage WHERE processed_transaction_id = sqlc.arg(processed_transaction_id);
 
+-- name: ListInternalTransferCandidates :many
+-- Rows categorized before their counterparty's bank_accounts row existed —
+-- internal-transfer detection (processing.go) only ever sees the roster as
+-- of the moment a transaction was first processed, and a processed row is
+-- never revisited on its own (see ListUnprocessedTransactions), so adding a
+-- second/new account later leaves earlier transfers to/from it permanently
+-- miscategorized. Excludes matched_by = 'manual' — never silently override
+-- an admin's explicit decision, same rule as elsewhere in this schema (see
+-- payment_waivers, admin_comment). Excludes already-internal_transfer rows
+-- so a repeat run only touches what's still wrong.
+SELECT pt.id
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE pt.category != 'internal_transfer'
+  AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
+  AND rt.counter_account_number = ANY(sqlc.arg(account_numbers)::text[]);
+
 -- name: InsertCoverageRow :execrows
 -- ON CONFLICT DO NOTHING + :execrows so the caller can tell which requested
 -- month was already covered by a *different* transaction (0 rows affected) and

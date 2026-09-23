@@ -1400,6 +1400,44 @@ func (q *Queries) ListEventLogs(ctx context.Context, arg ListEventLogsParams) ([
 	return items, nil
 }
 
+const listInternalTransferCandidates = `-- name: ListInternalTransferCandidates :many
+SELECT pt.id
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE pt.category != 'internal_transfer'
+  AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
+  AND rt.counter_account_number = ANY($1::text[])
+`
+
+// Rows categorized before their counterparty's bank_accounts row existed —
+// internal-transfer detection (processing.go) only ever sees the roster as
+// of the moment a transaction was first processed, and a processed row is
+// never revisited on its own (see ListUnprocessedTransactions), so adding a
+// second/new account later leaves earlier transfers to/from it permanently
+// miscategorized. Excludes matched_by = 'manual' — never silently override
+// an admin's explicit decision, same rule as elsewhere in this schema (see
+// payment_waivers, admin_comment). Excludes already-internal_transfer rows
+// so a repeat run only touches what's still wrong.
+func (q *Queries) ListInternalTransferCandidates(ctx context.Context, accountNumbers []string) ([]int64, error) {
+	rows, err := q.db.Query(ctx, listInternalTransferCandidates, accountNumbers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMembersMissingPayment = `-- name: ListMembersMissingPayment :many
 SELECT ma.member_number, ma.total_missed_months, ma.has_ever_paid
 FROM member_arrears ma
