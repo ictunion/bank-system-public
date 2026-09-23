@@ -15,7 +15,18 @@ import {
 import { Overlay } from './Overlay'
 import { useHasRole } from './roles'
 
-const COLUMNS = ['Fio account', 'Name', 'Currency', 'IBAN', 'Token', 'Created', ''] as const
+const COLUMNS = ['Fio account', 'Name', 'Currency', 'Balance', 'IBAN', 'Token', 'Created', ''] as const
+
+// Same approach as BudgetPage's formatAmount — Intl currency formatting with
+// a plain-number fallback for a currency code Intl doesn't recognize.
+function formatAmount(total: string, currency: string): string {
+  const n = Number(total)
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(n)
+  } catch {
+    return `${n.toLocaleString()} ${currency}`
+  }
+}
 
 export function BankAccountsPage() {
   const qc = useQueryClient()
@@ -160,6 +171,9 @@ function BankAccountRow({
       <td style={cell}>{account.fio_account_id}</td>
       <td style={cell}>{account.display_name}</td>
       <td style={cell}>{account.currency}</td>
+      <td style={cell} title={account.balance_as_of ? `as of ${new Date(account.balance_as_of).toLocaleString()}` : undefined}>
+        {account.balance == null ? '—' : formatAmount(account.balance, account.currency)}
+      </td>
       <td style={cell}>{account.iban ?? '—'}</td>
       <td style={cell}>{account.has_token ? 'Set' : 'Not set'}</td>
       <td style={cell}>{account.created_at.slice(0, 10)}</td>

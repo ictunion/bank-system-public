@@ -56,6 +56,13 @@ type TransactionsResponse struct {
 			Currency       string  `json:"currency"`
 			IBAN           string  `json:"iban"`
 			BIC            string  `json:"bic"`
+			// OpeningBalance/ClosingBalance: the account's balance as of the
+			// start/end of this statement — captured by syncjob's cursor-based
+			// sync (never backfill) into bank_accounts.balance, see
+			// internal/db/queries.sql UpdateBankAccountBalance. Free with every
+			// response, no extra Fio API call needed.
+			OpeningBalance float64 `json:"openingBalance"`
+			ClosingBalance float64 `json:"closingBalance"`
 			IDLastDownload int64   `json:"idLastDownload"`
 		} `json:"info"`
 		TransactionList struct {

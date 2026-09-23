@@ -2,10 +2,16 @@
 -- Admin-facing list (GET /account) — deliberately excludes the Fio token.
 -- Includes soft-deleted accounts (is_active = false) so admins still see them
 -- in the UI, crossed out, as a record that the account used to exist. For the
--- token itself, see ListBankAccountsWithToken (internal use only).
+-- token itself, see ListBankAccountsWithToken (internal use only). balance/
+-- balance_as_of are both null until the account's first successful sync
+-- (see UpdateBankAccountBalance) — nullable numeric/timestamptz fall back to
+-- pgtype.Numeric/pgtype.Timestamptz rather than the plain-string/time.Time
+-- sqlc overrides (those only apply to NOT NULL columns), so the handler
+-- converts them to nullable JSON strings itself.
 SELECT id, fio_account_id, iban, currency, display_name, created_at,
        (fio_token_encrypted IS NOT NULL)::boolean AS has_token,
-       (deleted_at IS NULL)::boolean AS is_active
+       (deleted_at IS NULL)::boolean AS is_active,
+       balance, balance_as_of
 FROM bank_accounts ORDER BY id;
 
 -- name: ListActiveBankAccountNumbers :many
@@ -16,6 +22,34 @@ FROM bank_accounts ORDER BY id;
 -- excluded deliberately: no live account there to be the other leg of a
 -- current transfer.
 SELECT fio_account_id FROM bank_accounts WHERE deleted_at IS NULL;
+
+-- name: UpdateBankAccountBalance :exec
+-- Internal use only, written by the cursor-based sync path only (syncjob's
+-- syncAccount) — never by backfill, whose date range is often in the past,
+-- so its own closingBalance wouldn't be "current". Both columns null until
+-- the account's first successful sync. balance_as_of is set by Postgres
+-- (now()), not passed in from Go — same convention as sync_fio_runs.started_at
+-- etc., avoids any app/DB clock skew.
+UPDATE bank_accounts SET balance = sqlc.arg(balance), balance_as_of = now()
+WHERE id = sqlc.arg(id);
+
+-- name: GetTotalBalance :many
+-- Backs the Budget page's "Current Balance" figure (GET
+-- /transactions/summary) — summed across every non-soft-deleted account,
+-- grouped by currency (don't assume single-currency, same as
+-- GetTransactionCategorySummary). An account with no balance yet (never
+-- successfully synced) is excluded from the sum entirely rather than
+-- counted as zero, so a not-yet-synced account can't understate the total —
+-- revisit if that instead reads as confusingly incomplete.
+-- COALESCE forces this NOT NULL (same reason GetTransactionCategorySummary
+-- does it) — SUM() is nullable to Postgres's planner regardless of the WHERE
+-- filter guaranteeing a non-null result here, and sqlc maps a nullable
+-- numeric to pgtype.Numeric instead of the plain-string override.
+SELECT currency, COALESCE(SUM(balance), 0)::numeric AS total
+FROM bank_accounts
+WHERE deleted_at IS NULL AND balance IS NOT NULL
+GROUP BY currency
+ORDER BY currency;
 
 -- name: ListBankAccountsWithToken :many
 -- Internal use only (the Fio sync job) — includes the decrypted Fio token.

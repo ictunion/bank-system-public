@@ -19,6 +19,8 @@ type BankAccount struct {
 	CreatedAt         time.Time          `json:"created_at"`
 	FioTokenEncrypted []byte             `json:"fio_token_encrypted"`
 	DeletedAt         pgtype.Timestamptz `json:"deleted_at"`
+	Balance           pgtype.Numeric     `json:"balance"`
+	BalanceAsOf       pgtype.Timestamptz `json:"balance_as_of"`
 }
 
 type Member struct {

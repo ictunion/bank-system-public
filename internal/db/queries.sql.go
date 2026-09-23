@@ -649,6 +649,50 @@ func (q *Queries) GetPaymentWaiver(ctx context.Context, arg GetPaymentWaiverPara
 	return i, err
 }
 
+const getTotalBalance = `-- name: GetTotalBalance :many
+SELECT currency, COALESCE(SUM(balance), 0)::numeric AS total
+FROM bank_accounts
+WHERE deleted_at IS NULL AND balance IS NOT NULL
+GROUP BY currency
+ORDER BY currency
+`
+
+type GetTotalBalanceRow struct {
+	Currency string `json:"currency"`
+	Total    string `json:"total"`
+}
+
+// Backs the Budget page's "Current Balance" figure (GET
+// /transactions/summary) — summed across every non-soft-deleted account,
+// grouped by currency (don't assume single-currency, same as
+// GetTransactionCategorySummary). An account with no balance yet (never
+// successfully synced) is excluded from the sum entirely rather than
+// counted as zero, so a not-yet-synced account can't understate the total —
+// revisit if that instead reads as confusingly incomplete.
+// COALESCE forces this NOT NULL (same reason GetTransactionCategorySummary
+// does it) — SUM() is nullable to Postgres's planner regardless of the WHERE
+// filter guaranteeing a non-null result here, and sqlc maps a nullable
+// numeric to pgtype.Numeric instead of the plain-string override.
+func (q *Queries) GetTotalBalance(ctx context.Context) ([]GetTotalBalanceRow, error) {
+	rows, err := q.db.Query(ctx, getTotalBalance)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetTotalBalanceRow
+	for rows.Next() {
+		var i GetTotalBalanceRow
+		if err := rows.Scan(&i.Currency, &i.Total); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getTransactionCategorySummary = `-- name: GetTransactionCategorySummary :many
 SELECT
     pt.direction,
@@ -2091,6 +2135,27 @@ func (q *Queries) UpdateBankAccount(ctx context.Context, arg UpdateBankAccountPa
 		&i.HasToken,
 	)
 	return i, err
+}
+
+const updateBankAccountBalance = `-- name: UpdateBankAccountBalance :exec
+UPDATE bank_accounts SET balance = $1, balance_as_of = now()
+WHERE id = $2
+`
+
+type UpdateBankAccountBalanceParams struct {
+	Balance pgtype.Numeric `json:"balance"`
+	ID      int32          `json:"id"`
+}
+
+// Internal use only, written by the cursor-based sync path only (syncjob's
+// syncAccount) — never by backfill, whose date range is often in the past,
+// so its own closingBalance wouldn't be "current". Both columns null until
+// the account's first successful sync. balance_as_of is set by Postgres
+// (now()), not passed in from Go — same convention as sync_fio_runs.started_at
+// etc., avoids any app/DB clock skew.
+func (q *Queries) UpdateBankAccountBalance(ctx context.Context, arg UpdateBankAccountBalanceParams) error {
+	_, err := q.db.Exec(ctx, updateBankAccountBalance, arg.Balance, arg.ID)
+	return err
 }
 
 const upsertMember = `-- name: UpsertMember :exec

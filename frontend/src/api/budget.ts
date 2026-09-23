@@ -6,9 +6,16 @@ export interface CategoryTotal {
   total: string
 }
 
+export interface CurrencyTotal {
+  currency: string
+  total: string
+}
+
 export interface CategorySummary {
   incoming: CategoryTotal[]
   outgoing: CategoryTotal[]
+  /** Live total across every bank account, grouped by currency — not scoped by the from/to query, there's no "balance as of a date range". */
+  current_balance: CurrencyTotal[]
 }
 
 export interface CategorySummaryQuery {

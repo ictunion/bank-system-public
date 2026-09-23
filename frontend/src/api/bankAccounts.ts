@@ -9,6 +9,10 @@ export interface BankAccount {
   created_at: string
   has_token: boolean
   is_active: boolean
+  /** null until the account's first successful sync */
+  balance: string | null
+  /** null until the account's first successful sync */
+  balance_as_of: string | null
 }
 
 export interface CreateBankAccountPayload {

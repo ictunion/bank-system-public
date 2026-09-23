@@ -55,6 +55,16 @@ definitions:
     type: object
   handler.categorySummaryResponse:
     properties:
+      current_balance:
+        description: |-
+          CurrentBalance is a live snapshot (sum of every bank_accounts.balance,
+          grouped by currency, as of each account's own last successful sync —
+          see UpdateBankAccountBalance), not scoped by from/to like
+          Incoming/Outgoing are — there's no "balance as of a date range", only
+          "balance right now".
+        items:
+          $ref: '#/definitions/handler.currencyTotal'
+        type: array
       incoming:
         items:
           $ref: '#/definitions/handler.categoryTotal'
@@ -111,6 +121,13 @@ definitions:
   handler.createCategoryRequest:
     properties:
       name:
+        type: string
+    type: object
+  handler.currencyTotal:
+    properties:
+      currency:
+        type: string
+      total:
         type: string
     type: object
   handler.eventLogItem:
@@ -1700,6 +1717,8 @@ paths:
     get:
       description: Requires the view-budget role. Grouped by direction/category/currency
         only — no member_number or counterparty, safe for wide member-facing use.
+        current_balance is a live total across every bank account (grouped by currency),
+        not scoped by from/to.
       parameters:
       - description: YYYY-MM-DD, inclusive
         in: query

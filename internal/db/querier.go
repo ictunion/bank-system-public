@@ -89,6 +89,18 @@ type Querier interface {
 	GetMemberWorkplaceSub(ctx context.Context, memberNumber int32) (pgtype.UUID, error)
 	GetPaymentHistory(ctx context.Context, memberNumber int32) ([]GetPaymentHistoryRow, error)
 	GetPaymentWaiver(ctx context.Context, arg GetPaymentWaiverParams) (GetPaymentWaiverRow, error)
+	// Backs the Budget page's "Current Balance" figure (GET
+	// /transactions/summary) — summed across every non-soft-deleted account,
+	// grouped by currency (don't assume single-currency, same as
+	// GetTransactionCategorySummary). An account with no balance yet (never
+	// successfully synced) is excluded from the sum entirely rather than
+	// counted as zero, so a not-yet-synced account can't understate the total —
+	// revisit if that instead reads as confusingly incomplete.
+	// COALESCE forces this NOT NULL (same reason GetTransactionCategorySummary
+	// does it) — SUM() is nullable to Postgres's planner regardless of the WHERE
+	// filter guaranteeing a non-null result here, and sqlc maps a nullable
+	// numeric to pgtype.Numeric instead of the plain-string override.
+	GetTotalBalance(ctx context.Context) ([]GetTotalBalanceRow, error)
 	// Budgeting view:
 	// totals grouped by direction/category/currency only — no member_number, no
 	// counterparty, no per-transaction rows, so this is safe for the
@@ -234,6 +246,13 @@ type Querier interface {
 	// is a historical record, not something to edit; 0 rows affected reads as
 	// "not found" either way (missing id or soft-deleted id).
 	UpdateBankAccount(ctx context.Context, arg UpdateBankAccountParams) (UpdateBankAccountRow, error)
+	// Internal use only, written by the cursor-based sync path only (syncjob's
+	// syncAccount) — never by backfill, whose date range is often in the past,
+	// so its own closingBalance wouldn't be "current". Both columns null until
+	// the account's first successful sync. balance_as_of is set by Postgres
+	// (now()), not passed in from Go — same convention as sync_fio_runs.started_at
+	// etc., avoids any app/DB clock skew.
+	UpdateBankAccountBalance(ctx context.Context, arg UpdateBankAccountBalanceParams) error
 	UpsertMember(ctx context.Context, arg UpsertMemberParams) error
 }
 

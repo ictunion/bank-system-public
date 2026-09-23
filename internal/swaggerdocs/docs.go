@@ -1803,7 +1803,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the view-budget role. Grouped by direction/category/currency only — no member_number or counterparty, safe for wide member-facing use.",
+                "description": "Requires the view-budget role. Grouped by direction/category/currency only — no member_number or counterparty, safe for wide member-facing use. current_balance is a live total across every bank account (grouped by currency), not scoped by from/to.",
                 "produces": [
                     "application/json"
                 ],
@@ -2167,6 +2167,13 @@ const docTemplate = `{
         "handler.categorySummaryResponse": {
             "type": "object",
             "properties": {
+                "current_balance": {
+                    "description": "CurrentBalance is a live snapshot (sum of every bank_accounts.balance,\ngrouped by currency, as of each account's own last successful sync —\nsee UpdateBankAccountBalance), not scoped by from/to like\nIncoming/Outgoing are — there's no \"balance as of a date range\", only\n\"balance right now\".",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handler.currencyTotal"
+                    }
+                },
                 "incoming": {
                     "type": "array",
                     "items": {
@@ -2253,6 +2260,17 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.currencyTotal": {
+            "type": "object",
+            "properties": {
+                "currency": {
+                    "type": "string"
+                },
+                "total": {
                     "type": "string"
                 }
             }

@@ -11,12 +11,41 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kubik/bank-system/internal/db"
 	"github.com/kubik/bank-system/internal/processing"
 	"github.com/kubik/bank-system/internal/syncjob"
 )
+
+// numericToStringPtr renders a nullable pgtype.Numeric the same way every
+// other amount in this API is represented — a JSON string (avoids JS
+// floating-point precision loss), nil when the column is NULL. Needed
+// because the plain-string sqlc override for numeric only applies to NOT
+// NULL columns (see bank_accounts.balance in queries.sql).
+func numericToStringPtr(n pgtype.Numeric) *string {
+	if !n.Valid {
+		return nil
+	}
+	value, err := n.Value()
+	if err != nil {
+		return nil
+	}
+	s, _ := value.(string)
+	return &s
+}
+
+// timestamptzToStringPtr is BankAccount.BalanceAsOf's equivalent of
+// numericToStringPtr — nullable timestamptz also falls back to
+// pgtype.Timestamptz rather than the NOT-NULL-only time.Time override.
+func timestamptzToStringPtr(t pgtype.Timestamptz) *string {
+	if !t.Valid {
+		return nil
+	}
+	s := t.Time.Format(time.RFC3339)
+	return &s
+}
 
 type createBankAccountRequest struct {
 	FioAccountID string  `json:"fio_account_id"`
@@ -47,6 +76,10 @@ type bankAccountResponse struct {
 	CreatedAt    time.Time `json:"created_at"`
 	HasToken     bool      `json:"has_token"`
 	IsActive     bool      `json:"is_active"`
+	// Balance/BalanceAsOf are both nil until the account's first successful
+	// sync — see bank_accounts.balance in "Database schema" (CLAUDE.md).
+	Balance     *string `json:"balance"`
+	BalanceAsOf *string `json:"balance_as_of"`
 }
 
 // ListBankAccounts handles GET /account — lists registered bank accounts for
@@ -55,7 +88,7 @@ type bankAccountResponse struct {
 // whether one is set.
 //
 // @Summary      List bank accounts
-// @Description  Requires the manage-bank-accounts role. Excludes the Fio token itself, only whether one is set.
+// @Description  Requires the manage-bank-accounts role. Excludes the Fio token itself, only whether one is set. balance/balance_as_of are both null until the account's first successful sync.
 // @Tags         accounts
 // @Security     BearerAuth
 // @Produce      json
@@ -81,6 +114,8 @@ func ListBankAccounts(queries *db.Queries) http.HandlerFunc {
 				CreatedAt:    account.CreatedAt,
 				HasToken:     account.HasToken,
 				IsActive:     account.IsActive,
+				Balance:      numericToStringPtr(account.Balance),
+				BalanceAsOf:  timestamptzToStringPtr(account.BalanceAsOf),
 			}
 		}
 		writeJSON(w, http.StatusOK, response)
