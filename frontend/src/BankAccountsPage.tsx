@@ -7,14 +7,31 @@ import {
   createBankAccount,
   deleteBankAccount,
   fetchBankAccounts,
+  reclassifyInternalTransfers,
+  rematchUnmatched,
   triggerFioSync,
+  triggerProcessing,
   updateBankAccount,
 } from './api/bankAccounts'
 import { Overlay } from './Overlay'
+import { useHasRole } from './roles'
 
-const COLUMNS = ['Fio account', 'Name', 'Currency', 'IBAN', 'Token', 'Created', ''] as const
+const COLUMNS = ['Fio account', 'Name', 'Currency', 'Balance', 'IBAN', 'Token', 'Created', ''] as const
+
+// Same approach as BudgetPage's formatAmount — Intl currency formatting with
+// a plain-number fallback for a currency code Intl doesn't recognize.
+function formatAmount(total: string, currency: string): string {
+  const n = Number(total)
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(n)
+  } catch {
+    return `${n.toLocaleString()} ${currency}`
+  }
+}
 
 export function BankAccountsPage() {
+  const qc = useQueryClient()
+  const canManageTransactions = useHasRole('manage-transactions')
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<BankAccount | null>(null)
   const [backfilling, setBackfilling] = useState<BankAccount | null>(null)
@@ -24,11 +41,84 @@ export function BankAccountsPage() {
     queryFn: fetchBankAccounts,
   })
 
+  // Not scoped to one account — re-runs matching for every raw_transactions
+  // row that doesn't have a processed_transactions row yet (see
+  // api/bankAccounts.ts triggerProcessing). Invalidate the transaction
+  // browser's cache too so a subsequent visit shows freshly matched rows.
+  const runProcessing = useMutation({
+    mutationFn: triggerProcessing,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['transactions'] }),
+  })
+
+  // Separate from runProcessing: rewrites already-processed rows (a transfer
+  // synced/processed before its counterparty account was registered here —
+  // see api/bankAccounts.ts reclassifyInternalTransfers), so it needs
+  // manage-transactions, not manage-bank-accounts, and gets its own explicit
+  // button rather than running automatically.
+  const reclassify = useMutation({
+    mutationFn: reclassifyInternalTransfers,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['transactions'] }),
+  })
+
+  // Also rewrites already-processed rows (a member whose fee_start_date was
+  // wrong in Orca when their earlier transactions were processed, since
+  // corrected and re-synced — see api/bankAccounts.ts rematchUnmatched), so
+  // same manage-transactions gate and its own explicit button as reclassify.
+  const rematch = useMutation({
+    mutationFn: rematchUnmatched,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['transactions'] }),
+  })
+
   return (
     <section>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
         <h2 style={{ margin: 0 }}>Bank accounts</h2>
-        <button onClick={() => setAdding(true)}>Add bank account</button>
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'baseline' }}>
+          {runProcessing.error && <span style={{ color: '#b00' }}>{errMessage(runProcessing.error)}</span>}
+          {runProcessing.data && (
+            <span style={{ color: '#080' }}>
+              Processed {runProcessing.data.transactions_processed}
+              {runProcessing.data.transactions_failed > 0 ? ` (${runProcessing.data.transactions_failed} failed)` : ''}
+            </span>
+          )}
+          <button disabled={runProcessing.isPending} onClick={() => runProcessing.mutate()}>
+            {runProcessing.isPending ? 'Running…' : 'Run processing'}
+          </button>
+          {canManageTransactions && (
+            <>
+              {reclassify.error && <span style={{ color: '#b00' }}>{errMessage(reclassify.error)}</span>}
+              {reclassify.data && (
+                <span style={{ color: '#080' }}>
+                  Reclassified {reclassify.data.reclassified}
+                  {reclassify.data.failed > 0 ? ` (${reclassify.data.failed} failed)` : ''}
+                </span>
+              )}
+              <button
+                disabled={reclassify.isPending}
+                title="Re-check already-processed transactions against the current account list"
+                onClick={() => reclassify.mutate()}
+              >
+                {reclassify.isPending ? 'Reclassifying…' : 'Reclassify internal transfers'}
+              </button>
+
+              {rematch.error && <span style={{ color: '#b00' }}>{errMessage(rematch.error)}</span>}
+              {rematch.data && (
+                <span style={{ color: '#080' }}>
+                  Matched {rematch.data.matched}
+                  {rematch.data.failed > 0 ? ` (${rematch.data.failed} failed)` : ''}
+                </span>
+              )}
+              <button
+                disabled={rematch.isPending}
+                title="Re-check already-processed but still-unmatched transactions against members"
+                onClick={() => rematch.mutate()}
+              >
+                {rematch.isPending ? 'Rematching…' : 'Rematch unmatched transactions'}
+              </button>
+            </>
+          )}
+          <button onClick={() => setAdding(true)}>Add bank account</button>
+        </div>
       </div>
 
       {isPending ? (
@@ -106,6 +196,9 @@ function BankAccountRow({
       <td style={cell}>{account.fio_account_id}</td>
       <td style={cell}>{account.display_name}</td>
       <td style={cell}>{account.currency}</td>
+      <td style={cell} title={account.balance_as_of ? `as of ${new Date(account.balance_as_of).toLocaleString()}` : undefined}>
+        {account.balance == null ? '—' : formatAmount(account.balance, account.currency)}
+      </td>
       <td style={cell}>{account.iban ?? '—'}</td>
       <td style={cell}>{account.has_token ? 'Set' : 'Not set'}</td>
       <td style={cell}>{account.created_at.slice(0, 10)}</td>

@@ -65,7 +65,14 @@ export function BudgetPage() {
 
   return (
     <section>
-      <h2 style={{ marginTop: 0 }}>Budget</h2>
+      <h2 style={{ marginTop: 0 }}>
+        Budget
+        {data && data.current_balance.length > 0 && (
+          <span style={{ fontWeight: 400, fontSize: '1rem', color: '#666', marginLeft: '0.75rem' }}>
+            — Current Balance {data.current_balance.map((b) => formatAmount(b.total, b.currency)).join(', ')}
+          </span>
+        )}
+      </h2>
 
       <div style={filterRow}>
         <label>

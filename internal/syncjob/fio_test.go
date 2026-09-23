@@ -218,3 +218,93 @@ func TestSyncOneAccount_SeedsCursorOnStrongAuthRequired(t *testing.T) {
 		t.Errorf("result = %+v, want 1 fetched and 1 inserted", result)
 	}
 }
+
+// balanceFor reads bank_accounts.balance/balance_as_of directly — no
+// exported query returns these yet (see internal/db/queries.sql
+// UpdateBankAccountBalance, internal use only), so a raw read is simplest.
+func balanceFor(t *testing.T, pool *pgxpool.Pool, bankAccountID int32) (balance *string, asOf *time.Time) {
+	t.Helper()
+	if err := pool.QueryRow(context.Background(),
+		`SELECT balance, balance_as_of FROM bank_accounts WHERE id = $1`, bankAccountID,
+	).Scan(&balance, &asOf); err != nil {
+		t.Fatalf("balanceFor(bank_account_id=%d): %v", bankAccountID, err)
+	}
+	return balance, asOf
+}
+
+func TestSyncOneAccount_CapturesClosingBalanceFromFio(t *testing.T) {
+	pool := dbtest.Pool(t)
+	account := seedBankAccountWithToken(t, pool, "9500000009")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"accountStatement": {
+				"info": {"accountId": "1", "currency": "CZK", "openingBalance": 900.00, "closingBalance": 1400.00},
+				"transactionList": {
+					"transaction": [
+						{
+							"column0": {"value": "2026-06-15+0200", "name": "Date", "id": 0},
+							"column1": {"value": 500.00, "name": "Amount", "id": 1},
+							"column14": {"value": "CZK", "name": "Currency", "id": 14},
+							"column22": {"value": 7005, "name": "ID transakce", "id": 22}
+						}
+					]
+				}
+			}
+		}`))
+	}))
+	t.Cleanup(server.Close)
+
+	if _, err := SyncOneAccount(context.Background(), pool, server.URL, testEncryptionKey, account.ID, true); err != nil {
+		t.Fatalf("SyncOneAccount: %v", err)
+	}
+
+	balance, asOf := balanceFor(t, pool, account.ID)
+	if balance == nil || *balance != "1400.00" {
+		t.Errorf("balance = %v, want 1400.00 (closingBalance, not openingBalance)", balance)
+	}
+	if asOf == nil {
+		t.Error("balance_as_of = nil, want set")
+	}
+}
+
+// TestBackfillAccount_DoesNotTouchBalance confirms backfill never writes
+// bank_accounts.balance — its date range is often in the past, so the
+// closingBalance in its response wouldn't be "current" (see
+// internal/db/queries.sql UpdateBankAccountBalance).
+func TestBackfillAccount_DoesNotTouchBalance(t *testing.T) {
+	pool := dbtest.Pool(t)
+	account := seedBankAccountWithToken(t, pool, "9500000010")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"accountStatement": {
+				"info": {"accountId": "1", "currency": "CZK", "openingBalance": 100.00, "closingBalance": 200.00},
+				"transactionList": {
+					"transaction": [
+						{
+							"column0": {"value": "2020-06-15+0200", "name": "Date", "id": 0},
+							"column1": {"value": 500.00, "name": "Amount", "id": 1},
+							"column14": {"value": "CZK", "name": "Currency", "id": 14},
+							"column22": {"value": 7006, "name": "ID transakce", "id": 22}
+						}
+					]
+				}
+			}
+		}`))
+	}))
+	t.Cleanup(server.Close)
+
+	from := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2020, 12, 31, 0, 0, 0, 0, time.UTC)
+	if _, err := BackfillAccount(context.Background(), pool, server.URL, testEncryptionKey, account.ID, from, to, true); err != nil {
+		t.Fatalf("BackfillAccount: %v", err)
+	}
+
+	balance, _ := balanceFor(t, pool, account.ID)
+	if balance != nil {
+		t.Errorf("balance = %v, want nil — backfill must never set it", *balance)
+	}
+}

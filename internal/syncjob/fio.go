@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kubik/bank-system/internal/db"
@@ -233,6 +234,27 @@ func syncAccount(requestContext context.Context, pool *pgxpool.Pool, queries *db
 		return Result{}, fmt.Errorf("parsing fio response: %w", err)
 	}
 	fetched = len(txs)
+
+	// AccountID is only ever "" for the synthetic empty TransactionsResponse
+	// client.get returns on a 409 ("nothing new since last call", no JSON
+	// body at all) — a real response always carries it, whether or not it
+	// also happened to include zero transactions. Only the cursor-based sync
+	// path writes this (never backfill — its date range is often in the
+	// past, so its own closingBalance wouldn't be "current").
+	if response.AccountStatement.Info.AccountID != "" {
+		var balance pgtype.Numeric
+		if balanceErr := balance.Scan(fmt.Sprintf("%.2f", response.AccountStatement.Info.ClosingBalance)); balanceErr != nil {
+			log.Printf("fio sync: bank_account_id=%d: parsing closing balance failed: %v", bankAccountID, balanceErr)
+		} else if balanceErr := queries.UpdateBankAccountBalance(requestContext, db.UpdateBankAccountBalanceParams{
+			ID:      bankAccountID,
+			Balance: balance,
+		}); balanceErr != nil {
+			// Not fatal to the sync itself — the balance is a nice-to-have on
+			// top of the real transaction data, which already committed
+			// successfully by the time this could fail.
+			log.Printf("fio sync: bank_account_id=%d: updating balance failed: %v", bankAccountID, balanceErr)
+		}
+	}
 
 	if len(txs) == 0 {
 		finishRun(requestContext, queries, run.ID, "success", 0, 0, nil)

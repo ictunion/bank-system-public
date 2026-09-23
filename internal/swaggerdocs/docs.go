@@ -22,7 +22,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the manage-bank-accounts role. Excludes the Fio token itself, only whether one is set.",
+                "description": "Requires the manage-bank-accounts role. Excludes the Fio token itself, only whether one is set. balance/balance_as_of are both null until the account's first successful sync.",
                 "produces": [
                     "application/json"
                 ],
@@ -1607,6 +1607,81 @@ const docTemplate = `{
                 }
             }
         },
+        "/processing/run": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Requires manage-bank-accounts or manage-transactions (which, depends on the action). Body selects the action: \"run\" (re-run matching for unprocessed transactions, needs manage-bank-accounts), \"reclassify_internal_transfers\" (re-check already-processed transactions against the current bank_accounts roster, needs manage-transactions), or \"rematch_unmatched\" (re-check already-processed-but-unmatched transactions against member_payment_identifiers, needs manage-transactions).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "transactions"
+                ],
+                "summary": "Run an on-demand processing action",
+                "parameters": [
+                    {
+                        "description": "Which action to run",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.processingRunRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handler.processingActionResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/transactions": {
             "get": {
                 "security": [
@@ -1666,6 +1741,12 @@ const docTemplate = `{
                         "in": "query"
                     },
                     {
+                        "type": "string",
+                        "description": "Case-insensitive substring match against counterparty name/number or message/comment",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
                         "description": "Default 100, capped at 500",
                         "name": "limit",
@@ -1722,7 +1803,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the view-budget role. Grouped by direction/category/currency only — no member_number or counterparty, safe for wide member-facing use.",
+                "description": "Requires the view-budget role. Grouped by direction/category/currency only — no member_number or counterparty, safe for wide member-facing use. current_balance is a live total across every bank account (grouped by currency), not scoped by from/to.",
                 "produces": [
                     "application/json"
                 ],
@@ -2046,6 +2127,13 @@ const docTemplate = `{
         "handler.bankAccountResponse": {
             "type": "object",
             "properties": {
+                "balance": {
+                    "description": "Balance/BalanceAsOf are both nil until the account's first successful\nsync — see bank_accounts.balance in \"Database schema\" (CLAUDE.md).",
+                    "type": "string"
+                },
+                "balance_as_of": {
+                    "type": "string"
+                },
                 "created_at": {
                     "type": "string"
                 },
@@ -2086,6 +2174,13 @@ const docTemplate = `{
         "handler.categorySummaryResponse": {
             "type": "object",
             "properties": {
+                "current_balance": {
+                    "description": "CurrentBalance is a live snapshot (sum of every bank_accounts.balance,\ngrouped by currency, as of each account's own last successful sync —\nsee UpdateBankAccountBalance), not scoped by from/to like\nIncoming/Outgoing are — there's no \"balance as of a date range\", only\n\"balance right now\".",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handler.currencyTotal"
+                    }
+                },
                 "incoming": {
                     "type": "array",
                     "items": {
@@ -2172,6 +2267,17 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.currencyTotal": {
+            "type": "object",
+            "properties": {
+                "currency": {
+                    "type": "string"
+                },
+                "total": {
                     "type": "string"
                 }
             }
@@ -2295,6 +2401,28 @@ const docTemplate = `{
                 },
                 "year": {
                     "type": "integer"
+                }
+            }
+        },
+        "handler.processingActionResponse": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string"
+                },
+                "failed": {
+                    "type": "integer"
+                },
+                "succeeded": {
+                    "type": "integer"
+                }
+            }
+        },
+        "handler.processingRunRequest": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string"
                 }
             }
         },

@@ -9,6 +9,10 @@ export interface BankAccount {
   created_at: string
   has_token: boolean
   is_active: boolean
+  /** null until the account's first successful sync */
+  balance: string | null
+  /** null until the account's first successful sync */
+  balance_as_of: string | null
 }
 
 export interface CreateBankAccountPayload {
@@ -66,4 +70,71 @@ export function triggerFioSync(id: number): Promise<SyncResult> {
 // the backend (409) in debug mode (DEBUG=true).
 export function backfillAccount(id: number, from: string, to: string): Promise<SyncResult> {
   return apiSend<SyncResult>('POST', `/api/account/${id}/backfill`, { from, to })
+}
+
+// One endpoint for every on-demand processing action, dispatched on `action`
+// — see internal/handler/processing.go. `succeeded`/`failed` mean whatever
+// that action's own unit of work is; new actions reuse this same shape
+// rather than getting a bespoke response type each.
+type ProcessingAction = 'run' | 'reclassify_internal_transfers' | 'rematch_unmatched'
+
+interface ProcessingActionResult {
+  action: ProcessingAction
+  succeeded: number
+  failed: number
+}
+
+function runProcessingAction(action: ProcessingAction): Promise<ProcessingActionResult> {
+  return apiSend<ProcessingActionResult>('POST', '/api/processing/run', { action })
+}
+
+export interface ProcessingResult {
+  transactions_processed: number
+  transactions_failed: number
+}
+
+// Manual "run processing" trigger — not scoped to one account, re-runs
+// matching for every raw_transactions row that doesn't have a
+// processed_transactions row yet. Unlike sync/backfill, works fine in debug
+// mode too (it never touches Fio, only already-stored raw_transactions).
+// Needs manage-bank-accounts.
+export async function triggerProcessing(): Promise<ProcessingResult> {
+  const result = await runProcessingAction('run')
+  return { transactions_processed: result.succeeded, transactions_failed: result.failed }
+}
+
+export interface ReclassifyResult {
+  reclassified: number
+  failed: number
+}
+
+// Re-checks already-processed transactions against the current bank_accounts
+// roster and flips any now-recognizable transfer between our own accounts to
+// internal_transfer — for a transfer synced/processed before its counterparty
+// account was registered here (see internal/processing/processing.go). Skips
+// manually-matched transactions; safe/idempotent to call repeatedly. Needs
+// manage-transactions, not manage-bank-accounts, since it rewrites
+// processed_transactions rows.
+export async function reclassifyInternalTransfers(): Promise<ReclassifyResult> {
+  const result = await runProcessingAction('reclassify_internal_transfers')
+  return { reclassified: result.succeeded, failed: result.failed }
+}
+
+export interface RematchResult {
+  matched: number
+  failed: number
+}
+
+// Re-checks already-processed but still-unmatched transactions against
+// member_payment_identifiers and matches one to a member if it now resolves
+// — for a member whose fee_start_date was wrong in Orca at the time their
+// earlier transactions were processed, since corrected and re-synced (see
+// internal/processing/processing.go RematchUnmatched). Only re-checks the
+// matching step itself — run this *after* the corrected Orca data has
+// synced (automatic, daily 3am, or a restart), not instead of it. Skips
+// manually-matched transactions and anything already internal_transfer;
+// safe/idempotent to call repeatedly. Needs manage-transactions.
+export async function rematchUnmatched(): Promise<RematchResult> {
+  const result = await runProcessingAction('rematch_unmatched')
+  return { matched: result.succeeded, failed: result.failed }
 }

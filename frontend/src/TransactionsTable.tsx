@@ -1,10 +1,12 @@
-import { type CSSProperties, useState } from 'react'
+import { type CSSProperties, useEffect, useRef, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import { AssignDialog } from './AssignDialog'
 import { categoryLabel, fetchCategories } from './api/categories'
 import { fetchTransactions, type TransactionQuery } from './api/transactions'
 
 const PAGE_SIZE = 100
+const DEBOUNCE_MS = 500
 const COLUMNS = ['Date', 'Amount', 'Dir', 'Category', 'Member', 'VS', 'Counterparty', 'Message', 'Admin note', ''] as const
 
 interface Filters {
@@ -15,6 +17,7 @@ interface Filters {
   category: string
   matchedBy: '' | 'variable_symbol' | 'manual' | 'amount_heuristic'
   memberNumber: string
+  search: string
 }
 
 function ymd(d: Date): string {
@@ -35,7 +38,83 @@ function defaultFilters(): Filters {
     category: '',
     matchedBy: '',
     memberNumber: '',
+    search: '',
   }
+}
+
+const ASSIGNED_VALUES = ['true', 'false'] as const
+const DIRECTION_VALUES = ['incoming', 'outgoing'] as const
+const MATCHED_BY_VALUES = ['variable_symbol', 'manual', 'amount_heuristic'] as const
+
+function pick<T extends string>(value: string | null, allowed: readonly T[]): T | '' {
+  return value != null && (allowed as readonly string[]).includes(value) ? (value as T) : ''
+}
+
+// Filters/offset live entirely in the URL's query string (react-router
+// useSearchParams), not React state — that's what makes the current view
+// linkable/shareable as-is, and a page reload/back-button restore it for free.
+// Param names mirror the API's own query params (see api/transactions.ts) so
+// the URL reads the same as the request it drives.
+function filtersFromParams(params: URLSearchParams, defaults: Filters): Filters {
+  return {
+    from: params.get('from') ?? defaults.from,
+    to: params.get('to') ?? defaults.to,
+    assigned: pick(params.get('assigned'), ASSIGNED_VALUES),
+    direction: pick(params.get('direction'), DIRECTION_VALUES),
+    category: params.get('category') ?? '',
+    matchedBy: pick(params.get('matched_by'), MATCHED_BY_VALUES),
+    memberNumber: params.get('member_number') ?? '',
+    search: params.get('search') ?? '',
+  }
+}
+
+function offsetFromParams(params: URLSearchParams): number {
+  const raw = Number(params.get('offset'))
+  return Number.isInteger(raw) && raw > 0 ? raw : 0
+}
+
+function paramsFromFilters(f: Filters, offset: number): URLSearchParams {
+  const params = new URLSearchParams()
+  if (f.from) params.set('from', f.from)
+  if (f.to) params.set('to', f.to)
+  if (f.assigned) params.set('assigned', f.assigned)
+  if (f.direction) params.set('direction', f.direction)
+  if (f.category) params.set('category', f.category)
+  if (f.matchedBy) params.set('matched_by', f.matchedBy)
+  if (f.memberNumber.trim()) params.set('member_number', f.memberNumber.trim())
+  if (f.search.trim()) params.set('search', f.search.trim())
+  if (offset > 0) params.set('offset', String(offset))
+  return params
+}
+
+// useDebouncedCommit backs every filter field that can fire many change
+// events in quick succession (typing in search/member #, or scrolling a date
+// input's month/day/year spinner segment — each tick is a genuine native
+// change, there's no separate "still fiddling" signal to key off): the input
+// shows every change immediately (draft), but onCommit — the thing that
+// actually updates the URL/query — only fires DEBOUNCE_MS after changes
+// stop. If the committed value changes from elsewhere (Reset button, browser
+// back/forward, or this same commit landing) the draft resyncs and any
+// in-flight timer is cancelled, so a stale pending commit can't overwrite a
+// reset that happened while the timer was still pending.
+function useDebouncedCommit(committed: string, onCommit: (value: string) => void, delayMs: number): [string, (value: string) => void] {
+  const [draft, setDraft] = useState(committed)
+  const timeoutRef = useRef<ReturnType<typeof setTimeout>>()
+
+  useEffect(() => {
+    setDraft(committed)
+    clearTimeout(timeoutRef.current)
+  }, [committed])
+
+  useEffect(() => () => clearTimeout(timeoutRef.current), [])
+
+  const handleChange = (value: string) => {
+    setDraft(value)
+    clearTimeout(timeoutRef.current)
+    timeoutRef.current = setTimeout(() => onCommit(value), delayMs)
+  }
+
+  return [draft, handleChange]
 }
 
 function toQuery(f: Filters, offset: number): TransactionQuery {
@@ -50,26 +129,41 @@ function toQuery(f: Filters, offset: number): TransactionQuery {
     category: f.category || undefined,
     matchedBy: f.matchedBy || undefined,
     memberNumber: f.memberNumber.trim() && Number.isInteger(mn) && mn > 0 ? mn : undefined,
+    search: f.search.trim() || undefined,
   }
 }
 
 export function TransactionsTable() {
   const [defaults] = useState(defaultFilters)
-  const [filters, setFilters] = useState<Filters>(defaults)
-  const [offset, setOffset] = useState(0)
+  const [searchParams, setSearchParams] = useSearchParams()
   const [editingId, setEditingId] = useState<number | null>(null)
+
+  const filters = filtersFromParams(searchParams, defaults)
+  const offset = offsetFromParams(searchParams)
 
   const modified = JSON.stringify(filters) !== JSON.stringify(defaults)
 
-  // Any filter change resets to the first page.
+  // Any filter change resets to the first page. replace: true so typing in
+  // the member-number box doesn't spam browser history with one entry per
+  // keystroke — the URL still reflects current state either way. Reads prev
+  // (not the closured `filters`) so two fields committing close together
+  // (e.g. a debounced search commit landing right after a date field's)
+  // can't clobber each other with a stale snapshot.
   const update = (patch: Partial<Filters>) => {
-    setFilters((f) => ({ ...f, ...patch }))
-    setOffset(0)
+    setSearchParams((prev) => paramsFromFilters({ ...filtersFromParams(prev, defaults), ...patch }, 0), { replace: true })
   }
   const reset = () => {
-    setFilters(defaults)
-    setOffset(0)
+    setSearchParams(new URLSearchParams(), { replace: true })
   }
+
+  const [fromDraft, handleFromChange] = useDebouncedCommit(filters.from, (v) => update({ from: v }), DEBOUNCE_MS)
+  const [toDraft, handleToChange] = useDebouncedCommit(filters.to, (v) => update({ to: v }), DEBOUNCE_MS)
+  const [searchDraft, handleSearchChange] = useDebouncedCommit(filters.search, (v) => update({ search: v }), DEBOUNCE_MS)
+  const [memberNumberDraft, handleMemberNumberChange] = useDebouncedCommit(
+    filters.memberNumber,
+    (v) => update({ memberNumber: v }),
+    DEBOUNCE_MS,
+  )
 
   const query = toQuery(filters, offset)
 
@@ -85,21 +179,11 @@ export function TransactionsTable() {
     <div style={filterRow}>
       <label>
         From{' '}
-        <input
-          type="date"
-          value={filters.from}
-          max={filters.to || undefined}
-          onChange={(e) => update({ from: e.target.value })}
-        />
+        <input type="date" value={fromDraft} max={filters.to || undefined} onChange={(e) => handleFromChange(e.target.value)} />
       </label>
       <label>
         To{' '}
-        <input
-          type="date"
-          value={filters.to}
-          min={filters.from || undefined}
-          onChange={(e) => update({ to: e.target.value })}
-        />
+        <input type="date" value={toDraft} min={filters.from || undefined} onChange={(e) => handleToChange(e.target.value)} />
       </label>
 
       <Select
@@ -142,9 +226,19 @@ export function TransactionsTable() {
           type="number"
           min="1"
           step="1"
-          value={filters.memberNumber}
-          onChange={(e) => update({ memberNumber: e.target.value })}
+          value={memberNumberDraft}
+          onChange={(e) => handleMemberNumberChange(e.target.value)}
           style={{ width: '5rem' }}
+        />
+      </label>
+      <label>
+        Search{' '}
+        <input
+          type="text"
+          placeholder="Counterparty or message"
+          value={searchDraft}
+          onChange={(e) => handleSearchChange(e.target.value)}
+          style={{ width: '14rem' }}
         />
       </label>
 
@@ -177,7 +271,7 @@ export function TransactionsTable() {
   const pager = needsPager ? (
     <div style={pagerStyle}>
       <button
-        onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}
+        onClick={() => setSearchParams(paramsFromFilters(filters, Math.max(0, offset - PAGE_SIZE)), { replace: true })}
         disabled={offset === 0 || isPlaceholderData}
       >
         ← Prev
@@ -186,7 +280,7 @@ export function TransactionsTable() {
         {rangeFrom}–{rangeTo} of {total}
       </span>
       <button
-        onClick={() => setOffset((o) => o + PAGE_SIZE)}
+        onClick={() => setSearchParams(paramsFromFilters(filters, offset + PAGE_SIZE), { replace: true })}
         disabled={rangeTo >= total || isPlaceholderData}
       >
         Next →

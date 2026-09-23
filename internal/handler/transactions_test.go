@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/kubik/bank-system/internal/db"
 	"github.com/kubik/bank-system/internal/dbtest"
 )
@@ -297,6 +299,106 @@ func TestCategorySummary_ExcludesInternalTransfer(t *testing.T) {
 	}
 	if total := parseAmount(t, got.Incoming[0].Total); total != 100 {
 		t.Errorf("Incoming membership_fee total = %v, want 100 (unaffected by the excluded internal_transfer row)", total)
+	}
+}
+
+// numericBalance builds the pgtype.Numeric UpdateBankAccountBalance expects
+// — the nullable balance column falls back to pgtype's own wrapper rather
+// than the plain-string sqlc override (which only applies to NOT NULL
+// numeric columns elsewhere, e.g. raw_transactions.amount).
+func numericBalance(t *testing.T, s string) pgtype.Numeric {
+	t.Helper()
+	var n pgtype.Numeric
+	if err := n.Scan(s); err != nil {
+		t.Fatalf("numericBalance(%q): %v", s, err)
+	}
+	return n
+}
+
+func TestCategorySummary_CurrentBalanceSumsAcrossAccounts(t *testing.T) {
+	queries := dbtest.Tx(t)
+	accountA := seedBankAccount(t, queries, "9100000005")
+	accountB := seedBankAccount(t, queries, "9100000006")
+
+	if err := queries.UpdateBankAccountBalance(context.Background(), db.UpdateBankAccountBalanceParams{
+		ID: accountA.ID, Balance: numericBalance(t, "1000.00"),
+	}); err != nil {
+		t.Fatalf("UpdateBankAccountBalance(A): %v", err)
+	}
+	if err := queries.UpdateBankAccountBalance(context.Background(), db.UpdateBankAccountBalanceParams{
+		ID: accountB.ID, Balance: numericBalance(t, "234.56"),
+	}); err != nil {
+		t.Fatalf("UpdateBankAccountBalance(B): %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/transactions/summary", nil)
+	CategorySummary(queries)(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	var got categorySummaryResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+
+	if len(got.CurrentBalance) != 1 {
+		t.Fatalf("CurrentBalance = %+v, want one currency entry", got.CurrentBalance)
+	}
+	if got.CurrentBalance[0].Currency != "CZK" {
+		t.Errorf("currency = %q, want CZK", got.CurrentBalance[0].Currency)
+	}
+	if total := parseAmount(t, got.CurrentBalance[0].Total); total != 1234.56 {
+		t.Errorf("total = %v, want 1234.56", total)
+	}
+}
+
+func TestCategorySummary_CurrentBalanceExcludesNeverSyncedAccount(t *testing.T) {
+	queries := dbtest.Tx(t)
+	seedBankAccount(t, queries, "9100000007") // never synced — balance still NULL
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/transactions/summary", nil)
+	CategorySummary(queries)(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	var got categorySummaryResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(got.CurrentBalance) != 0 {
+		t.Errorf("CurrentBalance = %+v, want empty — account never synced, no balance known", got.CurrentBalance)
+	}
+}
+
+func TestCategorySummary_CurrentBalanceExcludesSoftDeletedAccount(t *testing.T) {
+	queries := dbtest.Tx(t)
+	account := seedBankAccount(t, queries, "9100000008")
+	if err := queries.UpdateBankAccountBalance(context.Background(), db.UpdateBankAccountBalanceParams{
+		ID: account.ID, Balance: numericBalance(t, "500.00"),
+	}); err != nil {
+		t.Fatalf("UpdateBankAccountBalance: %v", err)
+	}
+	if _, err := queries.DeleteBankAccount(context.Background(), account.ID); err != nil {
+		t.Fatalf("DeleteBankAccount: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/transactions/summary", nil)
+	CategorySummary(queries)(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	var got categorySummaryResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(got.CurrentBalance) != 0 {
+		t.Errorf("CurrentBalance = %+v, want empty — soft-deleted account excluded", got.CurrentBalance)
 	}
 }
 

@@ -134,6 +134,7 @@ func main() {
 	api.HandleFunc("DELETE /account/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.DeleteBankAccount(db.New(pool))))
 	api.HandleFunc("POST /account/{id}/sync", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.TriggerFioSync(pool, appConfig.FioAPIURL, appConfig.BankTokenEncryptionKey, appConfig.Debug)))
 	api.HandleFunc("POST /account/{id}/backfill", handler.RequireRole(keycloakProvider, keycloak.RoleManageBankAccounts, handler.BackfillAccount(pool, appConfig.FioAPIURL, appConfig.BankTokenEncryptionKey, appConfig.Debug)))
+	api.HandleFunc("POST /processing/run", handler.RequireAnyRole(keycloakProvider, []keycloak.Role{keycloak.RoleManageBankAccounts, keycloak.RoleManageTransactions}, handler.RunProcessing(pool, keycloakProvider)))
 
 	api.HandleFunc("GET /event-logs", handler.RequireRole(keycloakProvider, keycloak.RoleViewEventLogs, handler.ListEventLogs(db.New(pool))))
 

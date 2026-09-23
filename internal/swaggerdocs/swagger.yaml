@@ -29,6 +29,13 @@ definitions:
     type: object
   handler.bankAccountResponse:
     properties:
+      balance:
+        description: |-
+          Balance/BalanceAsOf are both nil until the account's first successful
+          sync — see bank_accounts.balance in "Database schema" (CLAUDE.md).
+        type: string
+      balance_as_of:
+        type: string
       created_at:
         type: string
       currency:
@@ -55,6 +62,16 @@ definitions:
     type: object
   handler.categorySummaryResponse:
     properties:
+      current_balance:
+        description: |-
+          CurrentBalance is a live snapshot (sum of every bank_accounts.balance,
+          grouped by currency, as of each account's own last successful sync —
+          see UpdateBankAccountBalance), not scoped by from/to like
+          Incoming/Outgoing are — there's no "balance as of a date range", only
+          "balance right now".
+        items:
+          $ref: '#/definitions/handler.currencyTotal'
+        type: array
       incoming:
         items:
           $ref: '#/definitions/handler.categoryTotal'
@@ -111,6 +128,13 @@ definitions:
   handler.createCategoryRequest:
     properties:
       name:
+        type: string
+    type: object
+  handler.currencyTotal:
+    properties:
+      currency:
+        type: string
+      total:
         type: string
     type: object
   handler.eventLogItem:
@@ -202,6 +226,20 @@ definitions:
         type: string
       year:
         type: integer
+    type: object
+  handler.processingActionResponse:
+    properties:
+      action:
+        type: string
+      failed:
+        type: integer
+      succeeded:
+        type: integer
+    type: object
+  handler.processingRunRequest:
+    properties:
+      action:
+        type: string
     type: object
   handler.syncResultResponse:
     properties:
@@ -360,7 +398,8 @@ paths:
   /account:
     get:
       description: Requires the manage-bank-accounts role. Excludes the Fio token
-        itself, only whether one is set.
+        itself, only whether one is set. balance/balance_as_of are both null until
+        the account's first successful sync.
       produces:
       - application/json
       responses:
@@ -1408,6 +1447,59 @@ paths:
       summary: 'Workplace-scoped: members who missed a payment in a year'
       tags:
       - payments
+  /processing/run:
+    post:
+      consumes:
+      - application/json
+      description: 'Requires manage-bank-accounts or manage-transactions (which, depends
+        on the action). Body selects the action: "run" (re-run matching for unprocessed
+        transactions, needs manage-bank-accounts), "reclassify_internal_transfers"
+        (re-check already-processed transactions against the current bank_accounts
+        roster, needs manage-transactions), or "rematch_unmatched" (re-check already-processed-but-unmatched
+        transactions against member_payment_identifiers, needs manage-transactions).'
+      parameters:
+      - description: Which action to run
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.processingRunRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.processingActionResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Run an on-demand processing action
+      tags:
+      - transactions
   /transactions:
     get:
       description: Requires the list-transactions role. All filters optional and combinable.
@@ -1439,6 +1531,11 @@ paths:
       - description: YYYY-MM-DD, inclusive
         in: query
         name: to
+        type: string
+      - description: Case-insensitive substring match against counterparty name/number
+          or message/comment
+        in: query
+        name: search
         type: string
       - description: Default 100, capped at 500
         in: query
@@ -1629,6 +1726,8 @@ paths:
     get:
       description: Requires the view-budget role. Grouped by direction/category/currency
         only — no member_number or counterparty, safe for wide member-facing use.
+        current_balance is a live total across every bank account (grouped by currency),
+        not scoped by from/to.
       parameters:
       - description: YYYY-MM-DD, inclusive
         in: query

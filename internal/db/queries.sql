@@ -2,10 +2,16 @@
 -- Admin-facing list (GET /account) — deliberately excludes the Fio token.
 -- Includes soft-deleted accounts (is_active = false) so admins still see them
 -- in the UI, crossed out, as a record that the account used to exist. For the
--- token itself, see ListBankAccountsWithToken (internal use only).
+-- token itself, see ListBankAccountsWithToken (internal use only). balance/
+-- balance_as_of are both null until the account's first successful sync
+-- (see UpdateBankAccountBalance) — nullable numeric/timestamptz fall back to
+-- pgtype.Numeric/pgtype.Timestamptz rather than the plain-string/time.Time
+-- sqlc overrides (those only apply to NOT NULL columns), so the handler
+-- converts them to nullable JSON strings itself.
 SELECT id, fio_account_id, iban, currency, display_name, created_at,
        (fio_token_encrypted IS NOT NULL)::boolean AS has_token,
-       (deleted_at IS NULL)::boolean AS is_active
+       (deleted_at IS NULL)::boolean AS is_active,
+       balance, balance_as_of
 FROM bank_accounts ORDER BY id;
 
 -- name: ListActiveBankAccountNumbers :many
@@ -16,6 +22,34 @@ FROM bank_accounts ORDER BY id;
 -- excluded deliberately: no live account there to be the other leg of a
 -- current transfer.
 SELECT fio_account_id FROM bank_accounts WHERE deleted_at IS NULL;
+
+-- name: UpdateBankAccountBalance :exec
+-- Internal use only, written by the cursor-based sync path only (syncjob's
+-- syncAccount) — never by backfill, whose date range is often in the past,
+-- so its own closingBalance wouldn't be "current". Both columns null until
+-- the account's first successful sync. balance_as_of is set by Postgres
+-- (now()), not passed in from Go — same convention as sync_fio_runs.started_at
+-- etc., avoids any app/DB clock skew.
+UPDATE bank_accounts SET balance = sqlc.arg(balance), balance_as_of = now()
+WHERE id = sqlc.arg(id);
+
+-- name: GetTotalBalance :many
+-- Backs the Budget page's "Current Balance" figure (GET
+-- /transactions/summary) — summed across every non-soft-deleted account,
+-- grouped by currency (don't assume single-currency, same as
+-- GetTransactionCategorySummary). An account with no balance yet (never
+-- successfully synced) is excluded from the sum entirely rather than
+-- counted as zero, so a not-yet-synced account can't understate the total —
+-- revisit if that instead reads as confusingly incomplete.
+-- COALESCE forces this NOT NULL (same reason GetTransactionCategorySummary
+-- does it) — SUM() is nullable to Postgres's planner regardless of the WHERE
+-- filter guaranteeing a non-null result here, and sqlc maps a nullable
+-- numeric to pgtype.Numeric instead of the plain-string override.
+SELECT currency, COALESCE(SUM(balance), 0)::numeric AS total
+FROM bank_accounts
+WHERE deleted_at IS NULL AND balance IS NOT NULL
+GROUP BY currency
+ORDER BY currency;
 
 -- name: ListBankAccountsWithToken :many
 -- Internal use only (the Fio sync job) — includes the decrypted Fio token.
@@ -556,6 +590,12 @@ WHERE (sqlc.narg(assigned)::boolean IS NULL
   AND (sqlc.narg(member_number)::int IS NULL OR pt.member_number = sqlc.narg(member_number)::int)
   AND (sqlc.narg(date_from)::date IS NULL OR rt.transaction_date >= sqlc.narg(date_from)::date)
   AND (sqlc.narg(date_to)::date IS NULL OR rt.transaction_date <= sqlc.narg(date_to)::date)
+  AND (sqlc.narg(search)::text IS NULL OR (
+        rt.counter_account_name ILIKE '%' || sqlc.narg(search)::text || '%'
+        OR rt.counter_account_number ILIKE '%' || sqlc.narg(search)::text || '%'
+        OR rt.message_for_recipient ILIKE '%' || sqlc.narg(search)::text || '%'
+        OR rt.comment ILIKE '%' || sqlc.narg(search)::text || '%'
+      ))
 ORDER BY rt.transaction_date DESC, rt.id DESC
 LIMIT sqlc.arg(lim)::int OFFSET sqlc.arg(off)::int;
 
@@ -588,6 +628,38 @@ WHERE variable_symbol = sqlc.arg(variable_symbol)
     AND (valid_to IS NULL OR valid_to >= sqlc.arg(transaction_date))
 ORDER BY valid_from DESC
 LIMIT 1;
+
+-- name: ListRematchCandidates :many
+-- Backs POST /processing/run action=rematch_unmatched — currently-unmatched
+-- processed transactions worth re-checking against member_payment_identifiers,
+-- for when a member's liability window was wrong at original processing time
+-- (a bad fee_start_date pulled from Orca) and has since been corrected
+-- upstream and re-synced (see "Orca member sync"). Skips
+-- matched_by = 'manual' (never override an admin's explicit decision, same
+-- rule as elsewhere in this schema) and category = 'internal_transfer' (that
+-- precedence is fixed by processOne, not up for re-evaluation here — see
+-- ReclassifyInternalTransfers for the transfer side of the same idea).
+-- member_number IS NULL already implies matched_by IS NULL in practice
+-- (matched_by is only ever set alongside a member_number) — the explicit
+-- matched_by check is just defensive.
+SELECT pt.id, rt.variable_symbol, rt.transaction_date
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE pt.member_number IS NULL
+  AND pt.category != 'internal_transfer'
+  AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
+  AND rt.variable_symbol IS NOT NULL AND rt.variable_symbol != '';
+
+-- name: RematchTransactionToMember :exec
+-- Only touches member_number/category/matched_by — deliberately leaves
+-- admin_comment untouched (unlike AssignTransactionToMember, which always
+-- full-overwrites it), since this is an automatic re-match, not an admin
+-- action with a comment of its own to record.
+UPDATE processed_transactions
+SET member_number = sqlc.arg(member_number),
+    category = 'membership_fee',
+    matched_by = 'variable_symbol'
+WHERE id = sqlc.arg(id);
 
 -- name: CreateProcessedTransaction :one
 INSERT INTO processed_transactions (raw_transaction_id, member_number, category, direction, matched_by)
@@ -690,6 +762,23 @@ RETURNING id;
 
 -- name: DeleteCoverageForTransaction :exec
 DELETE FROM payment_coverage WHERE processed_transaction_id = sqlc.arg(processed_transaction_id);
+
+-- name: ListInternalTransferCandidates :many
+-- Rows categorized before their counterparty's bank_accounts row existed —
+-- internal-transfer detection (processing.go) only ever sees the roster as
+-- of the moment a transaction was first processed, and a processed row is
+-- never revisited on its own (see ListUnprocessedTransactions), so adding a
+-- second/new account later leaves earlier transfers to/from it permanently
+-- miscategorized. Excludes matched_by = 'manual' — never silently override
+-- an admin's explicit decision, same rule as elsewhere in this schema (see
+-- payment_waivers, admin_comment). Excludes already-internal_transfer rows
+-- so a repeat run only touches what's still wrong.
+SELECT pt.id
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE pt.category != 'internal_transfer'
+  AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
+  AND rt.counter_account_number = ANY(sqlc.arg(account_numbers)::text[]);
 
 -- name: InsertCoverageRow :execrows
 -- ON CONFLICT DO NOTHING + :execrows so the caller can tell which requested

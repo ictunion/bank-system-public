@@ -54,7 +54,8 @@ type transactionListItem struct {
 
 // ListTransactions handles GET /transactions — the admin transaction browser.
 // All filters are optional query params: assigned (true|false), direction, category, matched_by,
-// member_number, from, to (YYYY-MM-DD), limit (<=500, default 100), offset.
+// member_number, from, to (YYYY-MM-DD), search (substring, counterparty/message/comment),
+// limit (<=500, default 100), offset.
 //
 // @Summary      Browse processed transactions
 // @Description  Requires the list-transactions role. All filters optional and combinable.
@@ -68,6 +69,7 @@ type transactionListItem struct {
 // @Param        member_number  query  int     false  "One member's transactions"
 // @Param        from           query  string  false  "YYYY-MM-DD, inclusive"
 // @Param        to             query  string  false  "YYYY-MM-DD, inclusive"
+// @Param        search         query  string  false  "Case-insensitive substring match against counterparty name/number or message/comment"
 // @Param        limit          query  int     false  "Default 100, capped at 500"
 // @Param        offset         query  int     false  "Default 0"
 // @Success      200  {object}  handler.transactionsResponse
@@ -125,6 +127,10 @@ func ListTransactions(queries *db.Queries) http.HandlerFunc {
 		if params.DateTo, ok = dateParam(queryParams.Get("to")); !ok {
 			writeError(w, http.StatusBadRequest, "to must be YYYY-MM-DD")
 			return
+		}
+
+		if s := queryParams.Get("search"); s != "" {
+			params.Search = &s
 		}
 
 		if s := queryParams.Get("limit"); s != "" {
@@ -577,9 +583,20 @@ type categoryTotal struct {
 	Total    string `json:"total"`
 }
 
+type currencyTotal struct {
+	Currency string `json:"currency"`
+	Total    string `json:"total"`
+}
+
 type categorySummaryResponse struct {
 	Incoming []categoryTotal `json:"incoming"`
 	Outgoing []categoryTotal `json:"outgoing"`
+	// CurrentBalance is a live snapshot (sum of every bank_accounts.balance,
+	// grouped by currency, as of each account's own last successful sync —
+	// see UpdateBankAccountBalance), not scoped by from/to like
+	// Incoming/Outgoing are — there's no "balance as of a date range", only
+	// "balance right now".
+	CurrentBalance []currencyTotal `json:"current_balance"`
 }
 
 // CategorySummary handles GET /transactions/summary — totals grouped by
@@ -591,7 +608,7 @@ type categorySummaryResponse struct {
 // meant to be safe for every member to see, not just admins.
 //
 // @Summary      Budgeting totals by category
-// @Description  Requires the view-budget role. Grouped by direction/category/currency only — no member_number or counterparty, safe for wide member-facing use.
+// @Description  Requires the view-budget role. Grouped by direction/category/currency only — no member_number or counterparty, safe for wide member-facing use. current_balance is a live total across every bank account (grouped by currency), not scoped by from/to.
 // @Tags         transactions
 // @Security     BearerAuth
 // @Produce      json
@@ -624,9 +641,16 @@ func CategorySummary(queries *db.Queries) http.HandlerFunc {
 			return
 		}
 
+		balanceRows, err := queries.GetTotalBalance(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to total account balances")
+			return
+		}
+
 		response := categorySummaryResponse{
-			Incoming: make([]categoryTotal, 0),
-			Outgoing: make([]categoryTotal, 0),
+			Incoming:       make([]categoryTotal, 0),
+			Outgoing:       make([]categoryTotal, 0),
+			CurrentBalance: make([]currencyTotal, 0),
 		}
 		for _, row := range rows {
 			total := categoryTotal{Category: row.Category, Currency: row.Currency, Total: row.Total}
@@ -635,6 +659,9 @@ func CategorySummary(queries *db.Queries) http.HandlerFunc {
 			} else {
 				response.Outgoing = append(response.Outgoing, total)
 			}
+		}
+		for _, row := range balanceRows {
+			response.CurrentBalance = append(response.CurrentBalance, currencyTotal{Currency: row.Currency, Total: row.Total})
 		}
 
 		writeJSON(w, http.StatusOK, response)

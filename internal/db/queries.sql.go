@@ -649,6 +649,50 @@ func (q *Queries) GetPaymentWaiver(ctx context.Context, arg GetPaymentWaiverPara
 	return i, err
 }
 
+const getTotalBalance = `-- name: GetTotalBalance :many
+SELECT currency, COALESCE(SUM(balance), 0)::numeric AS total
+FROM bank_accounts
+WHERE deleted_at IS NULL AND balance IS NOT NULL
+GROUP BY currency
+ORDER BY currency
+`
+
+type GetTotalBalanceRow struct {
+	Currency string `json:"currency"`
+	Total    string `json:"total"`
+}
+
+// Backs the Budget page's "Current Balance" figure (GET
+// /transactions/summary) — summed across every non-soft-deleted account,
+// grouped by currency (don't assume single-currency, same as
+// GetTransactionCategorySummary). An account with no balance yet (never
+// successfully synced) is excluded from the sum entirely rather than
+// counted as zero, so a not-yet-synced account can't understate the total —
+// revisit if that instead reads as confusingly incomplete.
+// COALESCE forces this NOT NULL (same reason GetTransactionCategorySummary
+// does it) — SUM() is nullable to Postgres's planner regardless of the WHERE
+// filter guaranteeing a non-null result here, and sqlc maps a nullable
+// numeric to pgtype.Numeric instead of the plain-string override.
+func (q *Queries) GetTotalBalance(ctx context.Context) ([]GetTotalBalanceRow, error) {
+	rows, err := q.db.Query(ctx, getTotalBalance)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetTotalBalanceRow
+	for rows.Next() {
+		var i GetTotalBalanceRow
+		if err := rows.Scan(&i.Currency, &i.Total); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getTransactionCategorySummary = `-- name: GetTransactionCategorySummary :many
 SELECT
     pt.direction,
@@ -933,25 +977,33 @@ func (q *Queries) ListActiveBankAccountNumbers(ctx context.Context) ([]string, e
 const listBankAccounts = `-- name: ListBankAccounts :many
 SELECT id, fio_account_id, iban, currency, display_name, created_at,
        (fio_token_encrypted IS NOT NULL)::boolean AS has_token,
-       (deleted_at IS NULL)::boolean AS is_active
+       (deleted_at IS NULL)::boolean AS is_active,
+       balance, balance_as_of
 FROM bank_accounts ORDER BY id
 `
 
 type ListBankAccountsRow struct {
-	ID           int32     `json:"id"`
-	FioAccountID string    `json:"fio_account_id"`
-	Iban         *string   `json:"iban"`
-	Currency     string    `json:"currency"`
-	DisplayName  string    `json:"display_name"`
-	CreatedAt    time.Time `json:"created_at"`
-	HasToken     bool      `json:"has_token"`
-	IsActive     bool      `json:"is_active"`
+	ID           int32              `json:"id"`
+	FioAccountID string             `json:"fio_account_id"`
+	Iban         *string            `json:"iban"`
+	Currency     string             `json:"currency"`
+	DisplayName  string             `json:"display_name"`
+	CreatedAt    time.Time          `json:"created_at"`
+	HasToken     bool               `json:"has_token"`
+	IsActive     bool               `json:"is_active"`
+	Balance      pgtype.Numeric     `json:"balance"`
+	BalanceAsOf  pgtype.Timestamptz `json:"balance_as_of"`
 }
 
 // Admin-facing list (GET /account) — deliberately excludes the Fio token.
 // Includes soft-deleted accounts (is_active = false) so admins still see them
 // in the UI, crossed out, as a record that the account used to exist. For the
-// token itself, see ListBankAccountsWithToken (internal use only).
+// token itself, see ListBankAccountsWithToken (internal use only). balance/
+// balance_as_of are both null until the account's first successful sync
+// (see UpdateBankAccountBalance) — nullable numeric/timestamptz fall back to
+// pgtype.Numeric/pgtype.Timestamptz rather than the plain-string/time.Time
+// sqlc overrides (those only apply to NOT NULL columns), so the handler
+// converts them to nullable JSON strings itself.
 func (q *Queries) ListBankAccounts(ctx context.Context) ([]ListBankAccountsRow, error) {
 	rows, err := q.db.Query(ctx, listBankAccounts)
 	if err != nil {
@@ -970,6 +1022,8 @@ func (q *Queries) ListBankAccounts(ctx context.Context) ([]ListBankAccountsRow, 
 			&i.CreatedAt,
 			&i.HasToken,
 			&i.IsActive,
+			&i.Balance,
+			&i.BalanceAsOf,
 		); err != nil {
 			return nil, err
 		}
@@ -1400,6 +1454,44 @@ func (q *Queries) ListEventLogs(ctx context.Context, arg ListEventLogsParams) ([
 	return items, nil
 }
 
+const listInternalTransferCandidates = `-- name: ListInternalTransferCandidates :many
+SELECT pt.id
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE pt.category != 'internal_transfer'
+  AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
+  AND rt.counter_account_number = ANY($1::text[])
+`
+
+// Rows categorized before their counterparty's bank_accounts row existed —
+// internal-transfer detection (processing.go) only ever sees the roster as
+// of the moment a transaction was first processed, and a processed row is
+// never revisited on its own (see ListUnprocessedTransactions), so adding a
+// second/new account later leaves earlier transfers to/from it permanently
+// miscategorized. Excludes matched_by = 'manual' — never silently override
+// an admin's explicit decision, same rule as elsewhere in this schema (see
+// payment_waivers, admin_comment). Excludes already-internal_transfer rows
+// so a repeat run only touches what's still wrong.
+func (q *Queries) ListInternalTransferCandidates(ctx context.Context, accountNumbers []string) ([]int64, error) {
+	rows, err := q.db.Query(ctx, listInternalTransferCandidates, accountNumbers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMembersMissingPayment = `-- name: ListMembersMissingPayment :many
 SELECT ma.member_number, ma.total_missed_months, ma.has_ever_paid
 FROM member_arrears ma
@@ -1645,6 +1737,54 @@ func (q *Queries) ListMembersMissingPaymentInYearForWorkplace(ctx context.Contex
 	return items, nil
 }
 
+const listRematchCandidates = `-- name: ListRematchCandidates :many
+SELECT pt.id, rt.variable_symbol, rt.transaction_date
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE pt.member_number IS NULL
+  AND pt.category != 'internal_transfer'
+  AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
+  AND rt.variable_symbol IS NOT NULL AND rt.variable_symbol != ''
+`
+
+type ListRematchCandidatesRow struct {
+	ID              int64     `json:"id"`
+	VariableSymbol  *string   `json:"variable_symbol"`
+	TransactionDate time.Time `json:"transaction_date"`
+}
+
+// Backs POST /processing/run action=rematch_unmatched — currently-unmatched
+// processed transactions worth re-checking against member_payment_identifiers,
+// for when a member's liability window was wrong at original processing time
+// (a bad fee_start_date pulled from Orca) and has since been corrected
+// upstream and re-synced (see "Orca member sync"). Skips
+// matched_by = 'manual' (never override an admin's explicit decision, same
+// rule as elsewhere in this schema) and category = 'internal_transfer' (that
+// precedence is fixed by processOne, not up for re-evaluation here — see
+// ReclassifyInternalTransfers for the transfer side of the same idea).
+// member_number IS NULL already implies matched_by IS NULL in practice
+// (matched_by is only ever set alongside a member_number) — the explicit
+// matched_by check is just defensive.
+func (q *Queries) ListRematchCandidates(ctx context.Context) ([]ListRematchCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listRematchCandidates)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRematchCandidatesRow
+	for rows.Next() {
+		var i ListRematchCandidatesRow
+		if err := rows.Scan(&i.ID, &i.VariableSymbol, &i.TransactionDate); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTransactions = `-- name: ListTransactions :many
 SELECT
     pt.id,
@@ -1676,8 +1816,14 @@ WHERE ($1::boolean IS NULL
   AND ($5::int IS NULL OR pt.member_number = $5::int)
   AND ($6::date IS NULL OR rt.transaction_date >= $6::date)
   AND ($7::date IS NULL OR rt.transaction_date <= $7::date)
+  AND ($8::text IS NULL OR (
+        rt.counter_account_name ILIKE '%' || $8::text || '%'
+        OR rt.counter_account_number ILIKE '%' || $8::text || '%'
+        OR rt.message_for_recipient ILIKE '%' || $8::text || '%'
+        OR rt.comment ILIKE '%' || $8::text || '%'
+      ))
 ORDER BY rt.transaction_date DESC, rt.id DESC
-LIMIT $9::int OFFSET $8::int
+LIMIT $10::int OFFSET $9::int
 `
 
 type ListTransactionsParams struct {
@@ -1688,6 +1834,7 @@ type ListTransactionsParams struct {
 	MemberNumber *int32      `json:"member_number"`
 	DateFrom     pgtype.Date `json:"date_from"`
 	DateTo       pgtype.Date `json:"date_to"`
+	Search       *string     `json:"search"`
 	Off          int32       `json:"off"`
 	Lim          int32       `json:"lim"`
 }
@@ -1727,6 +1874,7 @@ func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsPara
 		arg.MemberNumber,
 		arg.DateFrom,
 		arg.DateTo,
+		arg.Search,
 		arg.Off,
 		arg.Lim,
 	)
@@ -1939,6 +2087,28 @@ func (q *Queries) PaymentCoverageExists(ctx context.Context, arg PaymentCoverage
 	return exists, err
 }
 
+const rematchTransactionToMember = `-- name: RematchTransactionToMember :exec
+UPDATE processed_transactions
+SET member_number = $1,
+    category = 'membership_fee',
+    matched_by = 'variable_symbol'
+WHERE id = $2
+`
+
+type RematchTransactionToMemberParams struct {
+	MemberNumber *int32 `json:"member_number"`
+	ID           int64  `json:"id"`
+}
+
+// Only touches member_number/category/matched_by — deliberately leaves
+// admin_comment untouched (unlike AssignTransactionToMember, which always
+// full-overwrites it), since this is an automatic re-match, not an admin
+// action with a comment of its own to record.
+func (q *Queries) RematchTransactionToMember(ctx context.Context, arg RematchTransactionToMemberParams) error {
+	_, err := q.db.Exec(ctx, rematchTransactionToMember, arg.MemberNumber, arg.ID)
+	return err
+}
+
 const syncDefaultPaymentIdentifierValidTo = `-- name: SyncDefaultPaymentIdentifierValidTo :exec
 UPDATE member_payment_identifiers
 SET valid_to = $1
@@ -2045,6 +2215,27 @@ func (q *Queries) UpdateBankAccount(ctx context.Context, arg UpdateBankAccountPa
 		&i.HasToken,
 	)
 	return i, err
+}
+
+const updateBankAccountBalance = `-- name: UpdateBankAccountBalance :exec
+UPDATE bank_accounts SET balance = $1, balance_as_of = now()
+WHERE id = $2
+`
+
+type UpdateBankAccountBalanceParams struct {
+	Balance pgtype.Numeric `json:"balance"`
+	ID      int32          `json:"id"`
+}
+
+// Internal use only, written by the cursor-based sync path only (syncjob's
+// syncAccount) — never by backfill, whose date range is often in the past,
+// so its own closingBalance wouldn't be "current". Both columns null until
+// the account's first successful sync. balance_as_of is set by Postgres
+// (now()), not passed in from Go — same convention as sync_fio_runs.started_at
+// etc., avoids any app/DB clock skew.
+func (q *Queries) UpdateBankAccountBalance(ctx context.Context, arg UpdateBankAccountBalanceParams) error {
+	_, err := q.db.Exec(ctx, updateBankAccountBalance, arg.Balance, arg.ID)
+	return err
 }
 
 const upsertMember = `-- name: UpsertMember :exec
