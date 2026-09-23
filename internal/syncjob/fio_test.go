@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -157,5 +158,63 @@ func TestRunFioSync_SkipsInactiveAccount(t *testing.T) {
 	}
 	if len(results) != 1 || results[0].BankAccountID != active.ID {
 		t.Errorf("results = %+v, want exactly the active account (id=%d)", results, active.ID)
+	}
+}
+
+// TestSyncOneAccount_SeedsCursorOnStrongAuthRequired simulates a brand-new
+// token whose first-ever FetchNew trips Fio's 90-day SCA rule (no cursor
+// established yet, so Fio would serve full history) — syncAccount must catch
+// that, call SetLastDate to seed the cursor within the SCA-free window, and
+// retry FetchNew once rather than failing the whole sync.
+func TestSyncOneAccount_SeedsCursorOnStrongAuthRequired(t *testing.T) {
+	pool := dbtest.Pool(t)
+	account := seedBankAccountWithToken(t, pool, "9500000008")
+
+	var setLastDateCalled, fetchNewSucceeded bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/set-last-date/"):
+			setLastDateCalled = true
+			w.WriteHeader(http.StatusOK)
+		case strings.Contains(r.URL.Path, "/last/"):
+			if !setLastDateCalled {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				return
+			}
+			fetchNewSucceeded = true
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"accountStatement": {
+					"info": {"accountId": "1", "currency": "CZK"},
+					"transactionList": {
+						"transaction": [
+							{
+								"column0": {"value": "2026-06-15+0200", "name": "Date", "id": 0},
+								"column1": {"value": 500.00, "name": "Amount", "id": 1},
+								"column14": {"value": "CZK", "name": "Currency", "id": 14},
+								"column22": {"value": 7004, "name": "ID transakce", "id": 22}
+							}
+						]
+					}
+				}
+			}`))
+		default:
+			t.Fatalf("unexpected request path %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	result, err := SyncOneAccount(context.Background(), pool, server.URL, testEncryptionKey, account.ID, true)
+	if err != nil {
+		t.Fatalf("SyncOneAccount: %v", err)
+	}
+	if !setLastDateCalled {
+		t.Error("SetLastDate was never called after a 422 from FetchNew")
+	}
+	if !fetchNewSucceeded {
+		t.Error("FetchNew retry after seeding the cursor never happened")
+	}
+	if result.TransactionsFetched != 1 || result.TransactionsInserted != 1 {
+		t.Errorf("result = %+v, want 1 fetched and 1 inserted", result)
 	}
 }

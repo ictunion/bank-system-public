@@ -3,6 +3,7 @@ package fio
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +11,14 @@ import (
 	"strings"
 	"time"
 )
+
+// ErrStrongAuthRequired is Fio's 90-day SCA rule surfaced as a distinguishable
+// error — callers can react to it specifically (e.g. seed the cursor via
+// SetLastDate and retry) instead of treating it as an opaque Fio failure.
+var ErrStrongAuthRequired = errors.New("fio: strong authorization (SCA) required for data this old")
+
+// userAgent identifies every request this client makes to Fio.
+const userAgent = "bank-system/1.0"
 
 // FioClient calls Fio's classic export API. One FioClient is scoped to a single bank
 // account's token — Fio's cursor state ("last downloaded transaction") lives
@@ -97,7 +106,7 @@ func (c *FioClient) RewindTo(requestContext context.Context, fioTransactionID in
 	if err != nil {
 		return err
 	}
-	request.Header.Set("User-Agent", "bank-system/1.0")
+	request.Header.Set("User-Agent", userAgent)
 	c.logRequest(request)
 	response, err := c.httpClient.Do(request)
 	if err != nil {
@@ -115,12 +124,43 @@ func (c *FioClient) RewindTo(requestContext context.Context, fioTransactionID in
 	return nil
 }
 
+// SetLastDate resets the server-side cursor to just after the given date, so
+// the next FetchNew returns everything from that date forward. Unlike
+// RewindTo (by transaction ID, used for failure recovery), this is by
+// calendar date — used to seed a brand-new token's cursor to just inside the
+// 90-day SCA window before the first-ever FetchNew, since Fio has no cursor
+// established yet and would otherwise serve full history and hit
+// ErrStrongAuthRequired.
+func (c *FioClient) SetLastDate(requestContext context.Context, date time.Time) error {
+	url := fmt.Sprintf("%s/set-last-date/%s/%s/", c.baseURL, c.token, date.Format("2006-01-02"))
+	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("User-Agent", userAgent)
+	c.logRequest(request)
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("fio set-last-date: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return fmt.Errorf("reading fio response: %w", err)
+	}
+	c.logResponse(response, body)
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("fio set-last-date: unexpected status %d", response.StatusCode)
+	}
+	return nil
+}
+
 func (c *FioClient) get(requestContext context.Context, url string) (*TransactionsResponse, error) {
 	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("User-Agent", "bank-system/1.0")
+	request.Header.Set("User-Agent", userAgent)
 	c.logRequest(request)
 	response, err := c.httpClient.Do(request)
 	if err != nil {
@@ -138,6 +178,9 @@ func (c *FioClient) get(requestContext context.Context, url string) (*Transactio
 	// download — not an error, just zero transactions.
 	if response.StatusCode == http.StatusConflict {
 		return &TransactionsResponse{}, nil
+	}
+	if response.StatusCode == http.StatusUnprocessableEntity {
+		return nil, fmt.Errorf("%w: %s", ErrStrongAuthRequired, body)
 	}
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fio request: unexpected status %d: %s", response.StatusCode, body)

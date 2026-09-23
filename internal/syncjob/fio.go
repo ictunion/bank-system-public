@@ -209,6 +209,19 @@ func syncAccount(requestContext context.Context, pool *pgxpool.Pool, queries *db
 	}()
 
 	response, err := client.FetchNew(requestContext)
+	if errors.Is(err, fio.ErrStrongAuthRequired) {
+		// A brand-new token (or one whose cursor drifted stale for any other
+		// reason) has no cursor established yet, so Fio serves full history
+		// and trips the 90-day SCA rule on the very first FetchNew. Seed the
+		// cursor to just inside the SCA-free window and retry once — no SCA
+		// unlock needed for this, since <90 days old needs no extra auth.
+		log.Printf("fio sync: bank_account_id=%d: fio cursor needs strong auth, seeding to 89 days ago and retrying", bankAccountID)
+		if seedErr := client.SetLastDate(requestContext, time.Now().AddDate(0, 0, -89)); seedErr != nil {
+			finishRun(requestContext, queries, run.ID, "failed", 0, 0, seedErr)
+			return Result{}, fmt.Errorf("seeding fio cursor: %w", seedErr)
+		}
+		response, err = client.FetchNew(requestContext)
+	}
 	if err != nil {
 		finishRun(requestContext, queries, run.ID, "failed", 0, 0, err)
 		return Result{}, fmt.Errorf("fetching from fio: %w", err)
