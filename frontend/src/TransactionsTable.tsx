@@ -87,12 +87,15 @@ function paramsFromFilters(f: Filters, offset: number): URLSearchParams {
   return params
 }
 
-// useDebouncedCommit backs a "typing" filter field (search, member number):
-// the input shows every keystroke immediately (draft), but onCommit — the
-// thing that actually updates the URL/query — only fires DEBOUNCE_MS after
-// typing stops. If the committed value changes from elsewhere (Reset button,
-// browser back/forward, or this same commit landing) the draft resyncs and
-// any in-flight timer is cancelled, so a stale keystroke can't overwrite a
+// useDebouncedCommit backs every filter field that can fire many change
+// events in quick succession (typing in search/member #, or scrolling a date
+// input's month/day/year spinner segment — each tick is a genuine native
+// change, there's no separate "still fiddling" signal to key off): the input
+// shows every change immediately (draft), but onCommit — the thing that
+// actually updates the URL/query — only fires DEBOUNCE_MS after changes
+// stop. If the committed value changes from elsewhere (Reset button, browser
+// back/forward, or this same commit landing) the draft resyncs and any
+// in-flight timer is cancelled, so a stale pending commit can't overwrite a
 // reset that happened while the timer was still pending.
 function useDebouncedCommit(committed: string, onCommit: (value: string) => void, delayMs: number): [string, (value: string) => void] {
   const [draft, setDraft] = useState(committed)
@@ -112,74 +115,6 @@ function useDebouncedCommit(committed: string, onCommit: (value: string) => void
   }
 
   return [draft, handleChange]
-}
-
-// DateField listens to the native "change" event, not React's onChange
-// (which fires on every keystroke while typing a date, including
-// empty/partial values mid-edit) — change only fires once a value is
-// complete. That's still not "done editing" on its own though: scrolling the
-// mouse wheel over the month/day/year spinner segment fires a genuine change
-// on every tick, since each tick already lands on a complete, different
-// valid date — the browser has no separate signal for "still fiddling" vs
-// "settled". So the commit itself is debounced the same DEBOUNCE_MS as
-// search/member#, just re-armed by change instead of by every keystroke —
-// rapid scroll ticks coalesce into one commit after they stop, a single
-// calendar-day pick or a fully-typed date behaves the same way with one tick
-// to debounce.
-// Uncontrolled (defaultValue) on purpose, mounted once — no `key`-forced
-// remount on commit: recreating the <input> mid-interaction (e.g. while its
-// native calendar popup is open) previously caused a spurious extra fire.
-// The listener is attached once (onCommit read from a ref, not a dependency)
-// so it doesn't get torn down/re-added on every parent render either. An
-// external value change (Reset, browser back/forward) is applied
-// imperatively to the DOM node instead, and only when it actually differs,
-// so it never stomps on an interaction already in progress.
-function DateField({
-  label,
-  value,
-  min,
-  max,
-  onCommit,
-}: {
-  label: string
-  value: string
-  min?: string
-  max?: string
-  onCommit: (value: string) => void
-}) {
-  const ref = useRef<HTMLInputElement>(null)
-  const onCommitRef = useRef(onCommit)
-  onCommitRef.current = onCommit
-  const timeoutRef = useRef<ReturnType<typeof setTimeout>>()
-
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const handleChange = () => {
-      clearTimeout(timeoutRef.current)
-      timeoutRef.current = setTimeout(() => onCommitRef.current(el.value), DEBOUNCE_MS)
-    }
-    el.addEventListener('change', handleChange)
-    return () => {
-      el.removeEventListener('change', handleChange)
-      clearTimeout(timeoutRef.current)
-    }
-  }, [])
-
-  useEffect(() => {
-    const el = ref.current
-    if (el && el.value !== value) {
-      el.value = value
-    }
-    clearTimeout(timeoutRef.current)
-  }, [value])
-
-  return (
-    <label>
-      {label}{' '}
-      <input ref={ref} type="date" defaultValue={value} min={min} max={max} />
-    </label>
-  )
 }
 
 function toQuery(f: Filters, offset: number): TransactionQuery {
@@ -221,6 +156,8 @@ export function TransactionsTable() {
     setSearchParams(new URLSearchParams(), { replace: true })
   }
 
+  const [fromDraft, handleFromChange] = useDebouncedCommit(filters.from, (v) => update({ from: v }), DEBOUNCE_MS)
+  const [toDraft, handleToChange] = useDebouncedCommit(filters.to, (v) => update({ to: v }), DEBOUNCE_MS)
   const [searchDraft, handleSearchChange] = useDebouncedCommit(filters.search, (v) => update({ search: v }), DEBOUNCE_MS)
   const [memberNumberDraft, handleMemberNumberChange] = useDebouncedCommit(
     filters.memberNumber,
@@ -240,8 +177,14 @@ export function TransactionsTable() {
 
   const filterRowEl = (
     <div style={filterRow}>
-      <DateField label="From" value={filters.from} max={filters.to || undefined} onCommit={(v) => update({ from: v })} />
-      <DateField label="To" value={filters.to} min={filters.from || undefined} onCommit={(v) => update({ to: v })} />
+      <label>
+        From{' '}
+        <input type="date" value={fromDraft} max={filters.to || undefined} onChange={(e) => handleFromChange(e.target.value)} />
+      </label>
+      <label>
+        To{' '}
+        <input type="date" value={toDraft} min={filters.from || undefined} onChange={(e) => handleToChange(e.target.value)} />
+      </label>
 
       <Select
         label="Assigned"
