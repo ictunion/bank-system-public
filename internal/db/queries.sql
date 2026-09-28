@@ -429,6 +429,52 @@ WHERE EXISTS (
 )
 ORDER BY ma.total_missed_months DESC, ma.member_number;
 
+-- name: GetPaymentStats :one
+-- Backs GET /payments/stats — the org-wide % of currently-liable members who
+-- actually sent a membership_fee payment in the trailing rolling month
+-- (window_from = CURRENT_DATE - 1 calendar month, window_to = CURRENT_DATE,
+-- both inclusive — e.g. queried on April 15th, that's March 15th through
+-- April 15th). Deliberately NOT the arrears/coverage-month convention every
+-- other payment query in this file uses (dues paid a month in arrears, 2
+-- month grace cap, etc. — see ListMembersMissingPayment above): this
+-- stat is a simple, direct "did a real bank transaction from this member
+-- land in the last month", read straight off raw_transactions.transaction_date,
+-- with no coverage/waiver bookkeeping involved at all. "Currently liable" for
+-- the denominator = fee_start_date in the past and not yet stopped
+-- (fee_stop_date NULL or still in the future) — a plain snapshot check, not
+-- windowed, so a member who left doesn't drag the % down for a full month
+-- after leaving.
+--
+-- LEFT JOIN members (liability check in the join condition, not a WHERE
+-- filter) so this always returns exactly one row — required for :one — even
+-- with zero currently-liable members (a brand new org with no members yet):
+-- a WHERE filter would instead make the whole FROM produce zero rows, and
+-- :one would then error on no rows. count(m.member_number), not count(*), so
+-- the LEFT JOIN's placeholder all-NULL row (no member matched the join
+-- condition) doesn't itself count as a liable member.
+WITH window_bounds AS (
+    SELECT (CURRENT_DATE - interval '1 month')::date AS window_from, CURRENT_DATE::date AS window_to
+)
+SELECT
+    wb.window_from,
+    wb.window_to,
+    count(m.member_number)::int AS liable_members,
+    count(m.member_number) FILTER (
+        WHERE EXISTS (
+            SELECT 1
+            FROM processed_transactions pt
+            JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+            WHERE pt.member_number = m.member_number
+              AND pt.category = 'membership_fee'
+              AND rt.transaction_date BETWEEN wb.window_from AND wb.window_to
+        )
+    )::int AS paid_members
+FROM window_bounds wb
+LEFT JOIN members m
+    ON m.fee_start_date <= CURRENT_DATE
+   AND (m.fee_stop_date IS NULL OR m.fee_stop_date >= CURRENT_DATE)
+GROUP BY wb.window_from, wb.window_to;
+
 -- name: ListCommentedTransactionsInYear :many
 -- Backs GET /payments/{year}/commented — see ListCommentedTransactionsInMonth,
 -- year-scoped instead of month-scoped.

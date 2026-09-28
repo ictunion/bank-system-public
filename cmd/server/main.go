@@ -157,6 +157,7 @@ func main() {
 	api.HandleFunc("GET /payments/{year}/commented", handler.RequireRole(keycloakProvider, keycloak.RolePaymentHistory, handler.CommentedTransactionsInYear(db.New(pool))))
 	api.HandleFunc("GET /payments/workplace/{year}/{month}/commented", handler.RequireRole(keycloakProvider, keycloak.RoleViewWorkplacePaymentHistory, handler.WorkplaceCommentedTransactions(keycloakProvider, db.New(pool))))
 	api.HandleFunc("GET /payments/workplace/{year}/commented", handler.RequireRole(keycloakProvider, keycloak.RoleViewWorkplacePaymentHistory, handler.WorkplaceCommentedTransactionsInYear(keycloakProvider, db.New(pool))))
+	api.HandleFunc("GET /payments/stats", handler.RequireRole(keycloakProvider, keycloak.RolePaymentHistory, handler.PaymentStats(db.New(pool))))
 	api.HandleFunc("GET /payments/waivers", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.ListWaivers(db.New(pool))))
 	api.HandleFunc("POST /payments/{member_number}/waive", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.WaivePayment(db.New(pool))))
 	api.HandleFunc("DELETE /payments/{member_number}/waive/{year}/{month}", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.UnwaivePayment(db.New(pool))))

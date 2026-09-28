@@ -90,6 +90,29 @@ type Querier interface {
 	// is non-null and matches one of the caller's own Keycloak groups.
 	GetMemberWorkplaceSub(ctx context.Context, memberNumber int32) (pgtype.UUID, error)
 	GetPaymentHistory(ctx context.Context, memberNumber int32) ([]GetPaymentHistoryRow, error)
+	// Backs GET /payments/stats — the org-wide % of currently-liable members who
+	// actually sent a membership_fee payment in the trailing rolling month
+	// (window_from = CURRENT_DATE - 1 calendar month, window_to = CURRENT_DATE,
+	// both inclusive — e.g. queried on April 15th, that's March 15th through
+	// April 15th). Deliberately NOT the arrears/coverage-month convention every
+	// other payment query in this file uses (dues paid a month in arrears, 2
+	// month grace cap, etc. — see ListMembersMissingPayment above): this
+	// stat is a simple, direct "did a real bank transaction from this member
+	// land in the last month", read straight off raw_transactions.transaction_date,
+	// with no coverage/waiver bookkeeping involved at all. "Currently liable" for
+	// the denominator = fee_start_date in the past and not yet stopped
+	// (fee_stop_date NULL or still in the future) — a plain snapshot check, not
+	// windowed, so a member who left doesn't drag the % down for a full month
+	// after leaving.
+	//
+	// LEFT JOIN members (liability check in the join condition, not a WHERE
+	// filter) so this always returns exactly one row — required for :one — even
+	// with zero currently-liable members (a brand new org with no members yet):
+	// a WHERE filter would instead make the whole FROM produce zero rows, and
+	// :one would then error on no rows. count(m.member_number), not count(*), so
+	// the LEFT JOIN's placeholder all-NULL row (no member matched the join
+	// condition) doesn't itself count as a liable member.
+	GetPaymentStats(ctx context.Context) (GetPaymentStatsRow, error)
 	GetPaymentWaiver(ctx context.Context, arg GetPaymentWaiverParams) (GetPaymentWaiverRow, error)
 	// Backs the Budget page's "Current Balance" figure (GET
 	// /transactions/summary) — summed across every non-soft-deleted account,

@@ -39,6 +39,9 @@ const (
 	//   GET /payments/{member_number}/history  (also accepts RoleViewWorkplacePaymentHistory)
 	//   GET /payments/{year}/{month}/missing
 	//   GET /payments/{year}/missing
+	//   GET /payments/{year}/{month}/commented
+	//   GET /payments/{year}/commented
+	//   GET /payments/stats
 	RolePaymentHistory Role = "payment-history"
 
 	// RoleListTransactions protects:
