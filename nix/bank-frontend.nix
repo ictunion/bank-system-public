@@ -3,9 +3,9 @@
 , src
   # VITE_* vars are baked into the bundle at build time — a runtime .env has no effect.
   # Defaults are production values; override with `bank-frontend.override { ... }`.
-, keycloakUrl ? "https://keycloak.ictunion.cz"
-, keycloakRealm ? "members"
-, keycloakClientId ? "bank-system"
+, keycloakUrl
+, keycloakRealm
+, keycloakClientId
 }:
 buildNpmPackage {
   pname = "bank-frontend";
