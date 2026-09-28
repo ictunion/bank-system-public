@@ -32,5 +32,18 @@
             export PATH="$GOPATH/bin:$PATH"
           '';
         };
+
+        packages = rec {
+          bank-api = pkgs.callPackage ./nix/bank-api.nix {
+            src = self;
+          };
+
+          bank-frontend = pkgs.callPackage ./nix/bank-frontend.nix {
+            src = "${self}/frontend";
+          };
+
+          default = bank-api;
+        };
+
       });
 }
