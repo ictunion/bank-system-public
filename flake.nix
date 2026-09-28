@@ -40,6 +40,11 @@
 
           bank-frontend = pkgs.callPackage ./nix/bank-frontend.nix {
             src = "${self}/frontend";
+            # Local dev values (see frontend/.env.example).
+            # Deployments must override these with `bank-frontend.override { ... }`.
+            keycloakUrl = "http://localhost:8180";
+            keycloakRealm = "members";
+            keycloakClientId = "bank-system";
           };
 
           default = bank-api;

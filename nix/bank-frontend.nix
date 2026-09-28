@@ -2,7 +2,7 @@
 , lib
 , src
   # VITE_* vars are baked into the bundle at build time — a runtime .env has no effect.
-  # Defaults are production values; override with `bank-frontend.override { ... }`.
+  # No defaults: callers must pass them explicitly.
 , keycloakUrl
 , keycloakRealm
 , keycloakClientId
