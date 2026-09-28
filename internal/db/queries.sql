@@ -795,6 +795,25 @@ WHERE pt.category != 'internal_transfer'
   AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
   AND rt.counter_account_number = ANY(sqlc.arg(account_numbers)::text[]);
 
+-- name: ListInterestReclassifyCandidates :many
+-- Same "detection added after some rows were already processed" problem as
+-- ListInternalTransferCandidates, for the interest category: a savings-account
+-- interest posting synced/processed before this category/detection step
+-- existed landed in other_income and, since a processed row is never
+-- revisited on its own (see ListUnprocessedTransactions), stays there
+-- forever without this. Same exclusions as ListInternalTransferCandidates —
+-- skip matched_by='manual' (never override an admin's explicit decision) and
+-- already-interest rows, so a repeat run only touches what's still wrong.
+-- ILIKE, not =, since transaction_type is Fio's free-form label for the
+-- movement type, not an enum — same "not error-proof" caveat as the "mzda"
+-- salary heuristic in processing.go.
+SELECT pt.id
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE pt.category != 'credited_interest'
+  AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
+  AND rt.transaction_type ILIKE '%úrok%';
+
 -- name: InsertCoverageRow :execrows
 -- ON CONFLICT DO NOTHING + :execrows so the caller can tell which requested
 -- month was already covered by a *different* transaction (0 rows affected) and

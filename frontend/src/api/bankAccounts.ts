@@ -83,7 +83,7 @@ export function backfillAccount(id: number, from: string, to: string): Promise<S
 // — see internal/handler/processing.go. `succeeded`/`failed` mean whatever
 // that action's own unit of work is; new actions reuse this same shape
 // rather than getting a bespoke response type each.
-type ProcessingAction = 'run' | 'reclassify_internal_transfers' | 'rematch_unmatched'
+type ProcessingAction = 'run' | 'reclassify_internal_transfers' | 'rematch_unmatched' | 'reclassify_interest'
 
 interface ProcessingActionResult {
   action: ProcessingAction
@@ -144,4 +144,21 @@ export interface RematchResult {
 export async function rematchUnmatched(): Promise<RematchResult> {
   const result = await runProcessingAction('rematch_unmatched')
   return { matched: result.succeeded, failed: result.failed }
+}
+
+export interface ReclassifyInterestResult {
+  reclassified: number
+  failed: number
+}
+
+// Re-checks already-processed transactions against transaction_type for
+// interest wording (e.g. "Připsaný úrok") and flips any match to the
+// interest category — for a savings-account interest posting synced/
+// processed before this detection step existed (see
+// internal/processing/processing.go ReclassifyInterest). Skips
+// manually-matched transactions; safe/idempotent to call repeatedly. Needs
+// manage-transactions, same as the other reclassify actions.
+export async function reclassifyInterest(): Promise<ReclassifyInterestResult> {
+  const result = await runProcessingAction('reclassify_interest')
+  return { reclassified: result.succeeded, failed: result.failed }
 }

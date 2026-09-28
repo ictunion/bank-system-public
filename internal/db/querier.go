@@ -173,6 +173,18 @@ type Querier interface {
 	// detail is the bank account's display name for a fio_sync row, NULL for
 	// orca_sync (there's no per-account breakdown for the member sync).
 	ListEventLogs(ctx context.Context, arg ListEventLogsParams) ([]ListEventLogsRow, error)
+	// Same "detection added after some rows were already processed" problem as
+	// ListInternalTransferCandidates, for the interest category: a savings-account
+	// interest posting synced/processed before this category/detection step
+	// existed landed in other_income and, since a processed row is never
+	// revisited on its own (see ListUnprocessedTransactions), stays there
+	// forever without this. Same exclusions as ListInternalTransferCandidates —
+	// skip matched_by='manual' (never override an admin's explicit decision) and
+	// already-interest rows, so a repeat run only touches what's still wrong.
+	// ILIKE, not =, since transaction_type is Fio's free-form label for the
+	// movement type, not an enum — same "not error-proof" caveat as the "mzda"
+	// salary heuristic in processing.go.
+	ListInterestReclassifyCandidates(ctx context.Context) ([]int64, error)
 	// Rows categorized before their counterparty's bank_accounts row existed —
 	// internal-transfer detection (processing.go) only ever sees the roster as
 	// of the moment a transaction was first processed, and a processed row is

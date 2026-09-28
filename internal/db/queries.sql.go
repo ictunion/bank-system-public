@@ -1467,6 +1467,46 @@ func (q *Queries) ListEventLogs(ctx context.Context, arg ListEventLogsParams) ([
 	return items, nil
 }
 
+const listInterestReclassifyCandidates = `-- name: ListInterestReclassifyCandidates :many
+SELECT pt.id
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE pt.category != 'credited_interest'
+  AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
+  AND rt.transaction_type ILIKE '%úrok%'
+`
+
+// Same "detection added after some rows were already processed" problem as
+// ListInternalTransferCandidates, for the interest category: a savings-account
+// interest posting synced/processed before this category/detection step
+// existed landed in other_income and, since a processed row is never
+// revisited on its own (see ListUnprocessedTransactions), stays there
+// forever without this. Same exclusions as ListInternalTransferCandidates —
+// skip matched_by='manual' (never override an admin's explicit decision) and
+// already-interest rows, so a repeat run only touches what's still wrong.
+// ILIKE, not =, since transaction_type is Fio's free-form label for the
+// movement type, not an enum — same "not error-proof" caveat as the "mzda"
+// salary heuristic in processing.go.
+func (q *Queries) ListInterestReclassifyCandidates(ctx context.Context) ([]int64, error) {
+	rows, err := q.db.Query(ctx, listInterestReclassifyCandidates)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listInternalTransferCandidates = `-- name: ListInternalTransferCandidates :many
 SELECT pt.id
 FROM processed_transactions pt

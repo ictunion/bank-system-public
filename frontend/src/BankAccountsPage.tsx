@@ -7,6 +7,7 @@ import {
   createBankAccount,
   deleteBankAccount,
   fetchBankAccounts,
+  reclassifyInterest,
   reclassifyInternalTransfers,
   rematchUnmatched,
   triggerFioSync,
@@ -93,6 +94,14 @@ export function BankAccountsPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['transactions'] }),
   })
 
+  // Same "detection added after some rows were already processed" fix as
+  // reclassify, for the interest category (see api/bankAccounts.ts
+  // reclassifyInterest) — its own button/gate for the same reasons.
+  const reclassifyInterestMutation = useMutation({
+    mutationFn: reclassifyInterest,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['transactions'] }),
+  })
+
   return (
     <section>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
@@ -138,6 +147,23 @@ export function BankAccountsPage() {
                 onClick={() => rematch.mutate()}
               >
                 {rematch.isPending ? 'Rematching…' : 'Rematch unmatched transactions'}
+              </button>
+
+              {reclassifyInterestMutation.error && (
+                <span style={{ color: '#b00' }}>{errMessage(reclassifyInterestMutation.error)}</span>
+              )}
+              {reclassifyInterestMutation.data && (
+                <span style={{ color: '#080' }}>
+                  Reclassified {reclassifyInterestMutation.data.reclassified}
+                  {reclassifyInterestMutation.data.failed > 0 ? ` (${reclassifyInterestMutation.data.failed} failed)` : ''}
+                </span>
+              )}
+              <button
+                disabled={reclassifyInterestMutation.isPending}
+                title="Re-check already-processed transactions against transaction_type for interest wording"
+                onClick={() => reclassifyInterestMutation.mutate()}
+              >
+                {reclassifyInterestMutation.isPending ? 'Reclassifying…' : 'Reclassify interest'}
               </button>
             </>
           )}
