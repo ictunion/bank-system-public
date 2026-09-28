@@ -61,15 +61,16 @@ func (q *Queries) CategoryExists(ctx context.Context, name string) (bool, error)
 }
 
 const createBankAccount = `-- name: CreateBankAccount :one
-INSERT INTO bank_accounts (fio_account_id, iban, currency, display_name, fio_token_encrypted)
+INSERT INTO bank_accounts (fio_account_id, iban, currency, display_name, fio_token_encrypted, color)
 VALUES (
     $1,
     $2,
     $3,
     $4,
-    pgp_sym_encrypt($5::text, $6::text)
+    pgp_sym_encrypt($5::text, $6::text),
+    $7
 )
-RETURNING id, fio_account_id, iban, currency, display_name, created_at
+RETURNING id, fio_account_id, iban, currency, display_name, created_at, color
 `
 
 type CreateBankAccountParams struct {
@@ -79,6 +80,7 @@ type CreateBankAccountParams struct {
 	DisplayName   string  `json:"display_name"`
 	FioToken      string  `json:"fio_token"`
 	EncryptionKey string  `json:"encryption_key"`
+	Color         *string `json:"color"`
 }
 
 type CreateBankAccountRow struct {
@@ -88,12 +90,15 @@ type CreateBankAccountRow struct {
 	Currency     string    `json:"currency"`
 	DisplayName  string    `json:"display_name"`
 	CreatedAt    time.Time `json:"created_at"`
+	Color        *string   `json:"color"`
 }
 
 // fio_token is encrypted at rest via pgcrypto (pgp_sym_encrypt) using
 // encryption_key (BANK_TOKEN_ENCRYPTION_KEY env var) — never stored in the DB
 // itself. RETURNING list explicitly excludes fio_token_encrypted so the
 // ciphertext (and a fortiori the token) is never echoed back to the caller.
+// color is optional (sqlc.narg) — NULL means no color assigned, purely
+// presentational, see the migration's CHECK constraint for accepted shape.
 func (q *Queries) CreateBankAccount(ctx context.Context, arg CreateBankAccountParams) (CreateBankAccountRow, error) {
 	row := q.db.QueryRow(ctx, createBankAccount,
 		arg.FioAccountID,
@@ -102,6 +107,7 @@ func (q *Queries) CreateBankAccount(ctx context.Context, arg CreateBankAccountPa
 		arg.DisplayName,
 		arg.FioToken,
 		arg.EncryptionKey,
+		arg.Color,
 	)
 	var i CreateBankAccountRow
 	err := row.Scan(
@@ -111,6 +117,7 @@ func (q *Queries) CreateBankAccount(ctx context.Context, arg CreateBankAccountPa
 		&i.Currency,
 		&i.DisplayName,
 		&i.CreatedAt,
+		&i.Color,
 	)
 	return i, err
 }
@@ -616,6 +623,72 @@ func (q *Queries) GetPaymentHistory(ctx context.Context, memberNumber int32) ([]
 	return items, nil
 }
 
+const getPaymentStats = `-- name: GetPaymentStats :one
+WITH window_bounds AS (
+    SELECT (CURRENT_DATE - interval '1 month')::date AS window_from, CURRENT_DATE::date AS window_to
+)
+SELECT
+    wb.window_from,
+    wb.window_to,
+    count(m.member_number)::int AS liable_members,
+    count(m.member_number) FILTER (
+        WHERE EXISTS (
+            SELECT 1
+            FROM processed_transactions pt
+            JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+            WHERE pt.member_number = m.member_number
+              AND pt.category = 'membership_fee'
+              AND rt.transaction_date BETWEEN wb.window_from AND wb.window_to
+        )
+    )::int AS paid_members
+FROM window_bounds wb
+LEFT JOIN members m
+    ON m.fee_start_date <= CURRENT_DATE
+   AND (m.fee_stop_date IS NULL OR m.fee_stop_date >= CURRENT_DATE)
+GROUP BY wb.window_from, wb.window_to
+`
+
+type GetPaymentStatsRow struct {
+	WindowFrom    time.Time `json:"window_from"`
+	WindowTo      time.Time `json:"window_to"`
+	LiableMembers int32     `json:"liable_members"`
+	PaidMembers   int32     `json:"paid_members"`
+}
+
+// Backs GET /payments/stats — the org-wide % of currently-liable members who
+// actually sent a membership_fee payment in the trailing rolling month
+// (window_from = CURRENT_DATE - 1 calendar month, window_to = CURRENT_DATE,
+// both inclusive — e.g. queried on April 15th, that's March 15th through
+// April 15th). Deliberately NOT the arrears/coverage-month convention every
+// other payment query in this file uses (dues paid a month in arrears, 2
+// month grace cap, etc. — see ListMembersMissingPayment above): this
+// stat is a simple, direct "did a real bank transaction from this member
+// land in the last month", read straight off raw_transactions.transaction_date,
+// with no coverage/waiver bookkeeping involved at all. "Currently liable" for
+// the denominator = fee_start_date in the past and not yet stopped
+// (fee_stop_date NULL or still in the future) — a plain snapshot check, not
+// windowed, so a member who left doesn't drag the % down for a full month
+// after leaving.
+//
+// LEFT JOIN members (liability check in the join condition, not a WHERE
+// filter) so this always returns exactly one row — required for :one — even
+// with zero currently-liable members (a brand new org with no members yet):
+// a WHERE filter would instead make the whole FROM produce zero rows, and
+// :one would then error on no rows. count(m.member_number), not count(*), so
+// the LEFT JOIN's placeholder all-NULL row (no member matched the join
+// condition) doesn't itself count as a liable member.
+func (q *Queries) GetPaymentStats(ctx context.Context) (GetPaymentStatsRow, error) {
+	row := q.db.QueryRow(ctx, getPaymentStats)
+	var i GetPaymentStatsRow
+	err := row.Scan(
+		&i.WindowFrom,
+		&i.WindowTo,
+		&i.LiableMembers,
+		&i.PaidMembers,
+	)
+	return i, err
+}
+
 const getPaymentWaiver = `-- name: GetPaymentWaiver :one
 SELECT covers_year, covers_month, reason, created_at
 FROM payment_waivers
@@ -772,9 +845,11 @@ SELECT
     rt.message_for_recipient,
     rt.user_identification,
     rt.comment,
-    pt.admin_comment
+    pt.admin_comment,
+    ba.color AS bank_account_color
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+LEFT JOIN bank_accounts ba ON ba.id = rt.bank_account_id
 WHERE pt.id = $1
 `
 
@@ -797,6 +872,7 @@ type GetTransactionDetailRow struct {
 	UserIdentification   *string   `json:"user_identification"`
 	Comment              *string   `json:"comment"`
 	AdminComment         *string   `json:"admin_comment"`
+	BankAccountColor     *string   `json:"bank_account_color"`
 }
 
 // One row for the transaction browser's detail / edit view — same columns as
@@ -824,6 +900,7 @@ func (q *Queries) GetTransactionDetail(ctx context.Context, id int64) (GetTransa
 		&i.UserIdentification,
 		&i.Comment,
 		&i.AdminComment,
+		&i.BankAccountColor,
 	)
 	return i, err
 }
@@ -978,7 +1055,7 @@ const listBankAccounts = `-- name: ListBankAccounts :many
 SELECT id, fio_account_id, iban, currency, display_name, created_at,
        (fio_token_encrypted IS NOT NULL)::boolean AS has_token,
        (deleted_at IS NULL)::boolean AS is_active,
-       balance, balance_as_of
+       balance, balance_as_of, color
 FROM bank_accounts ORDER BY id
 `
 
@@ -993,6 +1070,7 @@ type ListBankAccountsRow struct {
 	IsActive     bool               `json:"is_active"`
 	Balance      pgtype.Numeric     `json:"balance"`
 	BalanceAsOf  pgtype.Timestamptz `json:"balance_as_of"`
+	Color        *string            `json:"color"`
 }
 
 // Admin-facing list (GET /account) — deliberately excludes the Fio token.
@@ -1024,6 +1102,7 @@ func (q *Queries) ListBankAccounts(ctx context.Context) ([]ListBankAccountsRow, 
 			&i.IsActive,
 			&i.Balance,
 			&i.BalanceAsOf,
+			&i.Color,
 		); err != nil {
 			return nil, err
 		}
@@ -1454,6 +1533,46 @@ func (q *Queries) ListEventLogs(ctx context.Context, arg ListEventLogsParams) ([
 	return items, nil
 }
 
+const listInterestReclassifyCandidates = `-- name: ListInterestReclassifyCandidates :many
+SELECT pt.id
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE pt.category != 'credited_interest'
+  AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
+  AND rt.transaction_type ILIKE '%úrok%'
+`
+
+// Same "detection added after some rows were already processed" problem as
+// ListInternalTransferCandidates, for the interest category: a savings-account
+// interest posting synced/processed before this category/detection step
+// existed landed in other_income and, since a processed row is never
+// revisited on its own (see ListUnprocessedTransactions), stays there
+// forever without this. Same exclusions as ListInternalTransferCandidates —
+// skip matched_by='manual' (never override an admin's explicit decision) and
+// already-interest rows, so a repeat run only touches what's still wrong.
+// ILIKE, not =, since transaction_type is Fio's free-form label for the
+// movement type, not an enum — same "not error-proof" caveat as the "mzda"
+// salary heuristic in processing.go.
+func (q *Queries) ListInterestReclassifyCandidates(ctx context.Context) ([]int64, error) {
+	rows, err := q.db.Query(ctx, listInterestReclassifyCandidates)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listInternalTransferCandidates = `-- name: ListInternalTransferCandidates :many
 SELECT pt.id
 FROM processed_transactions pt
@@ -1805,9 +1924,11 @@ SELECT
     rt.user_identification,
     rt.comment,
     pt.admin_comment,
+    ba.color AS bank_account_color,
     count(*) OVER () AS total_count
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+LEFT JOIN bank_accounts ba ON ba.id = rt.bank_account_id
 WHERE ($1::boolean IS NULL
         OR (pt.member_number IS NOT NULL) = $1::boolean)
   AND ($2::text IS NULL OR pt.direction = $2::text)
@@ -1858,6 +1979,7 @@ type ListTransactionsRow struct {
 	UserIdentification   *string   `json:"user_identification"`
 	Comment              *string   `json:"comment"`
 	AdminComment         *string   `json:"admin_comment"`
+	BankAccountColor     *string   `json:"bank_account_color"`
 	TotalCount           int64     `json:"total_count"`
 }
 
@@ -1865,6 +1987,9 @@ type ListTransactionsRow struct {
 // raw_transactions row, with optional filters. Every filter arg is nullable —
 // NULL / omitted means "don't filter on this". total_count is the full match
 // count ignoring LIMIT/OFFSET (window aggregate) so the caller can paginate.
+// LEFT JOIN to bank_accounts (never INNER) for bank_account_color — raw_transactions.
+// bank_account_id has no ON DELETE, but a soft-deleted account still exists as
+// a row so this would be an inner join either way; LEFT is just defensive.
 func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsParams) ([]ListTransactionsRow, error) {
 	rows, err := q.db.Query(ctx, listTransactions,
 		arg.Assigned,
@@ -1904,6 +2029,7 @@ func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsPara
 			&i.UserIdentification,
 			&i.Comment,
 			&i.AdminComment,
+			&i.BankAccountColor,
 			&i.TotalCount,
 		); err != nil {
 			return nil, err
@@ -2162,18 +2288,20 @@ func (q *Queries) UnassignTransaction(ctx context.Context, arg UnassignTransacti
 const updateBankAccount = `-- name: UpdateBankAccount :one
 UPDATE bank_accounts
 SET display_name = $1,
+    color = $2,
     fio_token_encrypted = CASE
-        WHEN $2::text IS NOT NULL
-        THEN pgp_sym_encrypt($2::text, $3::text)
+        WHEN $3::text IS NOT NULL
+        THEN pgp_sym_encrypt($3::text, $4::text)
         ELSE fio_token_encrypted
     END
-WHERE id = $4 AND deleted_at IS NULL
-RETURNING id, fio_account_id, iban, currency, display_name, created_at,
+WHERE id = $5 AND deleted_at IS NULL
+RETURNING id, fio_account_id, iban, currency, display_name, created_at, color,
           (fio_token_encrypted IS NOT NULL)::boolean AS has_token
 `
 
 type UpdateBankAccountParams struct {
 	DisplayName   string  `json:"display_name"`
+	Color         *string `json:"color"`
 	FioToken      *string `json:"fio_token"`
 	EncryptionKey string  `json:"encryption_key"`
 	ID            int32   `json:"id"`
@@ -2186,20 +2314,26 @@ type UpdateBankAccountRow struct {
 	Currency     string    `json:"currency"`
 	DisplayName  string    `json:"display_name"`
 	CreatedAt    time.Time `json:"created_at"`
+	Color        *string   `json:"color"`
 	HasToken     bool      `json:"has_token"`
 }
 
 // fio_account_id/iban/currency are properties of the real Fio account, not
-// editable metadata — only our own display_name and the sync token can change
-// here. fio_token is sqlc.narg: NULL means "leave the existing token
-// untouched", any non-NULL value re-encrypts and replaces it (see
-// CreateBankAccount for the same pgp_sym_encrypt pattern).
+// editable metadata — only our own display_name, color, and the sync token
+// can change here. fio_token is sqlc.narg: NULL means "leave the existing
+// token untouched", any non-NULL value re-encrypts and replaces it (see
+// CreateBankAccount for the same pgp_sym_encrypt pattern). color is a full
+// overwrite instead (like display_name) — NULL clears it, any other value
+// replaces it; unlike fio_token there's no "leave untouched" sentinel needed
+// since a plain color isn't sensitive/rotated, so the frontend always sends
+// its current value.
 // Only touches active accounts (deleted_at IS NULL) — a soft-deleted account
 // is a historical record, not something to edit; 0 rows affected reads as
 // "not found" either way (missing id or soft-deleted id).
 func (q *Queries) UpdateBankAccount(ctx context.Context, arg UpdateBankAccountParams) (UpdateBankAccountRow, error) {
 	row := q.db.QueryRow(ctx, updateBankAccount,
 		arg.DisplayName,
+		arg.Color,
 		arg.FioToken,
 		arg.EncryptionKey,
 		arg.ID,
@@ -2212,6 +2346,7 @@ func (q *Queries) UpdateBankAccount(ctx context.Context, arg UpdateBankAccountPa
 		&i.Currency,
 		&i.DisplayName,
 		&i.CreatedAt,
+		&i.Color,
 		&i.HasToken,
 	)
 	return i, err

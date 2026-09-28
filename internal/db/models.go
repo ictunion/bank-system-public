@@ -21,6 +21,7 @@ type BankAccount struct {
 	DeletedAt         pgtype.Timestamptz `json:"deleted_at"`
 	Balance           pgtype.Numeric     `json:"balance"`
 	BalanceAsOf       pgtype.Timestamptz `json:"balance_as_of"`
+	Color             *string            `json:"color"`
 }
 
 type Member struct {

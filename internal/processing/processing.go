@@ -88,6 +88,18 @@ func processOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.
 		category = "internal_transfer"
 	}
 
+	// Interest credited on a savings account: checked next, still ahead of
+	// variable_symbol, for the same reason internal_transfer is checked first
+	// — a system-generated interest posting shouldn't be shadowed by a
+	// coincidental VS collision with a live member. Unlike the "mzda" salary
+	// heuristic below, this reads Fio's own typed transaction_type field
+	// (column8, e.g. "Připsaný úrok"), not free text — more reliable, though
+	// still a substring match, not an exact enum compare (Fio's own wording
+	// isn't documented as stable); revisit if it misfires.
+	if category == "" && containsUrok(rt.TransactionType) {
+		category = "credited_interest"
+	}
+
 	if category == "" && rt.VariableSymbol != nil && *rt.VariableSymbol != "" {
 		member, err := queries.FindMemberByVariableSymbol(requestContext, db.FindMemberByVariableSymbolParams{
 			VariableSymbol:  normalizeVariableSymbol(*rt.VariableSymbol),
@@ -180,6 +192,14 @@ func containsMzda(field *string) bool {
 	return field != nil && strings.Contains(strings.ToLower(*field), "mzda")
 }
 
+// containsUrok checks transaction_type for "úrok" (Czech for "interest") —
+// Fio's own wording for a credited-interest posting is "Připsaný úrok";
+// substring rather than exact match so this also catches any other form
+// Fio might use (e.g. "Vyúčtování úroků", still contains "úrok").
+func containsUrok(field *string) bool {
+	return field != nil && strings.Contains(strings.ToLower(*field), "úrok")
+}
+
 // normalizeVariableSymbol strips leading zeroes Fio sometimes pads a
 // variable symbol with (e.g. "00000123" for VS 123) — member_payment_identifiers
 // stores it unpadded (Orca sync seeds it from member_number, an int, with no
@@ -240,6 +260,16 @@ func ReclassifyInternalTransfers(requestContext context.Context, pool *pgxpool.P
 }
 
 func reclassifyOne(requestContext context.Context, pool *pgxpool.Pool, processedTransactionID int64) error {
+	return reclassifyOneToCategory(requestContext, pool, processedTransactionID, "internal_transfer")
+}
+
+// reclassifyOneToCategory clears any existing member match/coverage and sets
+// category on an already-processed transaction — the shared write both
+// ReclassifyInternalTransfers and ReclassifyInterest use, since both are
+// "detection step added after some rows were already processed" fixes that
+// only differ in which category they reclassify to and how a candidate is
+// selected (see ListInternalTransferCandidates / ListInterestReclassifyCandidates).
+func reclassifyOneToCategory(requestContext context.Context, pool *pgxpool.Pool, processedTransactionID int64, category string) error {
 	tx, err := pool.Begin(requestContext)
 	if err != nil {
 		return err
@@ -252,12 +282,46 @@ func reclassifyOne(requestContext context.Context, pool *pgxpool.Pool, processed
 	}
 	if _, err := txQueries.UnassignTransaction(requestContext, db.UnassignTransactionParams{
 		ID:       processedTransactionID,
-		Category: "internal_transfer",
+		Category: category,
 	}); err != nil {
 		return fmt.Errorf("updating category: %w", err)
 	}
 
 	return tx.Commit(requestContext)
+}
+
+// ReclassifyInterestResult summarizes one ReclassifyInterest run.
+type ReclassifyInterestResult struct {
+	Reclassified int
+	Failed       int
+}
+
+// ReclassifyInterest re-checks already-processed transactions against
+// transaction_type for interest wording and flips any match to
+// category=credited_interest — same "detection added after some rows were
+// already processed" fix as ReclassifyInternalTransfers, for the
+// credited_interest category instead of internal_transfer (see
+// ListInterestReclassifyCandidates). Skips matched_by='manual' rows and
+// anything already category=credited_interest, so repeat calls are
+// safe/idempotent.
+func ReclassifyInterest(requestContext context.Context, pool *pgxpool.Pool) (ReclassifyInterestResult, error) {
+	queries := db.New(pool)
+
+	candidateIDs, err := queries.ListInterestReclassifyCandidates(requestContext)
+	if err != nil {
+		return ReclassifyInterestResult{}, fmt.Errorf("listing interest reclassify candidates: %w", err)
+	}
+
+	var result ReclassifyInterestResult
+	for _, id := range candidateIDs {
+		if err := reclassifyOneToCategory(requestContext, pool, id, "credited_interest"); err != nil {
+			result.Failed++
+			log.Printf("reclassify interest: processed_transaction_id=%d: %v", id, err)
+			continue
+		}
+		result.Reclassified++
+	}
+	return result, nil
 }
 
 // RematchResult summarizes one RematchUnmatched run.

@@ -50,6 +50,10 @@ type transactionListItem struct {
 	UserIdentification   *string `json:"user_identification"`
 	Comment              *string `json:"comment"`
 	AdminComment         *string `json:"admin_comment"`
+	// BankAccountColor is the transaction's bank_accounts.color (a #RRGGBB hex
+	// code), nil when that account has no color assigned — see
+	// bankAccountResponse.Color in account.go.
+	BankAccountColor *string `json:"bank_account_color"`
 }
 
 // ListTransactions handles GET /transactions — the admin transaction browser.
@@ -58,7 +62,7 @@ type transactionListItem struct {
 // limit (<=500, default 100), offset.
 //
 // @Summary      Browse processed transactions
-// @Description  Requires the list-transactions role. All filters optional and combinable.
+// @Description  Requires the list-transactions role. All filters optional and combinable. bank_account_color is the transaction's bank account color (#RRGGBB), null if unset.
 // @Tags         transactions
 // @Security     BearerAuth
 // @Produce      json
@@ -187,6 +191,7 @@ func ListTransactions(queries *db.Queries) http.HandlerFunc {
 				UserIdentification:   row.UserIdentification,
 				Comment:              row.Comment,
 				AdminComment:         row.AdminComment,
+				BankAccountColor:     row.BankAccountColor,
 			})
 		}
 
@@ -268,6 +273,7 @@ func detailRowToItem(row db.GetTransactionDetailRow) transactionListItem {
 		UserIdentification:   row.UserIdentification,
 		Comment:              row.Comment,
 		AdminComment:         row.AdminComment,
+		BankAccountColor:     row.BankAccountColor,
 	}
 }
 

@@ -11,7 +11,7 @@
 SELECT id, fio_account_id, iban, currency, display_name, created_at,
        (fio_token_encrypted IS NOT NULL)::boolean AS has_token,
        (deleted_at IS NULL)::boolean AS is_active,
-       balance, balance_as_of
+       balance, balance_as_of, color
 FROM bank_accounts ORDER BY id;
 
 -- name: ListActiveBankAccountNumbers :many
@@ -78,34 +78,42 @@ FROM bank_accounts WHERE id = sqlc.arg(id);
 -- encryption_key (BANK_TOKEN_ENCRYPTION_KEY env var) — never stored in the DB
 -- itself. RETURNING list explicitly excludes fio_token_encrypted so the
 -- ciphertext (and a fortiori the token) is never echoed back to the caller.
-INSERT INTO bank_accounts (fio_account_id, iban, currency, display_name, fio_token_encrypted)
+-- color is optional (sqlc.narg) — NULL means no color assigned, purely
+-- presentational, see the migration's CHECK constraint for accepted shape.
+INSERT INTO bank_accounts (fio_account_id, iban, currency, display_name, fio_token_encrypted, color)
 VALUES (
     sqlc.arg(fio_account_id),
     sqlc.narg(iban),
     sqlc.arg(currency),
     sqlc.arg(display_name),
-    pgp_sym_encrypt(sqlc.arg(fio_token)::text, sqlc.arg(encryption_key)::text)
+    pgp_sym_encrypt(sqlc.arg(fio_token)::text, sqlc.arg(encryption_key)::text),
+    sqlc.narg(color)
 )
-RETURNING id, fio_account_id, iban, currency, display_name, created_at;
+RETURNING id, fio_account_id, iban, currency, display_name, created_at, color;
 
 -- name: UpdateBankAccount :one
 -- fio_account_id/iban/currency are properties of the real Fio account, not
--- editable metadata — only our own display_name and the sync token can change
--- here. fio_token is sqlc.narg: NULL means "leave the existing token
--- untouched", any non-NULL value re-encrypts and replaces it (see
--- CreateBankAccount for the same pgp_sym_encrypt pattern).
+-- editable metadata — only our own display_name, color, and the sync token
+-- can change here. fio_token is sqlc.narg: NULL means "leave the existing
+-- token untouched", any non-NULL value re-encrypts and replaces it (see
+-- CreateBankAccount for the same pgp_sym_encrypt pattern). color is a full
+-- overwrite instead (like display_name) — NULL clears it, any other value
+-- replaces it; unlike fio_token there's no "leave untouched" sentinel needed
+-- since a plain color isn't sensitive/rotated, so the frontend always sends
+-- its current value.
 -- Only touches active accounts (deleted_at IS NULL) — a soft-deleted account
 -- is a historical record, not something to edit; 0 rows affected reads as
 -- "not found" either way (missing id or soft-deleted id).
 UPDATE bank_accounts
 SET display_name = sqlc.arg(display_name),
+    color = sqlc.narg(color),
     fio_token_encrypted = CASE
         WHEN sqlc.narg(fio_token)::text IS NOT NULL
         THEN pgp_sym_encrypt(sqlc.narg(fio_token)::text, sqlc.arg(encryption_key)::text)
         ELSE fio_token_encrypted
     END
 WHERE id = sqlc.arg(id) AND deleted_at IS NULL
-RETURNING id, fio_account_id, iban, currency, display_name, created_at,
+RETURNING id, fio_account_id, iban, currency, display_name, created_at, color,
           (fio_token_encrypted IS NOT NULL)::boolean AS has_token;
 
 -- name: DeleteBankAccount :execrows
@@ -421,6 +429,52 @@ WHERE EXISTS (
 )
 ORDER BY ma.total_missed_months DESC, ma.member_number;
 
+-- name: GetPaymentStats :one
+-- Backs GET /payments/stats — the org-wide % of currently-liable members who
+-- actually sent a membership_fee payment in the trailing rolling month
+-- (window_from = CURRENT_DATE - 1 calendar month, window_to = CURRENT_DATE,
+-- both inclusive — e.g. queried on April 15th, that's March 15th through
+-- April 15th). Deliberately NOT the arrears/coverage-month convention every
+-- other payment query in this file uses (dues paid a month in arrears, 2
+-- month grace cap, etc. — see ListMembersMissingPayment above): this
+-- stat is a simple, direct "did a real bank transaction from this member
+-- land in the last month", read straight off raw_transactions.transaction_date,
+-- with no coverage/waiver bookkeeping involved at all. "Currently liable" for
+-- the denominator = fee_start_date in the past and not yet stopped
+-- (fee_stop_date NULL or still in the future) — a plain snapshot check, not
+-- windowed, so a member who left doesn't drag the % down for a full month
+-- after leaving.
+--
+-- LEFT JOIN members (liability check in the join condition, not a WHERE
+-- filter) so this always returns exactly one row — required for :one — even
+-- with zero currently-liable members (a brand new org with no members yet):
+-- a WHERE filter would instead make the whole FROM produce zero rows, and
+-- :one would then error on no rows. count(m.member_number), not count(*), so
+-- the LEFT JOIN's placeholder all-NULL row (no member matched the join
+-- condition) doesn't itself count as a liable member.
+WITH window_bounds AS (
+    SELECT (CURRENT_DATE - interval '1 month')::date AS window_from, CURRENT_DATE::date AS window_to
+)
+SELECT
+    wb.window_from,
+    wb.window_to,
+    count(m.member_number)::int AS liable_members,
+    count(m.member_number) FILTER (
+        WHERE EXISTS (
+            SELECT 1
+            FROM processed_transactions pt
+            JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+            WHERE pt.member_number = m.member_number
+              AND pt.category = 'membership_fee'
+              AND rt.transaction_date BETWEEN wb.window_from AND wb.window_to
+        )
+    )::int AS paid_members
+FROM window_bounds wb
+LEFT JOIN members m
+    ON m.fee_start_date <= CURRENT_DATE
+   AND (m.fee_stop_date IS NULL OR m.fee_stop_date >= CURRENT_DATE)
+GROUP BY wb.window_from, wb.window_to;
+
 -- name: ListCommentedTransactionsInYear :many
 -- Backs GET /payments/{year}/commented — see ListCommentedTransactionsInMonth,
 -- year-scoped instead of month-scoped.
@@ -560,6 +614,9 @@ ORDER BY rt.id;
 -- raw_transactions row, with optional filters. Every filter arg is nullable —
 -- NULL / omitted means "don't filter on this". total_count is the full match
 -- count ignoring LIMIT/OFFSET (window aggregate) so the caller can paginate.
+-- LEFT JOIN to bank_accounts (never INNER) for bank_account_color — raw_transactions.
+-- bank_account_id has no ON DELETE, but a soft-deleted account still exists as
+-- a row so this would be an inner join either way; LEFT is just defensive.
 SELECT
     pt.id,
     rt.transaction_date,
@@ -579,9 +636,11 @@ SELECT
     rt.user_identification,
     rt.comment,
     pt.admin_comment,
+    ba.color AS bank_account_color,
     count(*) OVER () AS total_count
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+LEFT JOIN bank_accounts ba ON ba.id = rt.bank_account_id
 WHERE (sqlc.narg(assigned)::boolean IS NULL
         OR (pt.member_number IS NOT NULL) = sqlc.narg(assigned)::boolean)
   AND (sqlc.narg(direction)::text IS NULL OR pt.direction = sqlc.narg(direction)::text)
@@ -698,9 +757,11 @@ SELECT
     rt.message_for_recipient,
     rt.user_identification,
     rt.comment,
-    pt.admin_comment
+    pt.admin_comment,
+    ba.color AS bank_account_color
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+LEFT JOIN bank_accounts ba ON ba.id = rt.bank_account_id
 WHERE pt.id = sqlc.arg(id);
 
 -- name: ListCoverageForTransaction :many
@@ -779,6 +840,25 @@ JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
 WHERE pt.category != 'internal_transfer'
   AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
   AND rt.counter_account_number = ANY(sqlc.arg(account_numbers)::text[]);
+
+-- name: ListInterestReclassifyCandidates :many
+-- Same "detection added after some rows were already processed" problem as
+-- ListInternalTransferCandidates, for the interest category: a savings-account
+-- interest posting synced/processed before this category/detection step
+-- existed landed in other_income and, since a processed row is never
+-- revisited on its own (see ListUnprocessedTransactions), stays there
+-- forever without this. Same exclusions as ListInternalTransferCandidates —
+-- skip matched_by='manual' (never override an admin's explicit decision) and
+-- already-interest rows, so a repeat run only touches what's still wrong.
+-- ILIKE, not =, since transaction_type is Fio's free-form label for the
+-- movement type, not an enum — same "not error-proof" caveat as the "mzda"
+-- salary heuristic in processing.go.
+SELECT pt.id
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+WHERE pt.category != 'credited_interest'
+  AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
+  AND rt.transaction_type ILIKE '%úrok%';
 
 -- name: InsertCoverageRow :execrows
 -- ON CONFLICT DO NOTHING + :execrows so the caller can tell which requested

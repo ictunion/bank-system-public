@@ -26,6 +26,8 @@ export interface TransactionListItem {
   comment: string | null
   /** staff-authored note, editable via assignTransaction — distinct from Fio's comment above */
   admin_comment: string | null
+  /** #RRGGBB, null if the transaction's bank account has no color assigned */
+  bank_account_color: string | null
 }
 
 export interface TransactionsResponse {

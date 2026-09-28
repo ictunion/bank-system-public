@@ -28,6 +28,14 @@ function monthOf(isoDate: string): MonthRef {
   return { year: Number(y), month: Number(m) }
 }
 
+// Default coverage target: the month before the transaction's own — dues
+// are paid a month in arrears, same convention the backend uses for 
+// default single-month coverage.
+function prevMonthOf(isoDate: string): MonthRef {
+  const { year, month } = monthOf(isoDate)
+  return month === 1 ? { year: year - 1, month: 12 } : { year, month: month - 1 }
+}
+
 export function AssignDialog({
   transactionId,
   onClose,
@@ -62,7 +70,7 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
   const [memberNumber, setMemberNumber] = useState(detail.member_number?.toString() ?? '')
   const [category, setCategory] = useState<Category>(detail.category)
   const [months, setMonths] = useState<MonthRef[]>(
-    detail.covered_months.length ? detail.covered_months : [monthOf(detail.transaction_date)],
+    detail.covered_months.length ? detail.covered_months : [prevMonthOf(detail.transaction_date)],
   )
   const [adminComment, setAdminComment] = useState(detail.admin_comment ?? '')
 
@@ -200,7 +208,7 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
           ))}
           <button
             type="button"
-            onClick={() => setMonths([...months, months[months.length - 1] ?? monthOf(detail.transaction_date)])}
+            onClick={() => setMonths([...months, months[months.length - 1] ?? prevMonthOf(detail.transaction_date)])}
           >
             Add month
           </button>

@@ -23,6 +23,8 @@ type Querier interface {
 	// encryption_key (BANK_TOKEN_ENCRYPTION_KEY env var) — never stored in the DB
 	// itself. RETURNING list explicitly excludes fio_token_encrypted so the
 	// ciphertext (and a fortiori the token) is never echoed back to the caller.
+	// color is optional (sqlc.narg) — NULL means no color assigned, purely
+	// presentational, see the migration's CHECK constraint for accepted shape.
 	CreateBankAccount(ctx context.Context, arg CreateBankAccountParams) (CreateBankAccountRow, error)
 	// is_mandatory is never set true here — only the four seeded in
 	// migrations/20260910000001_add_transaction_categories.sql are mandatory.
@@ -88,6 +90,29 @@ type Querier interface {
 	// is non-null and matches one of the caller's own Keycloak groups.
 	GetMemberWorkplaceSub(ctx context.Context, memberNumber int32) (pgtype.UUID, error)
 	GetPaymentHistory(ctx context.Context, memberNumber int32) ([]GetPaymentHistoryRow, error)
+	// Backs GET /payments/stats — the org-wide % of currently-liable members who
+	// actually sent a membership_fee payment in the trailing rolling month
+	// (window_from = CURRENT_DATE - 1 calendar month, window_to = CURRENT_DATE,
+	// both inclusive — e.g. queried on April 15th, that's March 15th through
+	// April 15th). Deliberately NOT the arrears/coverage-month convention every
+	// other payment query in this file uses (dues paid a month in arrears, 2
+	// month grace cap, etc. — see ListMembersMissingPayment above): this
+	// stat is a simple, direct "did a real bank transaction from this member
+	// land in the last month", read straight off raw_transactions.transaction_date,
+	// with no coverage/waiver bookkeeping involved at all. "Currently liable" for
+	// the denominator = fee_start_date in the past and not yet stopped
+	// (fee_stop_date NULL or still in the future) — a plain snapshot check, not
+	// windowed, so a member who left doesn't drag the % down for a full month
+	// after leaving.
+	//
+	// LEFT JOIN members (liability check in the join condition, not a WHERE
+	// filter) so this always returns exactly one row — required for :one — even
+	// with zero currently-liable members (a brand new org with no members yet):
+	// a WHERE filter would instead make the whole FROM produce zero rows, and
+	// :one would then error on no rows. count(m.member_number), not count(*), so
+	// the LEFT JOIN's placeholder all-NULL row (no member matched the join
+	// condition) doesn't itself count as a liable member.
+	GetPaymentStats(ctx context.Context) (GetPaymentStatsRow, error)
 	GetPaymentWaiver(ctx context.Context, arg GetPaymentWaiverParams) (GetPaymentWaiverRow, error)
 	// Backs the Budget page's "Current Balance" figure (GET
 	// /transactions/summary) — summed across every non-soft-deleted account,
@@ -171,6 +196,18 @@ type Querier interface {
 	// detail is the bank account's display name for a fio_sync row, NULL for
 	// orca_sync (there's no per-account breakdown for the member sync).
 	ListEventLogs(ctx context.Context, arg ListEventLogsParams) ([]ListEventLogsRow, error)
+	// Same "detection added after some rows were already processed" problem as
+	// ListInternalTransferCandidates, for the interest category: a savings-account
+	// interest posting synced/processed before this category/detection step
+	// existed landed in other_income and, since a processed row is never
+	// revisited on its own (see ListUnprocessedTransactions), stays there
+	// forever without this. Same exclusions as ListInternalTransferCandidates —
+	// skip matched_by='manual' (never override an admin's explicit decision) and
+	// already-interest rows, so a repeat run only touches what's still wrong.
+	// ILIKE, not =, since transaction_type is Fio's free-form label for the
+	// movement type, not an enum — same "not error-proof" caveat as the "mzda"
+	// salary heuristic in processing.go.
+	ListInterestReclassifyCandidates(ctx context.Context) ([]int64, error)
 	// Rows categorized before their counterparty's bank_accounts row existed —
 	// internal-transfer detection (processing.go) only ever sees the roster as
 	// of the moment a transaction was first processed, and a processed row is
@@ -229,6 +266,9 @@ type Querier interface {
 	// raw_transactions row, with optional filters. Every filter arg is nullable —
 	// NULL / omitted means "don't filter on this". total_count is the full match
 	// count ignoring LIMIT/OFFSET (window aggregate) so the caller can paginate.
+	// LEFT JOIN to bank_accounts (never INNER) for bank_account_color — raw_transactions.
+	// bank_account_id has no ON DELETE, but a soft-deleted account still exists as
+	// a row so this would be an inner join either way; LEFT is just defensive.
 	ListTransactions(ctx context.Context, arg ListTransactionsParams) ([]ListTransactionsRow, error)
 	ListUnprocessedTransactions(ctx context.Context) ([]RawTransaction, error)
 	// Every payment_waivers row across all members — backs the dedicated
@@ -261,10 +301,14 @@ type Querier interface {
 	// resets category to the direction-based default the caller passes in.
 	UnassignTransaction(ctx context.Context, arg UnassignTransactionParams) (int64, error)
 	// fio_account_id/iban/currency are properties of the real Fio account, not
-	// editable metadata — only our own display_name and the sync token can change
-	// here. fio_token is sqlc.narg: NULL means "leave the existing token
-	// untouched", any non-NULL value re-encrypts and replaces it (see
-	// CreateBankAccount for the same pgp_sym_encrypt pattern).
+	// editable metadata — only our own display_name, color, and the sync token
+	// can change here. fio_token is sqlc.narg: NULL means "leave the existing
+	// token untouched", any non-NULL value re-encrypts and replaces it (see
+	// CreateBankAccount for the same pgp_sym_encrypt pattern). color is a full
+	// overwrite instead (like display_name) — NULL clears it, any other value
+	// replaces it; unlike fio_token there's no "leave untouched" sentinel needed
+	// since a plain color isn't sensitive/rotated, so the frontend always sends
+	// its current value.
 	// Only touches active accounts (deleted_at IS NULL) — a soft-deleted account
 	// is a historical record, not something to edit; 0 rows affected reads as
 	// "not found" either way (missing id or soft-deleted id).
