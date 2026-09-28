@@ -13,6 +13,8 @@ export interface BankAccount {
   balance: string | null
   /** null until the account's first successful sync */
   balance_as_of: string | null
+  /** #RRGGBB, null if unset — optional, purely presentational */
+  color: string | null
 }
 
 export interface CreateBankAccountPayload {
@@ -21,13 +23,18 @@ export interface CreateBankAccountPayload {
   fio_token: string
   iban?: string
   currency?: string
+  /** #RRGGBB, optional */
+  color?: string
 }
 
 // fio_token omitted (or undefined) leaves the existing token untouched —
-// only send it on a deliberate token rotation.
+// only send it on a deliberate token rotation. color is a full overwrite
+// instead — unlike fio_token there's no "leave untouched" sentinel, always
+// send the field's current value (undefined/'' clears it).
 export interface UpdateBankAccountPayload {
   display_name: string
   fio_token?: string
+  color?: string
 }
 
 export function fetchBankAccounts(): Promise<BankAccount[]> {

@@ -16,7 +16,7 @@ import {
 import { Overlay } from './Overlay'
 import { useHasRole } from './roles'
 
-const COLUMNS = ['Fio account', 'Name', 'Currency', 'Balance', 'IBAN', 'Token', 'Created', ''] as const
+const COLUMNS = ['', 'Fio account', 'Name', 'Currency', 'Balance', 'IBAN', 'Token', 'Created', ''] as const
 
 // Same approach as BudgetPage's formatAmount — Intl currency formatting with
 // a plain-number fallback for a currency code Intl doesn't recognize.
@@ -27,6 +27,30 @@ function formatAmount(total: string, currency: string): string {
   } catch {
     return `${n.toLocaleString()} ${currency}`
   }
+}
+
+const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/
+
+// Small colored square, same shape wherever an account's color is shown —
+// the dialogs' live preview and the table row's swatch. Renders an empty
+// dashed-border square (no fill) when unset/invalid, never nothing, so the
+// column stays visually aligned.
+function ColorSwatch({ color }: { color: string | null }) {
+  const valid = color != null && HEX_COLOR.test(color)
+  return (
+    <span
+      title={valid ? color : 'No color set'}
+      style={{
+        display: 'inline-block',
+        width: '1rem',
+        height: '1rem',
+        borderRadius: 3,
+        background: valid ? color : 'transparent',
+        border: valid ? '1px solid rgba(0,0,0,0.15)' : '1px dashed #ccc',
+        verticalAlign: 'middle',
+      }}
+    />
+  )
 }
 
 export function BankAccountsPage() {
@@ -193,6 +217,9 @@ function BankAccountRow({
 
   return (
     <tr>
+      <td style={cell}>
+        <ColorSwatch color={account.color} />
+      </td>
       <td style={cell}>{account.fio_account_id}</td>
       <td style={cell}>{account.display_name}</td>
       <td style={cell}>{account.currency}</td>
@@ -322,6 +349,7 @@ function AddBankAccountDialog({ onClose }: { onClose: () => void }) {
   const [currency, setCurrency] = useState('CZK')
   const [iban, setIban] = useState('')
   const [fioToken, setFioToken] = useState('')
+  const [color, setColor] = useState('')
 
   const create = useMutation({
     mutationFn: () =>
@@ -331,6 +359,7 @@ function AddBankAccountDialog({ onClose }: { onClose: () => void }) {
         currency,
         iban: iban || undefined,
         fio_token: fioToken,
+        color: color.trim() || undefined,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['bank-accounts'] })
@@ -338,11 +367,13 @@ function AddBankAccountDialog({ onClose }: { onClose: () => void }) {
     },
   })
 
+  const colorValid = color.trim() === '' || HEX_COLOR.test(color.trim())
   const canSave =
     fioAccountId.trim() !== '' &&
     displayName.trim() !== '' &&
     currency.trim().length === 3 &&
     fioToken.trim() !== '' &&
+    colorValid &&
     !create.isPending
 
   return (
@@ -393,6 +424,21 @@ function AddBankAccountDialog({ onClose }: { onClose: () => void }) {
           />
         </label>
 
+        <label style={field}>
+          Color (optional)
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+            <input
+              value={color}
+              placeholder="#3366cc"
+              maxLength={7}
+              style={{ width: '7rem' }}
+              onChange={(e) => setColor(e.target.value)}
+            />
+            <ColorSwatch color={color.trim() || null} />
+          </div>
+        </label>
+        {!colorValid && <p style={{ color: '#b00', fontSize: '0.8rem' }}>Must look like #3366cc</p>}
+
         {create.error && <p style={{ color: '#b00' }}>{errMessage(create.error)}</p>}
 
         <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem' }}>
@@ -416,12 +462,14 @@ function EditBankAccountDialog({ account, onClose }: { account: BankAccount; onC
 
   const [displayName, setDisplayName] = useState(account.display_name)
   const [fioToken, setFioToken] = useState('')
+  const [color, setColor] = useState(account.color ?? '')
 
   const update = useMutation({
     mutationFn: () =>
       updateBankAccount(account.id, {
         display_name: displayName,
         fio_token: fioToken.trim() || undefined,
+        color: color.trim() || undefined,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['bank-accounts'] })
@@ -429,7 +477,8 @@ function EditBankAccountDialog({ account, onClose }: { account: BankAccount; onC
     },
   })
 
-  const canSave = displayName.trim() !== '' && !update.isPending
+  const colorValid = color.trim() === '' || HEX_COLOR.test(color.trim())
+  const canSave = displayName.trim() !== '' && colorValid && !update.isPending
 
   return (
     <Overlay onClose={onClose}>
@@ -458,6 +507,21 @@ function EditBankAccountDialog({ account, onClose }: { account: BankAccount; onC
             onChange={(e) => setFioToken(e.target.value)}
           />
         </label>
+
+        <label style={field}>
+          Color (optional)
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+            <input
+              value={color}
+              placeholder="#3366cc"
+              maxLength={7}
+              style={{ width: '7rem' }}
+              onChange={(e) => setColor(e.target.value)}
+            />
+            <ColorSwatch color={color.trim() || null} />
+          </div>
+        </label>
+        {!colorValid && <p style={{ color: '#b00', fontSize: '0.8rem' }}>Must look like #3366cc</p>}
 
         {update.error && <p style={{ color: '#b00' }}>{errMessage(update.error)}</p>}
 

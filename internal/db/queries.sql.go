@@ -61,15 +61,16 @@ func (q *Queries) CategoryExists(ctx context.Context, name string) (bool, error)
 }
 
 const createBankAccount = `-- name: CreateBankAccount :one
-INSERT INTO bank_accounts (fio_account_id, iban, currency, display_name, fio_token_encrypted)
+INSERT INTO bank_accounts (fio_account_id, iban, currency, display_name, fio_token_encrypted, color)
 VALUES (
     $1,
     $2,
     $3,
     $4,
-    pgp_sym_encrypt($5::text, $6::text)
+    pgp_sym_encrypt($5::text, $6::text),
+    $7
 )
-RETURNING id, fio_account_id, iban, currency, display_name, created_at
+RETURNING id, fio_account_id, iban, currency, display_name, created_at, color
 `
 
 type CreateBankAccountParams struct {
@@ -79,6 +80,7 @@ type CreateBankAccountParams struct {
 	DisplayName   string  `json:"display_name"`
 	FioToken      string  `json:"fio_token"`
 	EncryptionKey string  `json:"encryption_key"`
+	Color         *string `json:"color"`
 }
 
 type CreateBankAccountRow struct {
@@ -88,12 +90,15 @@ type CreateBankAccountRow struct {
 	Currency     string    `json:"currency"`
 	DisplayName  string    `json:"display_name"`
 	CreatedAt    time.Time `json:"created_at"`
+	Color        *string   `json:"color"`
 }
 
 // fio_token is encrypted at rest via pgcrypto (pgp_sym_encrypt) using
 // encryption_key (BANK_TOKEN_ENCRYPTION_KEY env var) — never stored in the DB
 // itself. RETURNING list explicitly excludes fio_token_encrypted so the
 // ciphertext (and a fortiori the token) is never echoed back to the caller.
+// color is optional (sqlc.narg) — NULL means no color assigned, purely
+// presentational, see the migration's CHECK constraint for accepted shape.
 func (q *Queries) CreateBankAccount(ctx context.Context, arg CreateBankAccountParams) (CreateBankAccountRow, error) {
 	row := q.db.QueryRow(ctx, createBankAccount,
 		arg.FioAccountID,
@@ -102,6 +107,7 @@ func (q *Queries) CreateBankAccount(ctx context.Context, arg CreateBankAccountPa
 		arg.DisplayName,
 		arg.FioToken,
 		arg.EncryptionKey,
+		arg.Color,
 	)
 	var i CreateBankAccountRow
 	err := row.Scan(
@@ -111,6 +117,7 @@ func (q *Queries) CreateBankAccount(ctx context.Context, arg CreateBankAccountPa
 		&i.Currency,
 		&i.DisplayName,
 		&i.CreatedAt,
+		&i.Color,
 	)
 	return i, err
 }
@@ -772,9 +779,11 @@ SELECT
     rt.message_for_recipient,
     rt.user_identification,
     rt.comment,
-    pt.admin_comment
+    pt.admin_comment,
+    ba.color AS bank_account_color
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+LEFT JOIN bank_accounts ba ON ba.id = rt.bank_account_id
 WHERE pt.id = $1
 `
 
@@ -797,6 +806,7 @@ type GetTransactionDetailRow struct {
 	UserIdentification   *string   `json:"user_identification"`
 	Comment              *string   `json:"comment"`
 	AdminComment         *string   `json:"admin_comment"`
+	BankAccountColor     *string   `json:"bank_account_color"`
 }
 
 // One row for the transaction browser's detail / edit view — same columns as
@@ -824,6 +834,7 @@ func (q *Queries) GetTransactionDetail(ctx context.Context, id int64) (GetTransa
 		&i.UserIdentification,
 		&i.Comment,
 		&i.AdminComment,
+		&i.BankAccountColor,
 	)
 	return i, err
 }
@@ -978,7 +989,7 @@ const listBankAccounts = `-- name: ListBankAccounts :many
 SELECT id, fio_account_id, iban, currency, display_name, created_at,
        (fio_token_encrypted IS NOT NULL)::boolean AS has_token,
        (deleted_at IS NULL)::boolean AS is_active,
-       balance, balance_as_of
+       balance, balance_as_of, color
 FROM bank_accounts ORDER BY id
 `
 
@@ -993,6 +1004,7 @@ type ListBankAccountsRow struct {
 	IsActive     bool               `json:"is_active"`
 	Balance      pgtype.Numeric     `json:"balance"`
 	BalanceAsOf  pgtype.Timestamptz `json:"balance_as_of"`
+	Color        *string            `json:"color"`
 }
 
 // Admin-facing list (GET /account) — deliberately excludes the Fio token.
@@ -1024,6 +1036,7 @@ func (q *Queries) ListBankAccounts(ctx context.Context) ([]ListBankAccountsRow, 
 			&i.IsActive,
 			&i.Balance,
 			&i.BalanceAsOf,
+			&i.Color,
 		); err != nil {
 			return nil, err
 		}
@@ -1805,9 +1818,11 @@ SELECT
     rt.user_identification,
     rt.comment,
     pt.admin_comment,
+    ba.color AS bank_account_color,
     count(*) OVER () AS total_count
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+LEFT JOIN bank_accounts ba ON ba.id = rt.bank_account_id
 WHERE ($1::boolean IS NULL
         OR (pt.member_number IS NOT NULL) = $1::boolean)
   AND ($2::text IS NULL OR pt.direction = $2::text)
@@ -1858,6 +1873,7 @@ type ListTransactionsRow struct {
 	UserIdentification   *string   `json:"user_identification"`
 	Comment              *string   `json:"comment"`
 	AdminComment         *string   `json:"admin_comment"`
+	BankAccountColor     *string   `json:"bank_account_color"`
 	TotalCount           int64     `json:"total_count"`
 }
 
@@ -1865,6 +1881,9 @@ type ListTransactionsRow struct {
 // raw_transactions row, with optional filters. Every filter arg is nullable —
 // NULL / omitted means "don't filter on this". total_count is the full match
 // count ignoring LIMIT/OFFSET (window aggregate) so the caller can paginate.
+// LEFT JOIN to bank_accounts (never INNER) for bank_account_color — raw_transactions.
+// bank_account_id has no ON DELETE, but a soft-deleted account still exists as
+// a row so this would be an inner join either way; LEFT is just defensive.
 func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsParams) ([]ListTransactionsRow, error) {
 	rows, err := q.db.Query(ctx, listTransactions,
 		arg.Assigned,
@@ -1904,6 +1923,7 @@ func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsPara
 			&i.UserIdentification,
 			&i.Comment,
 			&i.AdminComment,
+			&i.BankAccountColor,
 			&i.TotalCount,
 		); err != nil {
 			return nil, err
@@ -2162,18 +2182,20 @@ func (q *Queries) UnassignTransaction(ctx context.Context, arg UnassignTransacti
 const updateBankAccount = `-- name: UpdateBankAccount :one
 UPDATE bank_accounts
 SET display_name = $1,
+    color = $2,
     fio_token_encrypted = CASE
-        WHEN $2::text IS NOT NULL
-        THEN pgp_sym_encrypt($2::text, $3::text)
+        WHEN $3::text IS NOT NULL
+        THEN pgp_sym_encrypt($3::text, $4::text)
         ELSE fio_token_encrypted
     END
-WHERE id = $4 AND deleted_at IS NULL
-RETURNING id, fio_account_id, iban, currency, display_name, created_at,
+WHERE id = $5 AND deleted_at IS NULL
+RETURNING id, fio_account_id, iban, currency, display_name, created_at, color,
           (fio_token_encrypted IS NOT NULL)::boolean AS has_token
 `
 
 type UpdateBankAccountParams struct {
 	DisplayName   string  `json:"display_name"`
+	Color         *string `json:"color"`
 	FioToken      *string `json:"fio_token"`
 	EncryptionKey string  `json:"encryption_key"`
 	ID            int32   `json:"id"`
@@ -2186,20 +2208,26 @@ type UpdateBankAccountRow struct {
 	Currency     string    `json:"currency"`
 	DisplayName  string    `json:"display_name"`
 	CreatedAt    time.Time `json:"created_at"`
+	Color        *string   `json:"color"`
 	HasToken     bool      `json:"has_token"`
 }
 
 // fio_account_id/iban/currency are properties of the real Fio account, not
-// editable metadata — only our own display_name and the sync token can change
-// here. fio_token is sqlc.narg: NULL means "leave the existing token
-// untouched", any non-NULL value re-encrypts and replaces it (see
-// CreateBankAccount for the same pgp_sym_encrypt pattern).
+// editable metadata — only our own display_name, color, and the sync token
+// can change here. fio_token is sqlc.narg: NULL means "leave the existing
+// token untouched", any non-NULL value re-encrypts and replaces it (see
+// CreateBankAccount for the same pgp_sym_encrypt pattern). color is a full
+// overwrite instead (like display_name) — NULL clears it, any other value
+// replaces it; unlike fio_token there's no "leave untouched" sentinel needed
+// since a plain color isn't sensitive/rotated, so the frontend always sends
+// its current value.
 // Only touches active accounts (deleted_at IS NULL) — a soft-deleted account
 // is a historical record, not something to edit; 0 rows affected reads as
 // "not found" either way (missing id or soft-deleted id).
 func (q *Queries) UpdateBankAccount(ctx context.Context, arg UpdateBankAccountParams) (UpdateBankAccountRow, error) {
 	row := q.db.QueryRow(ctx, updateBankAccount,
 		arg.DisplayName,
+		arg.Color,
 		arg.FioToken,
 		arg.EncryptionKey,
 		arg.ID,
@@ -2212,6 +2240,7 @@ func (q *Queries) UpdateBankAccount(ctx context.Context, arg UpdateBankAccountPa
 		&i.Currency,
 		&i.DisplayName,
 		&i.CreatedAt,
+		&i.Color,
 		&i.HasToken,
 	)
 	return i, err

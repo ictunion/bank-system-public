@@ -7,7 +7,30 @@ import { fetchTransactions, type TransactionQuery } from './api/transactions'
 
 const PAGE_SIZE = 100
 const DEBOUNCE_MS = 500
-const COLUMNS = ['Date', 'Amount', 'Dir', 'Category', 'Member', 'VS', 'Counterparty', 'Message', 'Admin note', ''] as const
+const COLUMNS = ['', 'Date', 'Amount', 'Dir', 'Category', 'Member', 'VS', 'Counterparty', 'Message', 'Admin note', ''] as const
+
+const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/
+
+// Small colored square marking which bank account a transaction belongs to
+// (set on the account, see BankAccountsPage.tsx) — blank when the account
+// has no color assigned, rather than a placeholder square, since most
+// transactions won't have one and a placeholder in every row would be noise.
+function BankAccountColorDot({ color }: { color: string | null }) {
+  if (color == null || !HEX_COLOR.test(color)) return null
+  return (
+    <span
+      title="Bank account color"
+      style={{
+        display: 'inline-block',
+        width: '0.7rem',
+        height: '0.7rem',
+        borderRadius: 2,
+        background: color,
+        border: '1px solid rgba(0,0,0,0.15)',
+      }}
+    />
+  )
+}
 
 interface Filters {
   from: string
@@ -310,6 +333,9 @@ export function TransactionsTable() {
           <tbody>
             {transactions.map((t) => (
               <tr key={t.id}>
+                <td style={td}>
+                  <BankAccountColorDot color={t.bank_account_color} />
+                </td>
                 <td style={td}>{t.transaction_date}</td>
                 <td style={{ ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
                   {t.amount} {t.currency}

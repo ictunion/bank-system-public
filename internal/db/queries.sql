@@ -11,7 +11,7 @@
 SELECT id, fio_account_id, iban, currency, display_name, created_at,
        (fio_token_encrypted IS NOT NULL)::boolean AS has_token,
        (deleted_at IS NULL)::boolean AS is_active,
-       balance, balance_as_of
+       balance, balance_as_of, color
 FROM bank_accounts ORDER BY id;
 
 -- name: ListActiveBankAccountNumbers :many
@@ -78,34 +78,42 @@ FROM bank_accounts WHERE id = sqlc.arg(id);
 -- encryption_key (BANK_TOKEN_ENCRYPTION_KEY env var) — never stored in the DB
 -- itself. RETURNING list explicitly excludes fio_token_encrypted so the
 -- ciphertext (and a fortiori the token) is never echoed back to the caller.
-INSERT INTO bank_accounts (fio_account_id, iban, currency, display_name, fio_token_encrypted)
+-- color is optional (sqlc.narg) — NULL means no color assigned, purely
+-- presentational, see the migration's CHECK constraint for accepted shape.
+INSERT INTO bank_accounts (fio_account_id, iban, currency, display_name, fio_token_encrypted, color)
 VALUES (
     sqlc.arg(fio_account_id),
     sqlc.narg(iban),
     sqlc.arg(currency),
     sqlc.arg(display_name),
-    pgp_sym_encrypt(sqlc.arg(fio_token)::text, sqlc.arg(encryption_key)::text)
+    pgp_sym_encrypt(sqlc.arg(fio_token)::text, sqlc.arg(encryption_key)::text),
+    sqlc.narg(color)
 )
-RETURNING id, fio_account_id, iban, currency, display_name, created_at;
+RETURNING id, fio_account_id, iban, currency, display_name, created_at, color;
 
 -- name: UpdateBankAccount :one
 -- fio_account_id/iban/currency are properties of the real Fio account, not
--- editable metadata — only our own display_name and the sync token can change
--- here. fio_token is sqlc.narg: NULL means "leave the existing token
--- untouched", any non-NULL value re-encrypts and replaces it (see
--- CreateBankAccount for the same pgp_sym_encrypt pattern).
+-- editable metadata — only our own display_name, color, and the sync token
+-- can change here. fio_token is sqlc.narg: NULL means "leave the existing
+-- token untouched", any non-NULL value re-encrypts and replaces it (see
+-- CreateBankAccount for the same pgp_sym_encrypt pattern). color is a full
+-- overwrite instead (like display_name) — NULL clears it, any other value
+-- replaces it; unlike fio_token there's no "leave untouched" sentinel needed
+-- since a plain color isn't sensitive/rotated, so the frontend always sends
+-- its current value.
 -- Only touches active accounts (deleted_at IS NULL) — a soft-deleted account
 -- is a historical record, not something to edit; 0 rows affected reads as
 -- "not found" either way (missing id or soft-deleted id).
 UPDATE bank_accounts
 SET display_name = sqlc.arg(display_name),
+    color = sqlc.narg(color),
     fio_token_encrypted = CASE
         WHEN sqlc.narg(fio_token)::text IS NOT NULL
         THEN pgp_sym_encrypt(sqlc.narg(fio_token)::text, sqlc.arg(encryption_key)::text)
         ELSE fio_token_encrypted
     END
 WHERE id = sqlc.arg(id) AND deleted_at IS NULL
-RETURNING id, fio_account_id, iban, currency, display_name, created_at,
+RETURNING id, fio_account_id, iban, currency, display_name, created_at, color,
           (fio_token_encrypted IS NOT NULL)::boolean AS has_token;
 
 -- name: DeleteBankAccount :execrows
@@ -560,6 +568,9 @@ ORDER BY rt.id;
 -- raw_transactions row, with optional filters. Every filter arg is nullable —
 -- NULL / omitted means "don't filter on this". total_count is the full match
 -- count ignoring LIMIT/OFFSET (window aggregate) so the caller can paginate.
+-- LEFT JOIN to bank_accounts (never INNER) for bank_account_color — raw_transactions.
+-- bank_account_id has no ON DELETE, but a soft-deleted account still exists as
+-- a row so this would be an inner join either way; LEFT is just defensive.
 SELECT
     pt.id,
     rt.transaction_date,
@@ -579,9 +590,11 @@ SELECT
     rt.user_identification,
     rt.comment,
     pt.admin_comment,
+    ba.color AS bank_account_color,
     count(*) OVER () AS total_count
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+LEFT JOIN bank_accounts ba ON ba.id = rt.bank_account_id
 WHERE (sqlc.narg(assigned)::boolean IS NULL
         OR (pt.member_number IS NOT NULL) = sqlc.narg(assigned)::boolean)
   AND (sqlc.narg(direction)::text IS NULL OR pt.direction = sqlc.narg(direction)::text)
@@ -698,9 +711,11 @@ SELECT
     rt.message_for_recipient,
     rt.user_identification,
     rt.comment,
-    pt.admin_comment
+    pt.admin_comment,
+    ba.color AS bank_account_color
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+LEFT JOIN bank_accounts ba ON ba.id = rt.bank_account_id
 WHERE pt.id = sqlc.arg(id);
 
 -- name: ListCoverageForTransaction :many

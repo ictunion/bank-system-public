@@ -23,6 +23,8 @@ type Querier interface {
 	// encryption_key (BANK_TOKEN_ENCRYPTION_KEY env var) — never stored in the DB
 	// itself. RETURNING list explicitly excludes fio_token_encrypted so the
 	// ciphertext (and a fortiori the token) is never echoed back to the caller.
+	// color is optional (sqlc.narg) — NULL means no color assigned, purely
+	// presentational, see the migration's CHECK constraint for accepted shape.
 	CreateBankAccount(ctx context.Context, arg CreateBankAccountParams) (CreateBankAccountRow, error)
 	// is_mandatory is never set true here — only the four seeded in
 	// migrations/20260910000001_add_transaction_categories.sql are mandatory.
@@ -229,6 +231,9 @@ type Querier interface {
 	// raw_transactions row, with optional filters. Every filter arg is nullable —
 	// NULL / omitted means "don't filter on this". total_count is the full match
 	// count ignoring LIMIT/OFFSET (window aggregate) so the caller can paginate.
+	// LEFT JOIN to bank_accounts (never INNER) for bank_account_color — raw_transactions.
+	// bank_account_id has no ON DELETE, but a soft-deleted account still exists as
+	// a row so this would be an inner join either way; LEFT is just defensive.
 	ListTransactions(ctx context.Context, arg ListTransactionsParams) ([]ListTransactionsRow, error)
 	ListUnprocessedTransactions(ctx context.Context) ([]RawTransaction, error)
 	// Every payment_waivers row across all members — backs the dedicated
@@ -261,10 +266,14 @@ type Querier interface {
 	// resets category to the direction-based default the caller passes in.
 	UnassignTransaction(ctx context.Context, arg UnassignTransactionParams) (int64, error)
 	// fio_account_id/iban/currency are properties of the real Fio account, not
-	// editable metadata — only our own display_name and the sync token can change
-	// here. fio_token is sqlc.narg: NULL means "leave the existing token
-	// untouched", any non-NULL value re-encrypts and replaces it (see
-	// CreateBankAccount for the same pgp_sym_encrypt pattern).
+	// editable metadata — only our own display_name, color, and the sync token
+	// can change here. fio_token is sqlc.narg: NULL means "leave the existing
+	// token untouched", any non-NULL value re-encrypts and replaces it (see
+	// CreateBankAccount for the same pgp_sym_encrypt pattern). color is a full
+	// overwrite instead (like display_name) — NULL clears it, any other value
+	// replaces it; unlike fio_token there's no "leave untouched" sentinel needed
+	// since a plain color isn't sensitive/rotated, so the frontend always sends
+	// its current value.
 	// Only touches active accounts (deleted_at IS NULL) — a soft-deleted account
 	// is a historical record, not something to edit; 0 rows affected reads as
 	// "not found" either way (missing id or soft-deleted id).

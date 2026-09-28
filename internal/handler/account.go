@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,29 @@ import (
 	"github.com/kubik/bank-system/internal/processing"
 	"github.com/kubik/bank-system/internal/syncjob"
 )
+
+// hexColorPattern matches the same shape the DB's CHECK constraint on
+// bank_accounts.color enforces (#RRGGBB) — validated here too so a bad value
+// comes back as a 400 with a clear message instead of a raw constraint
+// violation from Postgres.
+var hexColorPattern = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
+
+// parseColor trims and validates an optional #RRGGBB color, returning nil
+// for "not set" (blank or omitted). ok is false if a non-blank value doesn't
+// match the expected shape.
+func parseColor(raw *string) (color *string, ok bool) {
+	if raw == nil {
+		return nil, true
+	}
+	trimmed := strings.TrimSpace(*raw)
+	if trimmed == "" {
+		return nil, true
+	}
+	if !hexColorPattern.MatchString(trimmed) {
+		return nil, false
+	}
+	return &trimmed, true
+}
 
 // numericToStringPtr renders a nullable pgtype.Numeric the same way every
 // other amount in this API is represented — a JSON string (avoids JS
@@ -53,6 +77,8 @@ type createBankAccountRequest struct {
 	Currency     string  `json:"currency"`
 	DisplayName  string  `json:"display_name"`
 	FioToken     string  `json:"fio_token"`
+	// Optional, purely presentational — see updateBankAccountRequest.Color.
+	Color *string `json:"color"`
 }
 
 // updateBankAccountRequest covers the only two things about a bank account
@@ -65,6 +91,12 @@ type createBankAccountRequest struct {
 type updateBankAccountRequest struct {
 	DisplayName string  `json:"display_name"`
 	FioToken    *string `json:"fio_token"`
+	// Color is optional and purely presentational (a #RRGGBB hex string shown
+	// as a swatch next to the account and on its transactions) — no business
+	// logic reads it. Unlike FioToken this is a full overwrite every call: nil
+	// or "" clears it, any other value replaces it. The frontend always sends
+	// the field's current value rather than treating omission as "unchanged".
+	Color *string `json:"color"`
 }
 
 type bankAccountResponse struct {
@@ -80,6 +112,8 @@ type bankAccountResponse struct {
 	// sync — see bank_accounts.balance in "Database schema" (CLAUDE.md).
 	Balance     *string `json:"balance"`
 	BalanceAsOf *string `json:"balance_as_of"`
+	// Color is nil when unset — optional, purely presentational.
+	Color *string `json:"color"`
 }
 
 // ListBankAccounts handles GET /account — lists registered bank accounts for
@@ -88,7 +122,7 @@ type bankAccountResponse struct {
 // whether one is set.
 //
 // @Summary      List bank accounts
-// @Description  Requires the manage-bank-accounts role. Excludes the Fio token itself, only whether one is set. balance/balance_as_of are both null until the account's first successful sync.
+// @Description  Requires the manage-bank-accounts role. Excludes the Fio token itself, only whether one is set. balance/balance_as_of are both null until the account's first successful sync. color is null unless set.
 // @Tags         accounts
 // @Security     BearerAuth
 // @Produce      json
@@ -116,6 +150,7 @@ func ListBankAccounts(queries *db.Queries) http.HandlerFunc {
 				IsActive:     account.IsActive,
 				Balance:      numericToStringPtr(account.Balance),
 				BalanceAsOf:  timestamptzToStringPtr(account.BalanceAsOf),
+				Color:        account.Color,
 			}
 		}
 		writeJSON(w, http.StatusOK, response)
@@ -128,7 +163,7 @@ func ListBankAccounts(queries *db.Queries) http.HandlerFunc {
 // a one-time-per-account setup call, not part of the daily sync flow.
 //
 // @Summary      Register a bank account
-// @Description  Requires the manage-bank-accounts role. fio_token is encrypted at rest and never echoed back.
+// @Description  Requires the manage-bank-accounts role. fio_token is encrypted at rest and never echoed back. color is optional, must be a #RRGGBB hex code.
 // @Tags         accounts
 // @Security     BearerAuth
 // @Accept       json
@@ -170,6 +205,11 @@ func CreateBankAccount(queries *db.Queries, encryptionKey string) http.HandlerFu
 			writeError(w, http.StatusBadRequest, "fio_token is required")
 			return
 		}
+		color, ok := parseColor(request.Color)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "color must be a hex code like #3366cc")
+			return
+		}
 
 		account, err := queries.CreateBankAccount(r.Context(), db.CreateBankAccountParams{
 			FioAccountID:  request.FioAccountID,
@@ -178,6 +218,7 @@ func CreateBankAccount(queries *db.Queries, encryptionKey string) http.HandlerFu
 			DisplayName:   request.DisplayName,
 			FioToken:      request.FioToken,
 			EncryptionKey: encryptionKey,
+			Color:         color,
 		})
 		if err != nil {
 			var pgErr *pgconn.PgError
@@ -198,6 +239,7 @@ func CreateBankAccount(queries *db.Queries, encryptionKey string) http.HandlerFu
 			CreatedAt:    account.CreatedAt,
 			HasToken:     true,
 			IsActive:     true,
+			Color:        account.Color,
 		})
 	}
 }
@@ -207,7 +249,7 @@ func CreateBankAccount(queries *db.Queries, encryptionKey string) http.HandlerFu
 // fio_account_id/iban/currency aren't here.
 //
 // @Summary      Update a bank account's label and/or Fio token
-// @Description  Requires the manage-bank-accounts role. fio_account_id/iban/currency are Fio-assigned and not editable here.
+// @Description  Requires the manage-bank-accounts role. fio_account_id/iban/currency are Fio-assigned and not editable here. color is optional (#RRGGBB), full overwrite — omit or send "" to clear.
 // @Tags         accounts
 // @Security     BearerAuth
 // @Accept       json
@@ -247,12 +289,18 @@ func UpdateBankAccount(queries *db.Queries, encryptionKey string) http.HandlerFu
 			}
 			fioToken = &trimmed
 		}
+		color, ok := parseColor(request.Color)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "color must be a hex code like #3366cc")
+			return
+		}
 
 		account, err := queries.UpdateBankAccount(r.Context(), db.UpdateBankAccountParams{
 			ID:            id,
 			DisplayName:   request.DisplayName,
 			FioToken:      fioToken,
 			EncryptionKey: encryptionKey,
+			Color:         color,
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "bank account not found")
@@ -271,6 +319,7 @@ func UpdateBankAccount(queries *db.Queries, encryptionKey string) http.HandlerFu
 			CreatedAt:    account.CreatedAt,
 			HasToken:     account.HasToken,
 			IsActive:     true,
+			Color:        account.Color,
 		})
 	}
 }
