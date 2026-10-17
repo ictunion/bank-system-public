@@ -78,12 +78,12 @@ func seedMemberWithIdentifier(t *testing.T, queries *db.Queries, memberNumber in
 	}); err != nil {
 		t.Fatalf("UpsertMember(%d): %v", memberNumber, err)
 	}
-	if err := queries.EnsureDefaultPaymentIdentifier(ctx, db.EnsureDefaultPaymentIdentifierParams{
+	if err := queries.UpsertDefaultPaymentIdentifier(ctx, db.UpsertDefaultPaymentIdentifierParams{
 		MemberNumber:   memberNumber,
 		VariableSymbol: variableSymbol,
 		ValidFrom:      feeStart,
 	}); err != nil {
-		t.Fatalf("EnsureDefaultPaymentIdentifier(%d, %q): %v", memberNumber, variableSymbol, err)
+		t.Fatalf("UpsertDefaultPaymentIdentifier(%d, %q): %v", memberNumber, variableSymbol, err)
 	}
 }
 
@@ -544,7 +544,7 @@ func seedRawTransactionOnDate(t *testing.T, queries *db.Queries, bankAccountID i
 // so member_payment_identifiers had no row covering their actual, earlier
 // payments — those transactions processed as unmatched other_income. Once
 // Orca's data is corrected and re-synced (simulated here directly via
-// EnsureDefaultPaymentIdentifier, same call the Orca sync itself makes),
+// UpsertDefaultPaymentIdentifier, same call the Orca sync itself makes),
 // RematchUnmatched must find and fix them.
 func TestRematchUnmatched_MatchesAfterMemberStartDateCorrected(t *testing.T) {
 	pool := dbtest.Pool(t)
@@ -562,12 +562,12 @@ func TestRematchUnmatched_MatchesAfterMemberStartDateCorrected(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertMember: %v", err)
 	}
-	if err := queries.EnsureDefaultPaymentIdentifier(context.Background(), db.EnsureDefaultPaymentIdentifierParams{
+	if err := queries.UpsertDefaultPaymentIdentifier(context.Background(), db.UpsertDefaultPaymentIdentifierParams{
 		MemberNumber:   memberNumber,
 		VariableSymbol: "900610",
 		ValidFrom:      wrongStart,
 	}); err != nil {
-		t.Fatalf("EnsureDefaultPaymentIdentifier (wrong): %v", err)
+		t.Fatalf("UpsertDefaultPaymentIdentifier (wrong): %v", err)
 	}
 
 	oldTransactionDate := time.Now().AddDate(0, -6, 0)
@@ -581,18 +581,16 @@ func TestRematchUnmatched_MatchesAfterMemberStartDateCorrected(t *testing.T) {
 		t.Fatalf("before correction: got %+v, want unmatched other_income", before)
 	}
 
-	// The correction: a real Orca sync re-runs EnsureDefaultPaymentIdentifier
-	// with the fixed fee_start_date. Its ON CONFLICT target is
-	// (variable_symbol, valid_from), so a changed valid_from inserts a
-	// *second* row rather than updating the first — see CLAUDE.md "Orca
-	// member sync".
+	// The correction: a real Orca sync re-runs UpsertDefaultPaymentIdentifier
+	// with the fixed fee_start_date, which moves the existing default row's
+	// valid_from earlier.
 	correctedStart := time.Now().AddDate(-1, 0, 0)
-	if err := queries.EnsureDefaultPaymentIdentifier(context.Background(), db.EnsureDefaultPaymentIdentifierParams{
+	if err := queries.UpsertDefaultPaymentIdentifier(context.Background(), db.UpsertDefaultPaymentIdentifierParams{
 		MemberNumber:   memberNumber,
 		VariableSymbol: "900610",
 		ValidFrom:      correctedStart,
 	}); err != nil {
-		t.Fatalf("EnsureDefaultPaymentIdentifier (corrected): %v", err)
+		t.Fatalf("UpsertDefaultPaymentIdentifier (corrected): %v", err)
 	}
 
 	result, err := RematchUnmatched(context.Background(), pool)

@@ -87,26 +87,24 @@ func RunOrcaSync(requestContext context.Context, pool *pgxpool.Pool, client *orc
 			return OrcaResult{}, fmt.Errorf("upserting member_number=%d: %w", m.MemberNumber, err)
 		}
 
-		// Seed the member's default payment identifier (variable_symbol ==
-		// member_number, valid from fee_start_date). DO NOTHING on conflict, so
-		// re-running is a no-op. Skipped when fee_start_date is null — the member
-		// isn't liable yet and valid_from is NOT NULL.
+		// Mirror the member's default payment identifier (variable_symbol ==
+		// member_number) from Orca's liability window — valid_from follows
+		// fee_start_date, valid_to follows fee_stop_date, both rewritten on
+		// every run so a corrected date in Orca moves the window. With no
+		// fee_start_date the member isn't liable yet and valid_from is NOT NULL,
+		// so only valid_to is mirrored onto a row that may already exist.
 		vs := strconv.Itoa(int(m.MemberNumber))
 		if m.FeeStartDate != nil {
-			if err := queries.EnsureDefaultPaymentIdentifier(requestContext, db.EnsureDefaultPaymentIdentifierParams{
+			if err := queries.UpsertDefaultPaymentIdentifier(requestContext, db.UpsertDefaultPaymentIdentifierParams{
 				MemberNumber:   m.MemberNumber,
 				VariableSymbol: vs,
 				ValidFrom:      *m.FeeStartDate,
+				ValidTo:        feeStopDate,
 			}); err != nil {
 				finishOrcaRun(requestContext, queries, run.ID, "failed", len(members), upserted, err)
-				return OrcaResult{}, fmt.Errorf("seeding payment identifier for member_number=%d: %w", m.MemberNumber, err)
+				return OrcaResult{}, fmt.Errorf("syncing payment identifier for member_number=%d: %w", m.MemberNumber, err)
 			}
-		}
-
-		// Mirror fee_stop_date onto that default identifier's valid_to: fee
-		// liability ended -> row closed with that date; fee_stop_date cleared ->
-		// row reopened (valid_to = NULL). No-op for members with no default row.
-		if err := queries.SyncDefaultPaymentIdentifierValidTo(requestContext, db.SyncDefaultPaymentIdentifierValidToParams{
+		} else if err := queries.SyncDefaultPaymentIdentifierValidTo(requestContext, db.SyncDefaultPaymentIdentifierValidToParams{
 			MemberNumber:   m.MemberNumber,
 			VariableSymbol: vs,
 			ValidTo:        feeStopDate,
