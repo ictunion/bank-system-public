@@ -1,4 +1,4 @@
-import { userManager } from '../auth'
+import { signinState, userManager } from '../auth'
 
 export class ApiError extends Error {
   constructor(
@@ -36,7 +36,7 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
   } catch {
     // fall through to full re-auth
   }
-  await userManager.signinRedirect()
+  await userManager.signinRedirect({ state: signinState() })
   return response
 }
 
