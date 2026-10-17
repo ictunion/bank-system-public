@@ -725,15 +725,14 @@ INSERT INTO processed_transactions (raw_transaction_id, member_number, category,
 VALUES (sqlc.arg(raw_transaction_id), sqlc.narg(member_number), sqlc.arg(category), sqlc.arg(direction), sqlc.narg(matched_by))
 RETURNING *;
 
--- name: CreatePaymentCoverage :execrows
--- ON CONFLICT DO NOTHING + :execrows (same pattern as InsertCoverageRow) so
--- the caller can tell when a second payment lands on an already-covered
--- month — see internal/processing/processing.go's log line, since this path
--- (unlike the manual assignment endpoint) has no HTTP response to surface it
--- through.
+-- name: CreatePaymentCoverage :exec
+-- Several transactions may cover the same member/month (dues split across
+-- payments), so a second payment landing on an already-covered month just
+-- adds its own row. ON CONFLICT only guards the same transaction listing the
+-- same month twice.
 INSERT INTO payment_coverage (processed_transaction_id, member_number, covers_year, covers_month)
 VALUES (sqlc.arg(processed_transaction_id), sqlc.arg(member_number), sqlc.arg(covers_year), sqlc.arg(covers_month))
-ON CONFLICT (member_number, covers_year, covers_month) DO NOTHING;
+ON CONFLICT (processed_transaction_id, covers_year, covers_month) DO NOTHING;
 
 -- name: GetTransactionDetail :one
 -- One row for the transaction browser's detail / edit view — same columns as
@@ -860,10 +859,10 @@ WHERE pt.category != 'credited_interest'
   AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
   AND rt.transaction_type ILIKE '%úrok%';
 
--- name: InsertCoverageRow :execrows
--- ON CONFLICT DO NOTHING + :execrows so the caller can tell which requested
--- month was already covered by a *different* transaction (0 rows affected) and
--- report it, rather than silently dropping it.
+-- name: InsertCoverageRow :exec
+-- Another transaction already covering the same month is fine (split
+-- payments); ON CONFLICT only makes a month repeated within one request's
+-- `covers` a no-op.
 INSERT INTO payment_coverage (processed_transaction_id, member_number, covers_year, covers_month)
 VALUES (sqlc.arg(processed_transaction_id), sqlc.arg(member_number), sqlc.arg(covers_year), sqlc.arg(covers_month))
-ON CONFLICT (member_number, covers_year, covers_month) DO NOTHING;
+ON CONFLICT (processed_transaction_id, covers_year, covers_month) DO NOTHING;

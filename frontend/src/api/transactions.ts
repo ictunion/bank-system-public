@@ -91,12 +91,6 @@ export interface AssignPayload {
   admin_comment?: string
 }
 
-/** 409 body from assignTransaction when a month is already covered elsewhere. */
-export interface CoverageConflict {
-  error: string
-  conflicts: MonthRef[]
-}
-
 export function fetchTransaction(id: number): Promise<TransactionDetail> {
   return apiGet<TransactionDetail>(`/api/transactions/${id}`)
 }

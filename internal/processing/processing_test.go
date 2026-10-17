@@ -207,40 +207,45 @@ func TestRun_VariableSymbolMatchStripsLeadingZeroes(t *testing.T) {
 	}
 }
 
-func TestRun_SecondPaymentInSameMonthGetsNoCoverageRowOfItsOwn(t *testing.T) {
+func TestRun_SecondPaymentInSameMonthAlsoCoversThatMonth(t *testing.T) {
 	pool := dbtest.Pool(t)
 	queries := db.New(pool)
 	account := seedBankAccount(t, queries, "9400000005")
 	seedMemberWithIdentifier(t, queries, 900602, "900602")
 	// Two membership-fee payments landing in the same month, both matched to
-	// the same member — e.g. a duplicate, or a catch-up payment processOne has
-	// no way to distinguish from a normal one (it always defaults to "last
-	// month," see CreatePaymentCoverage's caller).
-	seedRawTransaction(t, queries, account.ID, 6006, "500.00", strPtr("900602"), nil)
-	seedRawTransaction(t, queries, account.ID, 6007, "500.00", strPtr("900602"), nil)
+	// the same member — e.g. dues split into two transfers (100 + 240).
+	seedRawTransaction(t, queries, account.ID, 6006, "100.00", strPtr("900602"), nil)
+	seedRawTransaction(t, queries, account.ID, 6007, "240.00", strPtr("900602"), nil)
 
 	result, err := Run(context.Background(), pool)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if result.TransactionsProcessed != 2 || result.TransactionsFailed != 0 {
-		t.Fatalf("result = %+v, want {2 0} — the second payment's conflicting coverage insert is not a processing failure", result)
+		t.Fatalf("result = %+v, want {2 0}", result)
 	}
 
 	first := queryProcessed(t, pool, 6006)
 	second := queryProcessed(t, pool, 6007)
 	if first.category != "membership_fee" || second.category != "membership_fee" {
-		t.Errorf("both transactions should still be categorized membership_fee: first=%+v second=%+v", first, second)
+		t.Errorf("both transactions should be categorized membership_fee: first=%+v second=%+v", first, second)
 	}
 	if first.memberNumber == nil || *first.memberNumber != 900602 || second.memberNumber == nil || *second.memberNumber != 900602 {
-		t.Errorf("both transactions should still be matched to the member: first=%+v second=%+v", first, second)
+		t.Errorf("both transactions should be matched to the member: first=%+v second=%+v", first, second)
 	}
 
-	// Exactly one payment_coverage row exists for the member, no matter which
-	// of the two transactions it ended up attached to — the second insert was
-	// a no-op (ON CONFLICT DO NOTHING), not a second row.
-	if n := coverageMonthsFor(t, pool, 900602); n != 1 {
-		t.Errorf("payment_coverage rows for member 900602 = %d, want 1 (one payment covers the month, the other's insert is a no-op)", n)
+	// One payment_coverage row per transaction, both for the same month.
+	if n := coverageMonthsFor(t, pool, 900602); n != 2 {
+		t.Errorf("payment_coverage rows for member 900602 = %d, want 2 (one per transaction)", n)
+	}
+	var distinctMonths int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(DISTINCT (covers_year, covers_month)) FROM payment_coverage WHERE member_number = $1`, int32(900602),
+	).Scan(&distinctMonths); err != nil {
+		t.Fatalf("counting distinct covered months: %v", err)
+	}
+	if distinctMonths != 1 {
+		t.Errorf("distinct covered months = %d, want 1 (both payments cover the same month)", distinctMonths)
 	}
 }
 
