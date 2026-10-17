@@ -99,7 +99,7 @@ func TestMyPaymentHistory_ReturnsCoveredMonths(t *testing.T) {
 	member := memberNumber
 	pt := seedTransaction(t, queries, account.ID, 4001, "500.00", "membership_fee", "incoming", &member)
 
-	if _, err := queries.InsertCoverageRow(context.Background(), db.InsertCoverageRowParams{
+	if err := queries.InsertCoverageRow(context.Background(), db.InsertCoverageRowParams{
 		ProcessedTransactionID: pt.ID,
 		MemberNumber:           memberNumber,
 		CoversYear:             2026,
@@ -186,7 +186,7 @@ func TestMyPaymentHistory_PaidMonthWinsOverWaivedMonth(t *testing.T) {
 	account := seedBankAccount(t, queries, "9200000030")
 	member := memberNumber
 	pt := seedTransaction(t, queries, account.ID, 4002, "500.00", "membership_fee", "incoming", &member)
-	if _, err := queries.InsertCoverageRow(context.Background(), db.InsertCoverageRowParams{
+	if err := queries.InsertCoverageRow(context.Background(), db.InsertCoverageRowParams{
 		ProcessedTransactionID: pt.ID,
 		MemberNumber:           memberNumber,
 		CoversYear:             2026,

@@ -107,7 +107,7 @@ func TestWaivePayment_AlreadyCoveredByPaymentIsRejected(t *testing.T) {
 	account := seedBankAccount(t, queries, "9200000020")
 	member := memberNumber
 	pt := seedTransaction(t, queries, account.ID, 9101, "500.00", "membership_fee", "incoming", &member)
-	if _, err := queries.InsertCoverageRow(context.Background(), db.InsertCoverageRowParams{
+	if err := queries.InsertCoverageRow(context.Background(), db.InsertCoverageRowParams{
 		ProcessedTransactionID: pt.ID,
 		MemberNumber:           memberNumber,
 		CoversYear:             2022,
@@ -344,7 +344,7 @@ func TestWaivePayment_RangeSkipsAlreadyCoveredMonth(t *testing.T) {
 	account := seedBankAccount(t, queries, "9200000021")
 	member := memberNumber
 	pt := seedTransaction(t, queries, account.ID, 9102, "500.00", "membership_fee", "incoming", &member)
-	if _, err := queries.InsertCoverageRow(context.Background(), db.InsertCoverageRowParams{
+	if err := queries.InsertCoverageRow(context.Background(), db.InsertCoverageRowParams{
 		ProcessedTransactionID: pt.ID,
 		MemberNumber:           memberNumber,
 		CoversYear:             2026,
