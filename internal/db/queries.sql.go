@@ -136,10 +136,10 @@ func (q *Queries) CreateCategory(ctx context.Context, name string) (TransactionC
 	return i, err
 }
 
-const createPaymentCoverage = `-- name: CreatePaymentCoverage :execrows
+const createPaymentCoverage = `-- name: CreatePaymentCoverage :exec
 INSERT INTO payment_coverage (processed_transaction_id, member_number, covers_year, covers_month)
 VALUES ($1, $2, $3, $4)
-ON CONFLICT (member_number, covers_year, covers_month) DO NOTHING
+ON CONFLICT (processed_transaction_id, covers_year, covers_month) DO NOTHING
 `
 
 type CreatePaymentCoverageParams struct {
@@ -149,22 +149,18 @@ type CreatePaymentCoverageParams struct {
 	CoversMonth            int16 `json:"covers_month"`
 }
 
-// ON CONFLICT DO NOTHING + :execrows (same pattern as InsertCoverageRow) so
-// the caller can tell when a second payment lands on an already-covered
-// month — see internal/processing/processing.go's log line, since this path
-// (unlike the manual assignment endpoint) has no HTTP response to surface it
-// through.
-func (q *Queries) CreatePaymentCoverage(ctx context.Context, arg CreatePaymentCoverageParams) (int64, error) {
-	result, err := q.db.Exec(ctx, createPaymentCoverage,
+// Several transactions may cover the same member/month (dues split across
+// payments), so a second payment landing on an already-covered month just
+// adds its own row. ON CONFLICT only guards the same transaction listing the
+// same month twice.
+func (q *Queries) CreatePaymentCoverage(ctx context.Context, arg CreatePaymentCoverageParams) error {
+	_, err := q.db.Exec(ctx, createPaymentCoverage,
 		arg.ProcessedTransactionID,
 		arg.MemberNumber,
 		arg.CoversYear,
 		arg.CoversMonth,
 	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+	return err
 }
 
 const createPaymentWaiver = `-- name: CreatePaymentWaiver :execrows
@@ -345,27 +341,6 @@ func (q *Queries) DeletePaymentWaiver(ctx context.Context, arg DeletePaymentWaiv
 		return 0, err
 	}
 	return result.RowsAffected(), nil
-}
-
-const ensureDefaultPaymentIdentifier = `-- name: EnsureDefaultPaymentIdentifier :exec
-INSERT INTO member_payment_identifiers (member_number, variable_symbol, valid_from)
-VALUES ($1, $2, $3)
-ON CONFLICT (variable_symbol, valid_from) DO NOTHING
-`
-
-type EnsureDefaultPaymentIdentifierParams struct {
-	MemberNumber   int32     `json:"member_number"`
-	VariableSymbol string    `json:"variable_symbol"`
-	ValidFrom      time.Time `json:"valid_from"`
-}
-
-// Seeds the auto-generated "default" payment identifier for a member: variable
-// symbol == member_number, valid from their fee_start_date. Runs on every Orca
-// sync. DO NOTHING on conflict so a re-run is a no-op. Skipped by the caller when
-// fee_start_date is null (member not yet liable, and valid_from is NOT NULL).
-func (q *Queries) EnsureDefaultPaymentIdentifier(ctx context.Context, arg EnsureDefaultPaymentIdentifierParams) error {
-	_, err := q.db.Exec(ctx, ensureDefaultPaymentIdentifier, arg.MemberNumber, arg.VariableSymbol, arg.ValidFrom)
-	return err
 }
 
 const failStaleSyncFioRuns = `-- name: FailStaleSyncFioRuns :execrows
@@ -905,10 +880,10 @@ func (q *Queries) GetTransactionDetail(ctx context.Context, id int64) (GetTransa
 	return i, err
 }
 
-const insertCoverageRow = `-- name: InsertCoverageRow :execrows
+const insertCoverageRow = `-- name: InsertCoverageRow :exec
 INSERT INTO payment_coverage (processed_transaction_id, member_number, covers_year, covers_month)
 VALUES ($1, $2, $3, $4)
-ON CONFLICT (member_number, covers_year, covers_month) DO NOTHING
+ON CONFLICT (processed_transaction_id, covers_year, covers_month) DO NOTHING
 `
 
 type InsertCoverageRowParams struct {
@@ -918,20 +893,17 @@ type InsertCoverageRowParams struct {
 	CoversMonth            int16 `json:"covers_month"`
 }
 
-// ON CONFLICT DO NOTHING + :execrows so the caller can tell which requested
-// month was already covered by a *different* transaction (0 rows affected) and
-// report it, rather than silently dropping it.
-func (q *Queries) InsertCoverageRow(ctx context.Context, arg InsertCoverageRowParams) (int64, error) {
-	result, err := q.db.Exec(ctx, insertCoverageRow,
+// Another transaction already covering the same month is fine (split
+// payments); ON CONFLICT only makes a month repeated within one request's
+// `covers` a no-op.
+func (q *Queries) InsertCoverageRow(ctx context.Context, arg InsertCoverageRowParams) error {
+	_, err := q.db.Exec(ctx, insertCoverageRow,
 		arg.ProcessedTransactionID,
 		arg.MemberNumber,
 		arg.CoversYear,
 		arg.CoversMonth,
 	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+	return err
 }
 
 const insertRawTransaction = `-- name: InsertRawTransaction :execrows
@@ -2249,14 +2221,10 @@ type SyncDefaultPaymentIdentifierValidToParams struct {
 	VariableSymbol string      `json:"variable_symbol"`
 }
 
-// Mirrors members.fee_stop_date onto the default payment identifier's valid_to
-// (variable_symbol == member_number): fee liability ended -> row closed with that
-// date, fee_stop_date cleared in Orca -> row reopened (valid_to = NULL). The sync
-// owns this row's window authoritatively (valid_from = fee_start_date, valid_to =
-// fee_stop_date). To point a member at a different variable symbol, add a *new*
-// member_payment_identifiers row (different variable_symbol, its own valid_from) —
-// that row has variable_symbol != member_number so this UPDATE never touches it.
-// The IS DISTINCT FROM guard makes a steady-state run write nothing.
+// Only for a member whose fee_start_date is null in Orca (UpsertDefaultPaymentIdentifier
+// is skipped then): still mirrors fee_stop_date onto an already-existing
+// default row's valid_to. No-op for members with no default row. The IS
+// DISTINCT FROM guard makes a steady-state run write nothing.
 func (q *Queries) SyncDefaultPaymentIdentifierValidTo(ctx context.Context, arg SyncDefaultPaymentIdentifierValidToParams) error {
 	_, err := q.db.Exec(ctx, syncDefaultPaymentIdentifierValidTo, arg.ValidTo, arg.MemberNumber, arg.VariableSymbol)
 	return err
@@ -2370,6 +2338,43 @@ type UpdateBankAccountBalanceParams struct {
 // etc., avoids any app/DB clock skew.
 func (q *Queries) UpdateBankAccountBalance(ctx context.Context, arg UpdateBankAccountBalanceParams) error {
 	_, err := q.db.Exec(ctx, updateBankAccountBalance, arg.Balance, arg.ID)
+	return err
+}
+
+const upsertDefaultPaymentIdentifier = `-- name: UpsertDefaultPaymentIdentifier :exec
+INSERT INTO member_payment_identifiers (member_number, variable_symbol, valid_from, valid_to)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (member_number) WHERE variable_symbol = member_number::text
+DO UPDATE SET valid_from = EXCLUDED.valid_from, valid_to = EXCLUDED.valid_to
+WHERE (member_payment_identifiers.valid_from, member_payment_identifiers.valid_to)
+    IS DISTINCT FROM (EXCLUDED.valid_from, EXCLUDED.valid_to)
+`
+
+type UpsertDefaultPaymentIdentifierParams struct {
+	MemberNumber   int32       `json:"member_number"`
+	VariableSymbol string      `json:"variable_symbol"`
+	ValidFrom      time.Time   `json:"valid_from"`
+	ValidTo        pgtype.Date `json:"valid_to"`
+}
+
+// The member's auto-generated "default" payment identifier: variable_symbol
+// == member_number, window mirrored from Orca (valid_from = fee_start_date,
+// valid_to = fee_stop_date). Runs on every Orca sync and owns that window
+// authoritatively — a corrected fee_start_date moves valid_from, a cleared
+// fee_stop_date reopens the row. Conflict target is the partial unique index
+// member_payment_identifiers_default_key (one default row per member). To
+// point a member at a different variable symbol, add a *new* row with a
+// different variable_symbol — it falls outside that index's predicate, so this
+// never touches it. The IS DISTINCT FROM guard makes a steady-state run write
+// nothing. Skipped by the caller when fee_start_date is null (member not yet
+// liable, and valid_from is NOT NULL).
+func (q *Queries) UpsertDefaultPaymentIdentifier(ctx context.Context, arg UpsertDefaultPaymentIdentifierParams) error {
+	_, err := q.db.Exec(ctx, upsertDefaultPaymentIdentifier,
+		arg.MemberNumber,
+		arg.VariableSymbol,
+		arg.ValidFrom,
+		arg.ValidTo,
+	)
 	return err
 }
 

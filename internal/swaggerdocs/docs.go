@@ -22,7 +22,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the manage-bank-accounts role. Excludes the Fio token itself, only whether one is set. balance/balance_as_of are both null until the account's first successful sync.",
+                "description": "Requires the manage-bank-accounts role. Excludes the Fio token itself, only whether one is set. balance/balance_as_of are both null until the account's first successful sync. color is null unless set.",
                 "produces": [
                     "application/json"
                 ],
@@ -66,7 +66,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the manage-bank-accounts role. fio_token is encrypted at rest and never echoed back.",
+                "description": "Requires the manage-bank-accounts role. fio_token is encrypted at rest and never echoed back. color is optional, must be a #RRGGBB hex code.",
                 "consumes": [
                     "application/json"
                 ],
@@ -203,7 +203,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the manage-bank-accounts role. fio_account_id/iban/currency are Fio-assigned and not editable here.",
+                "description": "Requires the manage-bank-accounts role. fio_account_id/iban/currency are Fio-assigned and not editable here. color is optional (#RRGGBB), full overwrite — omit or send \"\" to clear.",
                 "consumes": [
                     "application/json"
                 ],
@@ -760,6 +760,49 @@ const docTemplate = `{
                     },
                     "403": {
                         "description": "token has no valid sub, or no member found for it",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/payments/stats": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Requires the payment-history role. window_from/window_to are the trailing rolling month (today minus 1 calendar month through today, both inclusive) — no year/month params, always a live \"as of now\" snapshot. Counts a real transaction.transaction_date landing in that window, not the arrears/coverage-month convention the other payment endpoints use.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payments"
+                ],
+                "summary": "Org-wide % of members paying dues in the trailing month",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handler.paymentStats"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
                         "schema": {
                             "type": "object",
                             "additionalProperties": {
@@ -1614,7 +1657,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires manage-bank-accounts or manage-transactions (which, depends on the action). Body selects the action: \"run\" (re-run matching for unprocessed transactions, needs manage-bank-accounts), \"reclassify_internal_transfers\" (re-check already-processed transactions against the current bank_accounts roster, needs manage-transactions), or \"rematch_unmatched\" (re-check already-processed-but-unmatched transactions against member_payment_identifiers, needs manage-transactions).",
+                "description": "Requires manage-bank-accounts or manage-transactions (which, depends on the action). Body selects the action: \"run\" (re-run matching for unprocessed transactions, needs manage-bank-accounts), \"reclassify_internal_transfers\" (re-check already-processed transactions against the current bank_accounts roster, needs manage-transactions), \"rematch_unmatched\" (re-check already-processed-but-unmatched transactions against member_payment_identifiers, needs manage-transactions), or \"reclassify_interest\" (re-check already-processed transactions against transaction_type for interest wording, needs manage-transactions).",
                 "consumes": [
                     "application/json"
                 ],
@@ -1689,7 +1732,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the list-transactions role. All filters optional and combinable.",
+                "description": "Requires the list-transactions role. All filters optional and combinable. bank_account_color is the transaction's bank account color (#RRGGBB), null if unset.",
                 "produces": [
                     "application/json"
                 ],
@@ -2134,6 +2177,10 @@ const docTemplate = `{
                 "balance_as_of": {
                     "type": "string"
                 },
+                "color": {
+                    "description": "Color is nil when unset — optional, purely presentational.",
+                    "type": "string"
+                },
                 "created_at": {
                     "type": "string"
                 },
@@ -2246,6 +2293,10 @@ const docTemplate = `{
         "handler.createBankAccountRequest": {
             "type": "object",
             "properties": {
+                "color": {
+                    "description": "Optional, purely presentational — see updateBankAccountRequest.Color.",
+                    "type": "string"
+                },
                 "currency": {
                     "type": "string"
                 },
@@ -2384,6 +2435,26 @@ const docTemplate = `{
                 }
             }
         },
+        "handler.paymentStats": {
+            "type": "object",
+            "properties": {
+                "liable_members": {
+                    "type": "integer"
+                },
+                "paid_members": {
+                    "type": "integer"
+                },
+                "percent_paid": {
+                    "type": "number"
+                },
+                "window_from": {
+                    "type": "string"
+                },
+                "window_to": {
+                    "type": "string"
+                }
+            }
+        },
         "handler.paymentWaiverResponse": {
             "type": "object",
             "properties": {
@@ -2455,6 +2526,10 @@ const docTemplate = `{
                 "amount": {
                     "type": "string"
                 },
+                "bank_account_color": {
+                    "description": "BankAccountColor is the transaction's bank_accounts.color (a #RRGGBB hex\ncode), nil when that account has no color assigned — see\nbankAccountResponse.Color in account.go.",
+                    "type": "string"
+                },
                 "category": {
                     "type": "string"
                 },
@@ -2518,6 +2593,10 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "amount": {
+                    "type": "string"
+                },
+                "bank_account_color": {
+                    "description": "BankAccountColor is the transaction's bank_accounts.color (a #RRGGBB hex\ncode), nil when that account has no color assigned — see\nbankAccountResponse.Color in account.go.",
                     "type": "string"
                 },
                 "category": {
@@ -2593,6 +2672,10 @@ const docTemplate = `{
         "handler.updateBankAccountRequest": {
             "type": "object",
             "properties": {
+                "color": {
+                    "description": "Color is optional and purely presentational (a #RRGGBB hex string shown\nas a swatch next to the account and on its transactions) — no business\nlogic reads it. Unlike FioToken this is a full overwrite every call: nil\nor \"\" clears it, any other value replaces it. The frontend always sends\nthe field's current value rather than treating omission as \"unchanged\".",
+                    "type": "string"
+                },
                 "display_name": {
                     "type": "string"
                 },

@@ -235,24 +235,30 @@ SET fee_start_date = EXCLUDED.fee_start_date,
     sub = EXCLUDED.sub,
     workplace_executive_committee_sub = EXCLUDED.workplace_executive_committee_sub;
 
--- name: EnsureDefaultPaymentIdentifier :exec
--- Seeds the auto-generated "default" payment identifier for a member: variable
--- symbol == member_number, valid from their fee_start_date. Runs on every Orca
--- sync. DO NOTHING on conflict so a re-run is a no-op. Skipped by the caller when
--- fee_start_date is null (member not yet liable, and valid_from is NOT NULL).
-INSERT INTO member_payment_identifiers (member_number, variable_symbol, valid_from)
-VALUES (sqlc.arg(member_number), sqlc.arg(variable_symbol), sqlc.arg(valid_from))
-ON CONFLICT (variable_symbol, valid_from) DO NOTHING;
+-- name: UpsertDefaultPaymentIdentifier :exec
+-- The member's auto-generated "default" payment identifier: variable_symbol
+-- == member_number, window mirrored from Orca (valid_from = fee_start_date,
+-- valid_to = fee_stop_date). Runs on every Orca sync and owns that window
+-- authoritatively — a corrected fee_start_date moves valid_from, a cleared
+-- fee_stop_date reopens the row. Conflict target is the partial unique index
+-- member_payment_identifiers_default_key (one default row per member). To
+-- point a member at a different variable symbol, add a *new* row with a
+-- different variable_symbol — it falls outside that index's predicate, so this
+-- never touches it. The IS DISTINCT FROM guard makes a steady-state run write
+-- nothing. Skipped by the caller when fee_start_date is null (member not yet
+-- liable, and valid_from is NOT NULL).
+INSERT INTO member_payment_identifiers (member_number, variable_symbol, valid_from, valid_to)
+VALUES (sqlc.arg(member_number), sqlc.arg(variable_symbol), sqlc.arg(valid_from), sqlc.narg(valid_to))
+ON CONFLICT (member_number) WHERE variable_symbol = member_number::text
+DO UPDATE SET valid_from = EXCLUDED.valid_from, valid_to = EXCLUDED.valid_to
+WHERE (member_payment_identifiers.valid_from, member_payment_identifiers.valid_to)
+    IS DISTINCT FROM (EXCLUDED.valid_from, EXCLUDED.valid_to);
 
 -- name: SyncDefaultPaymentIdentifierValidTo :exec
--- Mirrors members.fee_stop_date onto the default payment identifier's valid_to
--- (variable_symbol == member_number): fee liability ended -> row closed with that
--- date, fee_stop_date cleared in Orca -> row reopened (valid_to = NULL). The sync
--- owns this row's window authoritatively (valid_from = fee_start_date, valid_to =
--- fee_stop_date). To point a member at a different variable symbol, add a *new*
--- member_payment_identifiers row (different variable_symbol, its own valid_from) —
--- that row has variable_symbol != member_number so this UPDATE never touches it.
--- The IS DISTINCT FROM guard makes a steady-state run write nothing.
+-- Only for a member whose fee_start_date is null in Orca (UpsertDefaultPaymentIdentifier
+-- is skipped then): still mirrors fee_stop_date onto an already-existing
+-- default row's valid_to. No-op for members with no default row. The IS
+-- DISTINCT FROM guard makes a steady-state run write nothing.
 UPDATE member_payment_identifiers
 SET valid_to = sqlc.narg(valid_to)
 WHERE member_number = sqlc.arg(member_number)
@@ -725,15 +731,14 @@ INSERT INTO processed_transactions (raw_transaction_id, member_number, category,
 VALUES (sqlc.arg(raw_transaction_id), sqlc.narg(member_number), sqlc.arg(category), sqlc.arg(direction), sqlc.narg(matched_by))
 RETURNING *;
 
--- name: CreatePaymentCoverage :execrows
--- ON CONFLICT DO NOTHING + :execrows (same pattern as InsertCoverageRow) so
--- the caller can tell when a second payment lands on an already-covered
--- month — see internal/processing/processing.go's log line, since this path
--- (unlike the manual assignment endpoint) has no HTTP response to surface it
--- through.
+-- name: CreatePaymentCoverage :exec
+-- Several transactions may cover the same member/month (dues split across
+-- payments), so a second payment landing on an already-covered month just
+-- adds its own row. ON CONFLICT only guards the same transaction listing the
+-- same month twice.
 INSERT INTO payment_coverage (processed_transaction_id, member_number, covers_year, covers_month)
 VALUES (sqlc.arg(processed_transaction_id), sqlc.arg(member_number), sqlc.arg(covers_year), sqlc.arg(covers_month))
-ON CONFLICT (member_number, covers_year, covers_month) DO NOTHING;
+ON CONFLICT (processed_transaction_id, covers_year, covers_month) DO NOTHING;
 
 -- name: GetTransactionDetail :one
 -- One row for the transaction browser's detail / edit view — same columns as
@@ -860,10 +865,10 @@ WHERE pt.category != 'credited_interest'
   AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
   AND rt.transaction_type ILIKE '%úrok%';
 
--- name: InsertCoverageRow :execrows
--- ON CONFLICT DO NOTHING + :execrows so the caller can tell which requested
--- month was already covered by a *different* transaction (0 rows affected) and
--- report it, rather than silently dropping it.
+-- name: InsertCoverageRow :exec
+-- Another transaction already covering the same month is fine (split
+-- payments); ON CONFLICT only makes a month repeated within one request's
+-- `covers` a no-op.
 INSERT INTO payment_coverage (processed_transaction_id, member_number, covers_year, covers_month)
 VALUES (sqlc.arg(processed_transaction_id), sqlc.arg(member_number), sqlc.arg(covers_year), sqlc.arg(covers_month))
-ON CONFLICT (member_number, covers_year, covers_month) DO NOTHING;
+ON CONFLICT (processed_transaction_id, covers_year, covers_month) DO NOTHING;

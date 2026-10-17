@@ -7,7 +7,7 @@ import { CategoriesPage } from './CategoriesPage'
 import { EventLogsPage } from './EventLogsPage'
 import { useHasRole } from './roles'
 import { TransactionsTable } from './TransactionsTable'
-import { WaiversPage } from './WaiversPage'
+import { WaiversPage } from './waiver/WaiversPage'
 
 export function App() {
   return (

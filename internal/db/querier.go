@@ -29,12 +29,11 @@ type Querier interface {
 	// is_mandatory is never set true here — only the four seeded in
 	// migrations/20260910000001_add_transaction_categories.sql are mandatory.
 	CreateCategory(ctx context.Context, name string) (TransactionCategory, error)
-	// ON CONFLICT DO NOTHING + :execrows (same pattern as InsertCoverageRow) so
-	// the caller can tell when a second payment lands on an already-covered
-	// month — see internal/processing/processing.go's log line, since this path
-	// (unlike the manual assignment endpoint) has no HTTP response to surface it
-	// through.
-	CreatePaymentCoverage(ctx context.Context, arg CreatePaymentCoverageParams) (int64, error)
+	// Several transactions may cover the same member/month (dues split across
+	// payments), so a second payment landing on an already-covered month just
+	// adds its own row. ON CONFLICT only guards the same transaction listing the
+	// same month twice.
+	CreatePaymentCoverage(ctx context.Context, arg CreatePaymentCoverageParams) error
 	// ON CONFLICT DO NOTHING + :execrows, same idempotent-insert pattern as
 	// CreatePaymentCoverage/InsertCoverageRow — calling this twice for the same
 	// month is a no-op (0 rows affected), not an error, since the caller's
@@ -62,11 +61,6 @@ type Querier interface {
 	// month) — the month reappears in missing-payment lists on the next read,
 	// same as any other computed-on-read state here.
 	DeletePaymentWaiver(ctx context.Context, arg DeletePaymentWaiverParams) (int64, error)
-	// Seeds the auto-generated "default" payment identifier for a member: variable
-	// symbol == member_number, valid from their fee_start_date. Runs on every Orca
-	// sync. DO NOTHING on conflict so a re-run is a no-op. Skipped by the caller when
-	// fee_start_date is null (member not yet liable, and valid_from is NOT NULL).
-	EnsureDefaultPaymentIdentifier(ctx context.Context, arg EnsureDefaultPaymentIdentifierParams) error
 	// Run once at server startup, before the scheduler starts: any row still
 	// 'running' predates this process (a single instance drives all syncs, so a
 	// 'running' row at boot means the prior process died — crash, panic, kill —
@@ -139,10 +133,10 @@ type Querier interface {
 	// ListTransactions minus the window count. Covered months come from
 	// ListCoverageForTransaction.
 	GetTransactionDetail(ctx context.Context, id int64) (GetTransactionDetailRow, error)
-	// ON CONFLICT DO NOTHING + :execrows so the caller can tell which requested
-	// month was already covered by a *different* transaction (0 rows affected) and
-	// report it, rather than silently dropping it.
-	InsertCoverageRow(ctx context.Context, arg InsertCoverageRowParams) (int64, error)
+	// Another transaction already covering the same month is fine (split
+	// payments); ON CONFLICT only makes a month repeated within one request's
+	// `covers` a no-op.
+	InsertCoverageRow(ctx context.Context, arg InsertCoverageRowParams) error
 	InsertRawTransaction(ctx context.Context, arg InsertRawTransactionParams) (int64, error)
 	// Internal use only (processing.go, self-transfer detection) — the account
 	// numbers of every non-soft-deleted bank account we hold, so a transaction
@@ -288,14 +282,10 @@ type Querier interface {
 	// full-overwrites it), since this is an automatic re-match, not an admin
 	// action with a comment of its own to record.
 	RematchTransactionToMember(ctx context.Context, arg RematchTransactionToMemberParams) error
-	// Mirrors members.fee_stop_date onto the default payment identifier's valid_to
-	// (variable_symbol == member_number): fee liability ended -> row closed with that
-	// date, fee_stop_date cleared in Orca -> row reopened (valid_to = NULL). The sync
-	// owns this row's window authoritatively (valid_from = fee_start_date, valid_to =
-	// fee_stop_date). To point a member at a different variable symbol, add a *new*
-	// member_payment_identifiers row (different variable_symbol, its own valid_from) —
-	// that row has variable_symbol != member_number so this UPDATE never touches it.
-	// The IS DISTINCT FROM guard makes a steady-state run write nothing.
+	// Only for a member whose fee_start_date is null in Orca (UpsertDefaultPaymentIdentifier
+	// is skipped then): still mirrors fee_stop_date onto an already-existing
+	// default row's valid_to. No-op for members with no default row. The IS
+	// DISTINCT FROM guard makes a steady-state run write nothing.
 	SyncDefaultPaymentIdentifierValidTo(ctx context.Context, arg SyncDefaultPaymentIdentifierValidToParams) error
 	// Reverts a manual (or automatic) match: clears the member and matched_by, and
 	// resets category to the direction-based default the caller passes in.
@@ -320,6 +310,18 @@ type Querier interface {
 	// (now()), not passed in from Go — same convention as sync_fio_runs.started_at
 	// etc., avoids any app/DB clock skew.
 	UpdateBankAccountBalance(ctx context.Context, arg UpdateBankAccountBalanceParams) error
+	// The member's auto-generated "default" payment identifier: variable_symbol
+	// == member_number, window mirrored from Orca (valid_from = fee_start_date,
+	// valid_to = fee_stop_date). Runs on every Orca sync and owns that window
+	// authoritatively — a corrected fee_start_date moves valid_from, a cleared
+	// fee_stop_date reopens the row. Conflict target is the partial unique index
+	// member_payment_identifiers_default_key (one default row per member). To
+	// point a member at a different variable symbol, add a *new* row with a
+	// different variable_symbol — it falls outside that index's predicate, so this
+	// never touches it. The IS DISTINCT FROM guard makes a steady-state run write
+	// nothing. Skipped by the caller when fee_start_date is null (member not yet
+	// liable, and valid_from is NOT NULL).
+	UpsertDefaultPaymentIdentifier(ctx context.Context, arg UpsertDefaultPaymentIdentifierParams) error
 	UpsertMember(ctx context.Context, arg UpsertMemberParams) error
 }
 

@@ -129,14 +129,15 @@ func TestAssignTransaction_WithMemberDefaultsCoverageToMonthBeforeTransaction(t 
 	}
 }
 
-func TestAssignTransaction_CoverageConflict(t *testing.T) {
+func TestAssignTransaction_TwoTransactionsCoverSameMonth(t *testing.T) {
 	pool := dbtest.Pool(t)
 	queries := db.New(pool)
 	account := seedBankAccount(t, queries, "9300000005")
 	seedMember(t, queries, 900503, nil)
 
-	first := seedTransaction(t, queries, account.ID, 5005, "500.00", "other_income", "incoming", nil)
-	second := seedTransaction(t, queries, account.ID, 5006, "500.00", "other_income", "incoming", nil)
+	// Dues for one month split across two payments (100 + 240).
+	first := seedTransaction(t, queries, account.ID, 5005, "100.00", "other_income", "incoming", nil)
+	second := seedTransaction(t, queries, account.ID, 5006, "240.00", "other_income", "incoming", nil)
 
 	assign := func(pt db.ProcessedTransaction, covers string) *httptest.ResponseRecorder {
 		body := strings.NewReader(`{"member_number":900503,"category":"membership_fee","covers":[` + covers + `]}`)
@@ -148,12 +149,43 @@ func TestAssignTransaction_CoverageConflict(t *testing.T) {
 	}
 
 	const month = `{"year":2026,"month":6}`
-	if r := assign(first, month); r.Code != http.StatusOK {
-		t.Fatalf("first assignment: status = %d, body = %s", r.Code, r.Body)
+	for name, pt := range map[string]db.ProcessedTransaction{"first": first, "second": second} {
+		r := assign(pt, month)
+		if r.Code != http.StatusOK {
+			t.Fatalf("%s assignment: status = %d, body = %s", name, r.Code, r.Body)
+		}
+		var got transactionDetail
+		if err := json.Unmarshal(r.Body.Bytes(), &got); err != nil {
+			t.Fatalf("%s assignment: decoding response: %v", name, err)
+		}
+		if len(got.CoveredMonths) != 1 || got.CoveredMonths[0].Year != 2026 || got.CoveredMonths[0].Month != 6 {
+			t.Errorf("%s assignment: CoveredMonths = %+v, want [{2026 6}]", name, got.CoveredMonths)
+		}
 	}
-	r := assign(second, month)
-	if r.Code != http.StatusConflict {
-		t.Errorf("second assignment (same month, different transaction): status = %d, want %d, body = %s", r.Code, http.StatusConflict, r.Body)
+}
+
+func TestAssignTransaction_RepeatedCoversMonthIsDeduplicated(t *testing.T) {
+	pool := dbtest.Pool(t)
+	queries := db.New(pool)
+	account := seedBankAccount(t, queries, "9300000099")
+	seedMember(t, queries, 900599, nil)
+	pt := seedTransaction(t, queries, account.ID, 5099, "500.00", "other_income", "incoming", nil)
+
+	body := strings.NewReader(`{"member_number":900599,"category":"membership_fee","covers":[{"year":2026,"month":6},{"year":2026,"month":6}]}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/transactions/"+itoa64(pt.ID)+"/assignment", body)
+	request.SetPathValue("id", itoa64(pt.ID))
+	AssignTransaction(pool)(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	var got transactionDetail
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(got.CoveredMonths) != 1 {
+		t.Errorf("CoveredMonths = %+v, want exactly one entry", got.CoveredMonths)
 	}
 }
 

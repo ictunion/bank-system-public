@@ -36,6 +36,9 @@ definitions:
         type: string
       balance_as_of:
         type: string
+      color:
+        description: Color is nil when unset — optional, purely presentational.
+        type: string
       created_at:
         type: string
       currency:
@@ -114,6 +117,9 @@ definitions:
     type: object
   handler.createBankAccountRequest:
     properties:
+      color:
+        description: Optional, purely presentational — see updateBankAccountRequest.Color.
+        type: string
       currency:
         type: string
       display_name:
@@ -214,6 +220,19 @@ definitions:
       transaction_date:
         type: string
     type: object
+  handler.paymentStats:
+    properties:
+      liable_members:
+        type: integer
+      paid_members:
+        type: integer
+      percent_paid:
+        type: number
+      window_from:
+        type: string
+      window_to:
+        type: string
+    type: object
   handler.paymentWaiverResponse:
     properties:
       created_at:
@@ -260,6 +279,12 @@ definitions:
         type: string
       amount:
         type: string
+      bank_account_color:
+        description: |-
+          BankAccountColor is the transaction's bank_accounts.color (a #RRGGBB hex
+          code), nil when that account has no color assigned — see
+          bankAccountResponse.Color in account.go.
+        type: string
       category:
         type: string
       comment:
@@ -302,6 +327,12 @@ definitions:
       admin_comment:
         type: string
       amount:
+        type: string
+      bank_account_color:
+        description: |-
+          BankAccountColor is the transaction's bank_accounts.color (a #RRGGBB hex
+          code), nil when that account has no color assigned — see
+          bankAccountResponse.Color in account.go.
         type: string
       category:
         type: string
@@ -351,6 +382,14 @@ definitions:
     type: object
   handler.updateBankAccountRequest:
     properties:
+      color:
+        description: |-
+          Color is optional and purely presentational (a #RRGGBB hex string shown
+          as a swatch next to the account and on its transactions) — no business
+          logic reads it. Unlike FioToken this is a full overwrite every call: nil
+          or "" clears it, any other value replaces it. The frontend always sends
+          the field's current value rather than treating omission as "unchanged".
+        type: string
       display_name:
         type: string
       fio_token:
@@ -399,7 +438,7 @@ paths:
     get:
       description: Requires the manage-bank-accounts role. Excludes the Fio token
         itself, only whether one is set. balance/balance_as_of are both null until
-        the account's first successful sync.
+        the account's first successful sync. color is null unless set.
       produces:
       - application/json
       responses:
@@ -429,8 +468,8 @@ paths:
     post:
       consumes:
       - application/json
-      description: Requires the manage-bank-accounts role. fio_token is encrypted
-        at rest and never echoed back.
+      description: 'Requires the manage-bank-accounts role. fio_token is encrypted
+        at rest and never echoed back. color is optional, must be a #RRGGBB hex code.'
       parameters:
       - description: New bank account
         in: body
@@ -520,7 +559,8 @@ paths:
       consumes:
       - application/json
       description: Requires the manage-bank-accounts role. fio_account_id/iban/currency
-        are Fio-assigned and not editable here.
+        are Fio-assigned and not editable here. color is optional (#RRGGBB), full
+        overwrite — omit or send "" to clear.
       parameters:
       - description: Bank account ID
         in: path
@@ -1215,6 +1255,37 @@ paths:
       summary: Get the caller's own payment history
       tags:
       - payments
+  /payments/stats:
+    get:
+      description: Requires the payment-history role. window_from/window_to are the
+        trailing rolling month (today minus 1 calendar month through today, both inclusive)
+        — no year/month params, always a live "as of now" snapshot. Counts a real
+        transaction.transaction_date landing in that window, not the arrears/coverage-month
+        convention the other payment endpoints use.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.paymentStats'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Org-wide % of members paying dues in the trailing month
+      tags:
+      - payments
   /payments/waivers:
     get:
       description: Requires the manage-transactions role. All members, newest-created
@@ -1455,8 +1526,10 @@ paths:
         on the action). Body selects the action: "run" (re-run matching for unprocessed
         transactions, needs manage-bank-accounts), "reclassify_internal_transfers"
         (re-check already-processed transactions against the current bank_accounts
-        roster, needs manage-transactions), or "rematch_unmatched" (re-check already-processed-but-unmatched
-        transactions against member_payment_identifiers, needs manage-transactions).'
+        roster, needs manage-transactions), "rematch_unmatched" (re-check already-processed-but-unmatched
+        transactions against member_payment_identifiers, needs manage-transactions),
+        or "reclassify_interest" (re-check already-processed transactions against
+        transaction_type for interest wording, needs manage-transactions).'
       parameters:
       - description: Which action to run
         in: body
@@ -1503,6 +1576,8 @@ paths:
   /transactions:
     get:
       description: Requires the list-transactions role. All filters optional and combinable.
+        bank_account_color is the transaction's bank account color (#RRGGBB), null
+        if unset.
       parameters:
       - description: true = has a member match, false = the unassigned worklist
         in: query

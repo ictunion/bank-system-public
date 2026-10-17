@@ -1,12 +1,11 @@
 import { type CSSProperties, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { categoryLabel, fetchCategories } from './api/categories'
-import { ApiError, errMessage } from './api/client'
+import { errMessage } from './api/client'
 import { Overlay } from './Overlay'
 import {
   assignTransaction,
   type Category,
-  type CoverageConflict,
   fetchTransaction,
   type MonthRef,
   type TransactionDetail,
@@ -108,16 +107,7 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
     (months.length > 0 && months.every((m) => m.month >= 1 && m.month <= 12 && m.year >= 2000))
   const canSave = memberValid && monthsValid && !assign.isPending && !unassign.isPending
 
-  const conflicts =
-    assign.error instanceof ApiError && assign.error.status === 409
-      ? (assign.error.body as CoverageConflict).conflicts
-      : []
-  const otherError =
-    assign.error && !(assign.error instanceof ApiError && assign.error.status === 409)
-      ? errMessage(assign.error)
-      : unassign.error
-        ? errMessage(unassign.error)
-        : null
+  const errorMessage = assign.error ? errMessage(assign.error) : unassign.error ? errMessage(unassign.error) : null
 
   return (
     <form
@@ -215,14 +205,7 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
         </fieldset>
       )}
 
-      {conflicts.length > 0 && (
-        <p style={{ color: '#b00' }}>
-          Already covered by another transaction:{' '}
-          {conflicts.map((c) => `${MONTH_NAMES[c.month - 1]} ${c.year}`).join(', ')}. Clear it there
-          first.
-        </p>
-      )}
-      {otherError && <p style={{ color: '#b00' }}>{otherError}</p>}
+      {errorMessage && <p style={{ color: '#b00' }}>{errorMessage}</p>}
 
       <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem', alignItems: 'center' }}>
         <button type="submit" disabled={!canSave}>

@@ -87,6 +87,67 @@ func TestRunOrcaSync_UpsertsMembersAndPaymentIdentifier(t *testing.T) {
 	}
 }
 
+// defaultIdentifierWindow returns the valid_from/valid_to of a member's single
+// default payment identifier (variable_symbol == member_number), formatted
+// YYYY-MM-DD, valid_to "" when open. Fails unless exactly one such row exists.
+func defaultIdentifierWindow(t *testing.T, pool *pgxpool.Pool, memberNumber int32) (validFrom, validTo string) {
+	t.Helper()
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*), min(valid_from)::text, COALESCE(min(valid_to)::text, '')
+		 FROM member_payment_identifiers
+		 WHERE member_number = $1 AND variable_symbol = member_number::text`, memberNumber,
+	).Scan(&count, &validFrom, &validTo); err != nil {
+		t.Fatalf("querying default payment identifier for %d: %v", memberNumber, err)
+	}
+	if count != 1 {
+		t.Fatalf("default payment identifier rows for %d = %d, want exactly 1", memberNumber, count)
+	}
+	return validFrom, validTo
+}
+
+// A fee_start_date corrected in Orca (here moved earlier, the real production
+// case: onboarding recorded months after the member actually joined) must
+// move the existing default identifier's valid_from, not add a second row.
+func TestRunOrcaSync_CorrectedDatesMoveDefaultIdentifierWindow(t *testing.T) {
+	pool := dbtest.Pool(t)
+	const memberNumber = int32(900803)
+
+	runs := []struct {
+		name          string
+		body          string
+		wantValidFrom string
+		wantValidTo   string
+	}{
+		{
+			name:          "initial, wrong start date",
+			body:          `{"members": [{"member_number": 900803, "fee_start_date": "2024-02-25", "fee_stop_date": null, "active": true, "sub": null, "workplace_executive_committee_sub": null}]}`,
+			wantValidFrom: "2024-02-25",
+		},
+		{
+			name:          "start date corrected earlier",
+			body:          `{"members": [{"member_number": 900803, "fee_start_date": "2023-11-14", "fee_stop_date": null, "active": true, "sub": null, "workplace_executive_committee_sub": null}]}`,
+			wantValidFrom: "2023-11-14",
+		},
+		{
+			name:          "member left",
+			body:          `{"members": [{"member_number": 900803, "fee_start_date": "2023-11-14", "fee_stop_date": "2026-06-30", "active": false, "sub": null, "workplace_executive_committee_sub": null}]}`,
+			wantValidFrom: "2023-11-14",
+			wantValidTo:   "2026-06-30",
+		},
+	}
+	for _, run := range runs {
+		client := orca.NewClient(fakeOrcaServer(t, run.body).URL, "token", false)
+		if _, err := RunOrcaSync(context.Background(), pool, client); err != nil {
+			t.Fatalf("%s: RunOrcaSync: %v", run.name, err)
+		}
+		validFrom, validTo := defaultIdentifierWindow(t, pool, memberNumber)
+		if validFrom != run.wantValidFrom || validTo != run.wantValidTo {
+			t.Errorf("%s: window = [%s, %q], want [%s, %q]", run.name, validFrom, validTo, run.wantValidFrom, run.wantValidTo)
+		}
+	}
+}
+
 func TestRunOrcaSync_MemberNotYetLiableGetsNoPaymentIdentifier(t *testing.T) {
 	pool := dbtest.Pool(t)
 	server := fakeOrcaServer(t, `{

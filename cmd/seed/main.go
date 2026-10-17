@@ -185,12 +185,13 @@ func seedMember(requestContext context.Context, queries *db.Queries, m fixtureMe
 		return fmt.Errorf("upserting member: %w", err)
 	}
 
-	if err := queries.EnsureDefaultPaymentIdentifier(requestContext, db.EnsureDefaultPaymentIdentifierParams{
+	if err := queries.UpsertDefaultPaymentIdentifier(requestContext, db.UpsertDefaultPaymentIdentifierParams{
 		MemberNumber:   m.number,
 		VariableSymbol: strconv.Itoa(int(m.number)),
 		ValidFrom:      feeStart,
+		ValidTo:        feeStop,
 	}); err != nil {
-		return fmt.Errorf("ensuring default payment identifier: %w", err)
+		return fmt.Errorf("upserting default payment identifier: %w", err)
 	}
 	return nil
 }

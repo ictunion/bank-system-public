@@ -338,8 +338,8 @@ func GetTransaction(queries *db.Queries) http.HandlerFunc {
 // *with* a member, the coverage rows are replaced with `covers` (or the month
 // before the transaction's own when `covers` is empty — dues are paid a month
 // in arrears); no member
-// or a non-fee category carries no coverage. A month already covered by a
-// *different* transaction is a 409. admin_comment is a full overwrite too,
+// or a non-fee category carries no coverage. A month may also be covered by
+// other transactions (dues split across payments). admin_comment is a full overwrite too,
 // independent of member/category/covers — omit or send "" to clear it.
 //
 // @Summary      Manually match/categorize a transaction
@@ -353,7 +353,6 @@ func GetTransaction(queries *db.Queries) http.HandlerFunc {
 // @Success      200  {object}  handler.transactionDetail
 // @Failure      400,401,403  {object}  map[string]string
 // @Failure      404  {object}  map[string]string
-// @Failure      409  {object}  map[string]string  "one or more covers months already covered by a different transaction"
 // @Router       /transactions/{id}/assignment [put]
 func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -481,28 +480,16 @@ func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		var conflicts []monthRef
 		for _, m := range months {
-			n, err := txQueries.InsertCoverageRow(r.Context(), db.InsertCoverageRowParams{
+			if err := txQueries.InsertCoverageRow(r.Context(), db.InsertCoverageRowParams{
 				ProcessedTransactionID: id,
 				MemberNumber:           *request.MemberNumber,
 				CoversYear:             int32(m.Year),
 				CoversMonth:            int16(m.Month),
-			})
-			if err != nil {
+			}); err != nil {
 				writeError(w, http.StatusInternalServerError, "failed to write coverage")
 				return
 			}
-			if n == 0 {
-				conflicts = append(conflicts, m)
-			}
-		}
-		if len(conflicts) > 0 {
-			writeJSON(w, http.StatusConflict, map[string]any{
-				"error":     "some months are already covered by another transaction",
-				"conflicts": conflicts,
-			})
-			return
 		}
 
 		if err := tx.Commit(r.Context()); err != nil {

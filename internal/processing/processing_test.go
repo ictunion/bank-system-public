@@ -78,12 +78,12 @@ func seedMemberWithIdentifier(t *testing.T, queries *db.Queries, memberNumber in
 	}); err != nil {
 		t.Fatalf("UpsertMember(%d): %v", memberNumber, err)
 	}
-	if err := queries.EnsureDefaultPaymentIdentifier(ctx, db.EnsureDefaultPaymentIdentifierParams{
+	if err := queries.UpsertDefaultPaymentIdentifier(ctx, db.UpsertDefaultPaymentIdentifierParams{
 		MemberNumber:   memberNumber,
 		VariableSymbol: variableSymbol,
 		ValidFrom:      feeStart,
 	}); err != nil {
-		t.Fatalf("EnsureDefaultPaymentIdentifier(%d, %q): %v", memberNumber, variableSymbol, err)
+		t.Fatalf("UpsertDefaultPaymentIdentifier(%d, %q): %v", memberNumber, variableSymbol, err)
 	}
 }
 
@@ -207,40 +207,45 @@ func TestRun_VariableSymbolMatchStripsLeadingZeroes(t *testing.T) {
 	}
 }
 
-func TestRun_SecondPaymentInSameMonthGetsNoCoverageRowOfItsOwn(t *testing.T) {
+func TestRun_SecondPaymentInSameMonthAlsoCoversThatMonth(t *testing.T) {
 	pool := dbtest.Pool(t)
 	queries := db.New(pool)
 	account := seedBankAccount(t, queries, "9400000005")
 	seedMemberWithIdentifier(t, queries, 900602, "900602")
 	// Two membership-fee payments landing in the same month, both matched to
-	// the same member — e.g. a duplicate, or a catch-up payment processOne has
-	// no way to distinguish from a normal one (it always defaults to "last
-	// month," see CreatePaymentCoverage's caller).
-	seedRawTransaction(t, queries, account.ID, 6006, "500.00", strPtr("900602"), nil)
-	seedRawTransaction(t, queries, account.ID, 6007, "500.00", strPtr("900602"), nil)
+	// the same member — e.g. dues split into two transfers (100 + 240).
+	seedRawTransaction(t, queries, account.ID, 6006, "100.00", strPtr("900602"), nil)
+	seedRawTransaction(t, queries, account.ID, 6007, "240.00", strPtr("900602"), nil)
 
 	result, err := Run(context.Background(), pool)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if result.TransactionsProcessed != 2 || result.TransactionsFailed != 0 {
-		t.Fatalf("result = %+v, want {2 0} — the second payment's conflicting coverage insert is not a processing failure", result)
+		t.Fatalf("result = %+v, want {2 0}", result)
 	}
 
 	first := queryProcessed(t, pool, 6006)
 	second := queryProcessed(t, pool, 6007)
 	if first.category != "membership_fee" || second.category != "membership_fee" {
-		t.Errorf("both transactions should still be categorized membership_fee: first=%+v second=%+v", first, second)
+		t.Errorf("both transactions should be categorized membership_fee: first=%+v second=%+v", first, second)
 	}
 	if first.memberNumber == nil || *first.memberNumber != 900602 || second.memberNumber == nil || *second.memberNumber != 900602 {
-		t.Errorf("both transactions should still be matched to the member: first=%+v second=%+v", first, second)
+		t.Errorf("both transactions should be matched to the member: first=%+v second=%+v", first, second)
 	}
 
-	// Exactly one payment_coverage row exists for the member, no matter which
-	// of the two transactions it ended up attached to — the second insert was
-	// a no-op (ON CONFLICT DO NOTHING), not a second row.
-	if n := coverageMonthsFor(t, pool, 900602); n != 1 {
-		t.Errorf("payment_coverage rows for member 900602 = %d, want 1 (one payment covers the month, the other's insert is a no-op)", n)
+	// One payment_coverage row per transaction, both for the same month.
+	if n := coverageMonthsFor(t, pool, 900602); n != 2 {
+		t.Errorf("payment_coverage rows for member 900602 = %d, want 2 (one per transaction)", n)
+	}
+	var distinctMonths int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(DISTINCT (covers_year, covers_month)) FROM payment_coverage WHERE member_number = $1`, int32(900602),
+	).Scan(&distinctMonths); err != nil {
+		t.Fatalf("counting distinct covered months: %v", err)
+	}
+	if distinctMonths != 1 {
+		t.Errorf("distinct covered months = %d, want 1 (both payments cover the same month)", distinctMonths)
 	}
 }
 
@@ -539,7 +544,7 @@ func seedRawTransactionOnDate(t *testing.T, queries *db.Queries, bankAccountID i
 // so member_payment_identifiers had no row covering their actual, earlier
 // payments — those transactions processed as unmatched other_income. Once
 // Orca's data is corrected and re-synced (simulated here directly via
-// EnsureDefaultPaymentIdentifier, same call the Orca sync itself makes),
+// UpsertDefaultPaymentIdentifier, same call the Orca sync itself makes),
 // RematchUnmatched must find and fix them.
 func TestRematchUnmatched_MatchesAfterMemberStartDateCorrected(t *testing.T) {
 	pool := dbtest.Pool(t)
@@ -557,12 +562,12 @@ func TestRematchUnmatched_MatchesAfterMemberStartDateCorrected(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertMember: %v", err)
 	}
-	if err := queries.EnsureDefaultPaymentIdentifier(context.Background(), db.EnsureDefaultPaymentIdentifierParams{
+	if err := queries.UpsertDefaultPaymentIdentifier(context.Background(), db.UpsertDefaultPaymentIdentifierParams{
 		MemberNumber:   memberNumber,
 		VariableSymbol: "900610",
 		ValidFrom:      wrongStart,
 	}); err != nil {
-		t.Fatalf("EnsureDefaultPaymentIdentifier (wrong): %v", err)
+		t.Fatalf("UpsertDefaultPaymentIdentifier (wrong): %v", err)
 	}
 
 	oldTransactionDate := time.Now().AddDate(0, -6, 0)
@@ -576,18 +581,16 @@ func TestRematchUnmatched_MatchesAfterMemberStartDateCorrected(t *testing.T) {
 		t.Fatalf("before correction: got %+v, want unmatched other_income", before)
 	}
 
-	// The correction: a real Orca sync re-runs EnsureDefaultPaymentIdentifier
-	// with the fixed fee_start_date. Its ON CONFLICT target is
-	// (variable_symbol, valid_from), so a changed valid_from inserts a
-	// *second* row rather than updating the first — see CLAUDE.md "Orca
-	// member sync".
+	// The correction: a real Orca sync re-runs UpsertDefaultPaymentIdentifier
+	// with the fixed fee_start_date, which moves the existing default row's
+	// valid_from earlier.
 	correctedStart := time.Now().AddDate(-1, 0, 0)
-	if err := queries.EnsureDefaultPaymentIdentifier(context.Background(), db.EnsureDefaultPaymentIdentifierParams{
+	if err := queries.UpsertDefaultPaymentIdentifier(context.Background(), db.UpsertDefaultPaymentIdentifierParams{
 		MemberNumber:   memberNumber,
 		VariableSymbol: "900610",
 		ValidFrom:      correctedStart,
 	}); err != nil {
-		t.Fatalf("EnsureDefaultPaymentIdentifier (corrected): %v", err)
+		t.Fatalf("UpsertDefaultPaymentIdentifier (corrected): %v", err)
 	}
 
 	result, err := RematchUnmatched(context.Background(), pool)

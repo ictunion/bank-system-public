@@ -135,7 +135,7 @@ func TestMissingPayments_HasEverPaidWhenMissingADifferentMonth(t *testing.T) {
 	account := seedBankAccount(t, queries, "9200000010")
 	member := memberNumber
 	pt := seedTransaction(t, queries, account.ID, 9001, "500.00", "membership_fee", "incoming", &member)
-	if _, err := queries.InsertCoverageRow(context.Background(), db.InsertCoverageRowParams{
+	if err := queries.InsertCoverageRow(context.Background(), db.InsertCoverageRowParams{
 		ProcessedTransactionID: pt.ID,
 		MemberNumber:           memberNumber,
 		CoversYear:             2025,

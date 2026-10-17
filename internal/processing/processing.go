@@ -160,28 +160,15 @@ func processOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.
 		// explicitly (there, via `covers` — not possible here, since automatic
 		// matching has no other signal to go on).
 		coveredMonth := rt.TransactionDate.AddDate(0, -1, 0)
-		rows, err := txQueries.CreatePaymentCoverage(requestContext, db.CreatePaymentCoverageParams{
+		// A month already covered by another of this member's transactions
+		// (dues split across two payments) just gets a second row.
+		if err := txQueries.CreatePaymentCoverage(requestContext, db.CreatePaymentCoverageParams{
 			ProcessedTransactionID: pt.ID,
 			MemberNumber:           *memberNumber,
 			CoversYear:             int32(coveredMonth.Year()),
 			CoversMonth:            int16(coveredMonth.Month()),
-		})
-		if err != nil {
+		}); err != nil {
 			return fmt.Errorf("inserting payment_coverage: %w", err)
-		}
-		if rows == 0 {
-			// member_number/covers_year/covers_month already covered by a
-			// different transaction — e.g. two payments in the same month, or a
-			// catch-up payment for a month processOne has no way to know is the
-			// actually-missing one (it always defaults to "last month," see
-			// above). Not an error: this transaction still commits, categorized
-			// correctly, just without a payment_coverage row of its own until an
-			// admin manually re-points it at a different month (PUT
-			// /transactions/{id}/assignment with an explicit `covers`). Logged
-			// because — unlike that manual endpoint, which 409s — this path has
-			// no caller to report it to otherwise.
-			log.Printf("processing: raw_transaction_id=%d: member_number=%d already has payment_coverage for %d-%02d, no coverage row created for this transaction",
-				rt.ID, *memberNumber, coveredMonth.Year(), int(coveredMonth.Month()))
 		}
 	}
 
@@ -402,18 +389,13 @@ func rematchOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.
 	// Same arrears convention as processOne's default single-month coverage:
 	// month before the transaction's own.
 	coveredMonth := candidate.TransactionDate.AddDate(0, -1, 0)
-	rows, err := txQueries.CreatePaymentCoverage(requestContext, db.CreatePaymentCoverageParams{
+	if err := txQueries.CreatePaymentCoverage(requestContext, db.CreatePaymentCoverageParams{
 		ProcessedTransactionID: candidate.ID,
 		MemberNumber:           member,
 		CoversYear:             int32(coveredMonth.Year()),
 		CoversMonth:            int16(coveredMonth.Month()),
-	})
-	if err != nil {
+	}); err != nil {
 		return false, fmt.Errorf("inserting payment_coverage: %w", err)
-	}
-	if rows == 0 {
-		log.Printf("rematch unmatched: processed_transaction_id=%d: member_number=%d already has payment_coverage for %d-%02d, no coverage row created",
-			candidate.ID, member, coveredMonth.Year(), int(coveredMonth.Month()))
 	}
 
 	return true, tx.Commit(requestContext)
