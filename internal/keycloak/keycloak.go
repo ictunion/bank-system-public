@@ -73,6 +73,10 @@ const (
 	//   GET /event-logs
 	RoleViewEventLogs Role = "view-event-logs"
 
+	// RoleViewAuditLogs protects:
+	//   GET /audit-logs
+	RoleViewAuditLogs Role = "view-audit-logs"
+
 	// RoleViewBudget protects:
 	//   GET /transactions/summary
 	RoleViewBudget Role = "view-budget"

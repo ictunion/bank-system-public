@@ -137,6 +137,7 @@ func main() {
 	api.HandleFunc("POST /processing/run", handler.RequireAnyRole(keycloakProvider, []keycloak.Role{keycloak.RoleManageBankAccounts, keycloak.RoleManageTransactions}, handler.RunProcessing(pool, keycloakProvider)))
 
 	api.HandleFunc("GET /event-logs", handler.RequireRole(keycloakProvider, keycloak.RoleViewEventLogs, handler.ListEventLogs(db.New(pool))))
+	api.HandleFunc("GET /audit-logs", handler.RequireRole(keycloakProvider, keycloak.RoleViewAuditLogs, handler.ListAuditLogs(db.New(pool))))
 
 	api.HandleFunc("GET /transactions", handler.RequireRole(keycloakProvider, keycloak.RoleListTransactions, handler.ListTransactions(db.New(pool))))
 	api.HandleFunc("GET /transactions/summary", handler.RequireRole(keycloakProvider, keycloak.RoleViewBudget, handler.CategorySummary(db.New(pool))))
@@ -169,8 +170,11 @@ func main() {
 		log.Print("swagger docs enabled at /api/docs/index.html")
 	}
 
+	// AuditLog wraps the api mux directly (inside StripPrefix) so the route
+	// patterns it records match the ones registered above, and so it can read
+	// back the pattern ServeMux matched (see handler.AuditLog).
 	mux := http.NewServeMux()
-	mux.Handle("/api/", http.StripPrefix("/api", api))
+	mux.Handle("/api/", http.StripPrefix("/api", handler.AuditLog(db.New(pool), api)))
 
 	// rs/cors treats an empty AllowedOrigins as "allow every origin" (its
 	// zero-value default), the opposite of what we want when

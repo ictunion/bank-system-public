@@ -80,8 +80,9 @@ func RequireAnyRole(provider *keycloak.Provider, roles []keycloak.Role, next htt
 type contextKey string
 
 const (
-	claimsContextKey contextKey = "keycloak-claims"
-	tokenContextKey  contextKey = "keycloak-token"
+	claimsContextKey      contextKey = "keycloak-claims"
+	tokenContextKey       contextKey = "keycloak-token"
+	auditRecordContextKey contextKey = "audit-record"
 )
 
 // withClaims attaches both the verified Claims and the raw token string to
@@ -89,7 +90,15 @@ const (
 // Keycloak's self-scoped Account API as the caller themselves (see
 // handler.WorkplaceMissingPayments), which decoded Claims alone can't provide
 // (there's no re-encoding a JWT from its claims).
+//
+// Every auth wrapper funnels through here, so this is also where the caller
+// is reported to the AuditLog middleware (if one is wrapping the request) —
+// AuditLog sits outside the auth wrappers and can't read context values they
+// add, only this shared record it placed on the context beforehand.
 func withClaims(ctx context.Context, claims *keycloak.Claims, token string) context.Context {
+	if record, ok := ctx.Value(auditRecordContextKey).(*auditRecord); ok {
+		record.claims = claims
+	}
 	ctx = context.WithValue(ctx, claimsContextKey, claims)
 	ctx = context.WithValue(ctx, tokenContextKey, token)
 	return ctx

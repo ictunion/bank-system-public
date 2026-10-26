@@ -1,5 +1,6 @@
 import { useAuth } from 'react-oidc-context'
 import { Link, Route, Routes } from 'react-router-dom'
+import { AuditLogsPage } from './AuditLogsPage'
 import { AuthGate } from './AuthGate'
 import { BankAccountsPage } from './BankAccountsPage'
 import { BudgetPage } from './BudgetPage'
@@ -21,6 +22,7 @@ function Dashboard() {
   const auth = useAuth()
   const canManageBankAccounts = useHasRole('manage-bank-accounts')
   const canViewEventLogs = useHasRole('view-event-logs')
+  const canViewAuditLogs = useHasRole('view-audit-logs')
   const canViewBudget = useHasRole('view-budget')
   const canManageTransactions = useHasRole('manage-transactions')
 
@@ -65,6 +67,11 @@ function Dashboard() {
                 Event logs
               </Link>
             )}
+            {canViewAuditLogs && (
+              <Link to="/audit-logs" style={{ color: '#fff' }}>
+                Audit log
+              </Link>
+            )}
           </nav>
         </div>
         <span>
@@ -80,6 +87,7 @@ function Dashboard() {
             <Route path="/budget" element={<BudgetPage />} />
             <Route path="/bank-accounts" element={<BankAccountsPage />} />
             <Route path="/event-logs" element={<EventLogsPage />} />
+            <Route path="/audit-logs" element={<AuditLogsPage />} />
             <Route path="/waivers" element={<WaiversPage />} />
           </Routes>
         </div>
