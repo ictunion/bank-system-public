@@ -19,6 +19,9 @@ type Querier interface {
 	// intended value, NULL clears it.
 	AssignTransactionToMember(ctx context.Context, arg AssignTransactionToMemberParams) (int64, error)
 	CategoryExists(ctx context.Context, name string) (bool, error)
+	// Written by the handler.AuditLog middleware once per authenticated
+	// POST/PUT/PATCH/DELETE request, after the handler has responded.
+	CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) error
 	// fio_token is encrypted at rest via pgcrypto (pgp_sym_encrypt) using
 	// encryption_key (BANK_TOKEN_ENCRYPTION_KEY env var) — never stored in the DB
 	// itself. RETURNING list explicitly excludes fio_token_encrypted so the
@@ -145,6 +148,11 @@ type Querier interface {
 	// excluded deliberately: no live account there to be the other leg of a
 	// current transfer.
 	ListActiveBankAccountNumbers(ctx context.Context) ([]string, error)
+	// Admin audit log (GET /audit-logs), newest first. Every filter arg is
+	// nullable — NULL means "don't filter on this". date_from/date_to are
+	// inclusive calendar days, compared against created_at in the session time
+	// zone. Same limit/offset + count(*) OVER () pagination as ListTransactions.
+	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]ListAuditLogsRow, error)
 	// Admin-facing list (GET /account) — deliberately excludes the Fio token.
 	// Includes soft-deleted accounts (is_active = false) so admins still see them
 	// in the UI, crossed out, as a record that the account used to exist. For the

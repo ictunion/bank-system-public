@@ -10,6 +10,19 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AuditLog struct {
+	ID         int64     `json:"id"`
+	CreatedAt  time.Time `json:"created_at"`
+	ActorSub   string    `json:"actor_sub"`
+	ActorEmail *string   `json:"actor_email"`
+	Category   string    `json:"category"`
+	Action     string    `json:"action"`
+	Method     string    `json:"method"`
+	Route      string    `json:"route"`
+	Path       string    `json:"path"`
+	StatusCode int32     `json:"status_code"`
+}
+
 type BankAccount struct {
 	ID                int32              `json:"id"`
 	FioAccountID      string             `json:"fio_account_id"`

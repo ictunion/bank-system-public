@@ -60,6 +60,43 @@ func (q *Queries) CategoryExists(ctx context.Context, name string) (bool, error)
 	return exists, err
 }
 
+const createAuditLog = `-- name: CreateAuditLog :exec
+INSERT INTO audit_logs (
+    actor_sub, actor_email,
+    category, action, method, route, path, status_code
+) VALUES (
+    $1, $2,
+    $3, $4, $5, $6, $7, $8
+)
+`
+
+type CreateAuditLogParams struct {
+	ActorSub   string  `json:"actor_sub"`
+	ActorEmail *string `json:"actor_email"`
+	Category   string  `json:"category"`
+	Action     string  `json:"action"`
+	Method     string  `json:"method"`
+	Route      string  `json:"route"`
+	Path       string  `json:"path"`
+	StatusCode int32   `json:"status_code"`
+}
+
+// Written by the handler.AuditLog middleware once per authenticated
+// POST/PUT/PATCH/DELETE request, after the handler has responded.
+func (q *Queries) CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) error {
+	_, err := q.db.Exec(ctx, createAuditLog,
+		arg.ActorSub,
+		arg.ActorEmail,
+		arg.Category,
+		arg.Action,
+		arg.Method,
+		arg.Route,
+		arg.Path,
+		arg.StatusCode,
+	)
+	return err
+}
+
 const createBankAccount = `-- name: CreateBankAccount :one
 INSERT INTO bank_accounts (fio_account_id, iban, currency, display_name, fio_token_encrypted, color)
 VALUES (
@@ -1016,6 +1053,94 @@ func (q *Queries) ListActiveBankAccountNumbers(ctx context.Context) ([]string, e
 			return nil, err
 		}
 		items = append(items, fio_account_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAuditLogs = `-- name: ListAuditLogs :many
+SELECT
+    id,
+    created_at,
+    actor_sub,
+    actor_email,
+    category,
+    action,
+    method,
+    route,
+    path,
+    status_code,
+    count(*) OVER () AS total_count
+FROM audit_logs
+WHERE ($1::text IS NULL OR category = $1::text)
+  AND ($2::text IS NULL OR actor_sub = $2::text)
+  AND ($3::date IS NULL OR created_at >= $3::date)
+  AND ($4::date IS NULL OR created_at < $4::date + 1)
+ORDER BY created_at DESC, id DESC
+LIMIT $6::int OFFSET $5::int
+`
+
+type ListAuditLogsParams struct {
+	Category *string     `json:"category"`
+	ActorSub *string     `json:"actor_sub"`
+	DateFrom pgtype.Date `json:"date_from"`
+	DateTo   pgtype.Date `json:"date_to"`
+	Off      int32       `json:"off"`
+	Lim      int32       `json:"lim"`
+}
+
+type ListAuditLogsRow struct {
+	ID         int64     `json:"id"`
+	CreatedAt  time.Time `json:"created_at"`
+	ActorSub   string    `json:"actor_sub"`
+	ActorEmail *string   `json:"actor_email"`
+	Category   string    `json:"category"`
+	Action     string    `json:"action"`
+	Method     string    `json:"method"`
+	Route      string    `json:"route"`
+	Path       string    `json:"path"`
+	StatusCode int32     `json:"status_code"`
+	TotalCount int64     `json:"total_count"`
+}
+
+// Admin audit log (GET /audit-logs), newest first. Every filter arg is
+// nullable — NULL means "don't filter on this". date_from/date_to are
+// inclusive calendar days, compared against created_at in the session time
+// zone. Same limit/offset + count(*) OVER () pagination as ListTransactions.
+func (q *Queries) ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]ListAuditLogsRow, error) {
+	rows, err := q.db.Query(ctx, listAuditLogs,
+		arg.Category,
+		arg.ActorSub,
+		arg.DateFrom,
+		arg.DateTo,
+		arg.Off,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAuditLogsRow
+	for rows.Next() {
+		var i ListAuditLogsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreatedAt,
+			&i.ActorSub,
+			&i.ActorEmail,
+			&i.Category,
+			&i.Action,
+			&i.Method,
+			&i.Route,
+			&i.Path,
+			&i.StatusCode,
+			&i.TotalCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
