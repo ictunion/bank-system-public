@@ -1,24 +1,16 @@
 import { type CSSProperties, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { errMessage } from './api/client'
-import { type Category, createCategory, deleteCategory, fetchCategories } from './api/categories'
+import {
+  type Category,
+  createCategory,
+  deleteCategory,
+  fetchCategories,
+  withChildrenUnderParents,
+} from './api/categories'
 import { Overlay } from './Overlay'
 
 const COLUMNS = ['Name', 'Type', ''] as const
-
-// Top-level categories in API order, each immediately followed by its
-// sub-categories, so the table reads as a one-level tree.
-function withChildrenUnderParents(categories: Category[]): Category[] {
-  const topLevel = categories.filter((c) => c.parent_name === null)
-  const ordered = topLevel.flatMap((parent) => [
-    parent,
-    ...categories.filter((c) => c.parent_name === parent.name),
-  ])
-  // A child whose parent is missing from the list shouldn't happen (FK), but
-  // never drop a row silently.
-  const orphans = categories.filter((c) => !ordered.includes(c))
-  return [...ordered, ...orphans]
-}
 
 export function CategoriesPage() {
   const [adding, setAdding] = useState(false)

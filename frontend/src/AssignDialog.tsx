@@ -1,6 +1,6 @@
 import { type CSSProperties, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { categoryLabel, fetchCategories } from './api/categories'
+import { categoryOptionLabel, fetchCategories, withChildrenUnderParents } from './api/categories'
 import { errMessage } from './api/client'
 import { Overlay } from './Overlay'
 import {
@@ -156,9 +156,9 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
       <label style={field}>
         Category
         <select value={category} onChange={(e) => setCategory(e.target.value)}>
-          {(categories.data ?? []).map((c) => (
+          {withChildrenUnderParents(categories.data ?? []).map((c) => (
             <option key={c.name} value={c.name}>
-              {categoryLabel(c.name)}
+              {categoryOptionLabel(c)}
             </option>
           ))}
         </select>

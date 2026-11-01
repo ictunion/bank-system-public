@@ -3,7 +3,7 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { AssignDialog } from './AssignDialog'
 import { useDebouncedCommit } from './useDebouncedCommit'
-import { categoryLabel, fetchCategories } from './api/categories'
+import { categoryLabel, categoryOptionLabel, fetchCategories, withChildrenUnderParents } from './api/categories'
 import { fetchTransactions, type TransactionQuery } from './api/transactions'
 
 const PAGE_SIZE = 100
@@ -39,6 +39,7 @@ interface Filters {
   assigned: '' | 'true' | 'false'
   direction: '' | 'incoming' | 'outgoing'
   category: string
+  includeChildren: boolean
   matchedBy: '' | 'variable_symbol' | 'manual' | 'amount_heuristic'
   memberNumber: string
   search: string
@@ -60,6 +61,7 @@ function defaultFilters(): Filters {
     assigned: '',
     direction: '',
     category: '',
+    includeChildren: false,
     matchedBy: '',
     memberNumber: '',
     search: '',
@@ -86,6 +88,7 @@ function filtersFromParams(params: URLSearchParams, defaults: Filters): Filters 
     assigned: pick(params.get('assigned'), ASSIGNED_VALUES),
     direction: pick(params.get('direction'), DIRECTION_VALUES),
     category: params.get('category') ?? '',
+    includeChildren: params.get('include_children') === 'true',
     matchedBy: pick(params.get('matched_by'), MATCHED_BY_VALUES),
     memberNumber: params.get('member_number') ?? '',
     search: params.get('search') ?? '',
@@ -104,6 +107,7 @@ function paramsFromFilters(f: Filters, offset: number): URLSearchParams {
   if (f.assigned) params.set('assigned', f.assigned)
   if (f.direction) params.set('direction', f.direction)
   if (f.category) params.set('category', f.category)
+  if (f.category && f.includeChildren) params.set('include_children', 'true')
   if (f.matchedBy) params.set('matched_by', f.matchedBy)
   if (f.memberNumber.trim()) params.set('member_number', f.memberNumber.trim())
   if (f.search.trim()) params.set('search', f.search.trim())
@@ -121,6 +125,7 @@ function toQuery(f: Filters, offset: number): TransactionQuery {
     assigned: f.assigned ? f.assigned === 'true' : undefined,
     direction: f.direction || undefined,
     category: f.category || undefined,
+    includeChildren: f.category !== '' && f.includeChildren ? true : undefined,
     matchedBy: f.matchedBy || undefined,
     memberNumber: f.memberNumber.trim() && Number.isInteger(mn) && mn > 0 ? mn : undefined,
     search: f.search.trim() || undefined,
@@ -168,6 +173,9 @@ export function TransactionsTable() {
   })
 
   const categories = useQuery({ queryKey: ['categories'], queryFn: fetchCategories })
+  // The checkbox only means something for a category that has sub-categories.
+  const selectedHasChildren =
+    filters.category !== '' && (categories.data ?? []).some((c) => c.parent_name === filters.category)
 
   const filterRowEl = (
     <div style={filterRow}>
@@ -202,8 +210,18 @@ export function TransactionsTable() {
         label="Category"
         value={filters.category}
         onChange={(v) => update({ category: v })}
-        options={(categories.data ?? []).map((c): [string, string] => [c.name, categoryLabel(c.name)])}
+        options={withChildrenUnderParents(categories.data ?? []).map((c): [string, string] => [c.name, categoryOptionLabel(c)])}
       />
+      {selectedHasChildren && (
+        <label>
+          <input
+            type="checkbox"
+            checked={filters.includeChildren}
+            onChange={(e) => update({ includeChildren: e.target.checked })}
+          />{' '}
+          Incl. sub-categories
+        </label>
+      )}
       <Select
         label="Matched by"
         value={filters.matchedBy}

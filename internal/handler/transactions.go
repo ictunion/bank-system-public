@@ -57,7 +57,8 @@ type transactionListItem struct {
 }
 
 // ListTransactions handles GET /transactions — the admin transaction browser.
-// All filters are optional query params: assigned (true|false), direction, category, matched_by,
+// All filters are optional query params: assigned (true|false), direction, category,
+// include_children (true|false, widens category to its sub-categories), matched_by,
 // member_number, from, to (YYYY-MM-DD), search (substring, counterparty/message/comment),
 // limit (<=500, default 100), offset.
 //
@@ -69,6 +70,7 @@ type transactionListItem struct {
 // @Param        assigned       query  bool    false  "true = has a member match, false = the unassigned worklist"
 // @Param        direction      query  string  false  "incoming or outgoing"
 // @Param        category       query  string  false  "e.g. membership_fee, salary, other_income, other_expense"
+// @Param        include_children  query  bool  false  "With category: also match that category's sub-categories. Default false"
 // @Param        matched_by     query  string  false  "variable_symbol, manual, or amount_heuristic"
 // @Param        member_number  query  int     false  "One member's transactions"
 // @Param        from           query  string  false  "YYYY-MM-DD, inclusive"
@@ -108,6 +110,10 @@ func ListTransactions(queries *db.Queries) http.HandlerFunc {
 		}
 		if s := queryParams.Get("category"); s != "" {
 			params.Category = &s
+		}
+		if params.IncludeChildren, ok = boolParam(queryParams.Get("include_children")); !ok {
+			writeError(w, http.StatusBadRequest, "include_children must be true or false")
+			return
 		}
 		if params.MatchedBy, ok = enumParam(queryParams.Get("matched_by"), validMatchedBy); !ok {
 			writeError(w, http.StatusBadRequest, "invalid matched_by")
@@ -211,6 +217,21 @@ func enumParam(v string, allowed []string) (*string, bool) {
 		}
 	}
 	return nil, false
+}
+
+// boolParam parses an optional true|false query param. Empty -> false, ok.
+// Anything else -> ok false.
+func boolParam(v string) (bool, bool) {
+	switch v {
+	case "":
+		return false, true
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 // dateParam parses an optional YYYY-MM-DD query param into a pgtype.Date.
@@ -595,6 +616,7 @@ type categorySummaryResponse struct {
 // CategorySummary handles GET /transactions/summary — totals grouped by
 // category and direction for the budgeting view. Optional from/to (YYYY-MM-DD, inclusive)
 // query params scope it to a date range, same convention as ListTransactions.
+// Optional rollup=true folds each sub-category's total into its parent's.
 // Gated by RoleViewBudget rather than RoleListTransactions: unlike the
 // transaction browser, this never returns a member_number, counterparty, or
 // any other per-transaction detail — only category/currency/total — so it's
@@ -607,6 +629,7 @@ type categorySummaryResponse struct {
 // @Produce      json
 // @Param        from  query  string  false  "YYYY-MM-DD, inclusive"
 // @Param        to    query  string  false  "YYYY-MM-DD, inclusive"
+// @Param        rollup  query  bool  false  "true = report sub-categories under their parent category. Default false"
 // @Success      200  {object}  handler.categorySummaryResponse
 // @Failure      400,401,403  {object}  map[string]string
 // @Router       /transactions/summary [get]
@@ -625,9 +648,16 @@ func CategorySummary(queries *db.Queries) http.HandlerFunc {
 			return
 		}
 
+		rollup, ok := boolParam(queryParams.Get("rollup"))
+		if !ok {
+			writeError(w, http.StatusBadRequest, "rollup must be true or false")
+			return
+		}
+
 		rows, err := queries.GetTransactionCategorySummary(r.Context(), db.GetTransactionCategorySummaryParams{
 			DateFrom: dateFrom,
 			DateTo:   dateTo,
+			Rollup:   rollup,
 		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to summarize transactions")

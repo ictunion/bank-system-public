@@ -133,6 +133,11 @@ type Querier interface {
 	// signed value raw_transactions stores it as. internal_transfer excluded
 	// entirely — money moving between our own bank_accounts isn't real income or
 	// expense and would otherwise inflate both totals for the same transfer.
+	// A sub-category of internal_transfer is excluded the same way.
+	// rollup=true reports each sub-category under its parent's name instead
+	// (one level only, so COALESCE(parent_name, name) is the top-level name).
+	// GROUP BY by position: a bare "category" there would resolve to
+	// pt.category, not the rolled-up output column.
 	GetTransactionCategorySummary(ctx context.Context, arg GetTransactionCategorySummaryParams) ([]GetTransactionCategorySummaryRow, error)
 	// One row for the transaction browser's detail / edit view — same columns as
 	// ListTransactions minus the window count. Covered months come from

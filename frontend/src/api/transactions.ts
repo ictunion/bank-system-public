@@ -50,6 +50,8 @@ export interface TransactionQuery {
   assigned?: boolean
   direction?: Direction
   category?: Category
+  /** with category: also match that category's sub-categories */
+  includeChildren?: boolean
   matchedBy?: MatchedBy
   memberNumber?: number
   /** case-insensitive substring match against counterparty name/number or message/comment */
@@ -65,6 +67,7 @@ export function fetchTransactions(q: TransactionQuery = {}): Promise<Transaction
   if (q.assigned != null) params.set('assigned', String(q.assigned))
   if (q.direction) params.set('direction', q.direction)
   if (q.category) params.set('category', q.category)
+  if (q.includeChildren) params.set('include_children', 'true')
   if (q.matchedBy) params.set('matched_by', q.matchedBy)
   if (q.memberNumber != null) params.set('member_number', String(q.memberNumber))
   if (q.search) params.set('search', q.search)

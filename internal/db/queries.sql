@@ -650,7 +650,13 @@ LEFT JOIN bank_accounts ba ON ba.id = rt.bank_account_id
 WHERE (sqlc.narg(assigned)::boolean IS NULL
         OR (pt.member_number IS NOT NULL) = sqlc.narg(assigned)::boolean)
   AND (sqlc.narg(direction)::text IS NULL OR pt.direction = sqlc.narg(direction)::text)
-  AND (sqlc.narg(category)::text IS NULL OR pt.category = sqlc.narg(category)::text)
+  -- include_children widens a category filter to that category's
+  -- sub-categories too (one level only, so no recursion needed).
+  AND (sqlc.narg(category)::text IS NULL
+        OR pt.category = sqlc.narg(category)::text
+        OR (sqlc.arg(include_children)::boolean AND pt.category IN (
+              SELECT child.name FROM transaction_categories child
+              WHERE child.parent_name = sqlc.narg(category)::text)))
   AND (sqlc.narg(matched_by)::text IS NULL OR pt.matched_by = sqlc.narg(matched_by)::text)
   AND (sqlc.narg(member_number)::int IS NULL OR pt.member_number = sqlc.narg(member_number)::int)
   AND (sqlc.narg(date_from)::date IS NULL OR rt.transaction_date >= sqlc.narg(date_from)::date)
@@ -673,17 +679,26 @@ LIMIT sqlc.arg(lim)::int OFFSET sqlc.arg(off)::int;
 -- signed value raw_transactions stores it as. internal_transfer excluded
 -- entirely — money moving between our own bank_accounts isn't real income or
 -- expense and would otherwise inflate both totals for the same transfer.
+-- A sub-category of internal_transfer is excluded the same way.
+-- rollup=true reports each sub-category under its parent's name instead
+-- (one level only, so COALESCE(parent_name, name) is the top-level name).
+-- GROUP BY by position: a bare "category" there would resolve to
+-- pt.category, not the rolled-up output column.
 SELECT
     pt.direction,
-    pt.category,
+    (CASE WHEN sqlc.arg(rollup)::boolean
+          THEN COALESCE(tc.parent_name, pt.category)
+          ELSE pt.category END)::text AS category,
     rt.currency,
     COALESCE(SUM(ABS(rt.amount)), 0)::numeric AS total
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+JOIN transaction_categories tc ON tc.name = pt.category
 WHERE pt.category != 'internal_transfer'
+  AND tc.parent_name IS DISTINCT FROM 'internal_transfer'
   AND (sqlc.narg(date_from)::date IS NULL OR rt.transaction_date >= sqlc.narg(date_from)::date)
   AND (sqlc.narg(date_to)::date IS NULL OR rt.transaction_date <= sqlc.narg(date_to)::date)
-GROUP BY pt.direction, pt.category, rt.currency
+GROUP BY 1, 2, 3
 ORDER BY pt.direction, total DESC;
 
 -- name: FindMemberByVariableSymbol :one

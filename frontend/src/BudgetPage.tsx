@@ -59,8 +59,9 @@ export function BudgetPage() {
 
   const { from, to } = dateRange(year, month)
   const { data, isPending, isError, error } = useQuery({
+    // Always rolled up for now: sub-categories are shown inside their parent.
     queryKey: ['category-summary', from, to],
-    queryFn: () => fetchCategorySummary({ from, to }),
+    queryFn: () => fetchCategorySummary({ from, to, rollup: true }),
   })
 
   return (

@@ -809,19 +809,24 @@ func (q *Queries) GetTotalBalance(ctx context.Context) ([]GetTotalBalanceRow, er
 const getTransactionCategorySummary = `-- name: GetTransactionCategorySummary :many
 SELECT
     pt.direction,
-    pt.category,
+    (CASE WHEN $1::boolean
+          THEN COALESCE(tc.parent_name, pt.category)
+          ELSE pt.category END)::text AS category,
     rt.currency,
     COALESCE(SUM(ABS(rt.amount)), 0)::numeric AS total
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+JOIN transaction_categories tc ON tc.name = pt.category
 WHERE pt.category != 'internal_transfer'
-  AND ($1::date IS NULL OR rt.transaction_date >= $1::date)
-  AND ($2::date IS NULL OR rt.transaction_date <= $2::date)
-GROUP BY pt.direction, pt.category, rt.currency
+  AND tc.parent_name IS DISTINCT FROM 'internal_transfer'
+  AND ($2::date IS NULL OR rt.transaction_date >= $2::date)
+  AND ($3::date IS NULL OR rt.transaction_date <= $3::date)
+GROUP BY 1, 2, 3
 ORDER BY pt.direction, total DESC
 `
 
 type GetTransactionCategorySummaryParams struct {
+	Rollup   bool        `json:"rollup"`
 	DateFrom pgtype.Date `json:"date_from"`
 	DateTo   pgtype.Date `json:"date_to"`
 }
@@ -841,8 +846,13 @@ type GetTransactionCategorySummaryRow struct {
 // signed value raw_transactions stores it as. internal_transfer excluded
 // entirely — money moving between our own bank_accounts isn't real income or
 // expense and would otherwise inflate both totals for the same transfer.
+// A sub-category of internal_transfer is excluded the same way.
+// rollup=true reports each sub-category under its parent's name instead
+// (one level only, so COALESCE(parent_name, name) is the top-level name).
+// GROUP BY by position: a bare "category" there would resolve to
+// pt.category, not the rolled-up output column.
 func (q *Queries) GetTransactionCategorySummary(ctx context.Context, arg GetTransactionCategorySummaryParams) ([]GetTransactionCategorySummaryRow, error) {
-	rows, err := q.db.Query(ctx, getTransactionCategorySummary, arg.DateFrom, arg.DateTo)
+	rows, err := q.db.Query(ctx, getTransactionCategorySummary, arg.Rollup, arg.DateFrom, arg.DateTo)
 	if err != nil {
 		return nil, err
 	}
@@ -2062,32 +2072,39 @@ LEFT JOIN bank_accounts ba ON ba.id = rt.bank_account_id
 WHERE ($1::boolean IS NULL
         OR (pt.member_number IS NOT NULL) = $1::boolean)
   AND ($2::text IS NULL OR pt.direction = $2::text)
-  AND ($3::text IS NULL OR pt.category = $3::text)
-  AND ($4::text IS NULL OR pt.matched_by = $4::text)
-  AND ($5::int IS NULL OR pt.member_number = $5::int)
-  AND ($6::date IS NULL OR rt.transaction_date >= $6::date)
-  AND ($7::date IS NULL OR rt.transaction_date <= $7::date)
-  AND ($8::text IS NULL OR (
-        rt.counter_account_name ILIKE '%' || $8::text || '%'
-        OR rt.counter_account_number ILIKE '%' || $8::text || '%'
-        OR rt.message_for_recipient ILIKE '%' || $8::text || '%'
-        OR rt.comment ILIKE '%' || $8::text || '%'
+  -- include_children widens a category filter to that category's
+  -- sub-categories too (one level only, so no recursion needed).
+  AND ($3::text IS NULL
+        OR pt.category = $3::text
+        OR ($4::boolean AND pt.category IN (
+              SELECT child.name FROM transaction_categories child
+              WHERE child.parent_name = $3::text)))
+  AND ($5::text IS NULL OR pt.matched_by = $5::text)
+  AND ($6::int IS NULL OR pt.member_number = $6::int)
+  AND ($7::date IS NULL OR rt.transaction_date >= $7::date)
+  AND ($8::date IS NULL OR rt.transaction_date <= $8::date)
+  AND ($9::text IS NULL OR (
+        rt.counter_account_name ILIKE '%' || $9::text || '%'
+        OR rt.counter_account_number ILIKE '%' || $9::text || '%'
+        OR rt.message_for_recipient ILIKE '%' || $9::text || '%'
+        OR rt.comment ILIKE '%' || $9::text || '%'
       ))
 ORDER BY rt.transaction_date DESC, rt.id DESC
-LIMIT $10::int OFFSET $9::int
+LIMIT $11::int OFFSET $10::int
 `
 
 type ListTransactionsParams struct {
-	Assigned     *bool       `json:"assigned"`
-	Direction    *string     `json:"direction"`
-	Category     *string     `json:"category"`
-	MatchedBy    *string     `json:"matched_by"`
-	MemberNumber *int32      `json:"member_number"`
-	DateFrom     pgtype.Date `json:"date_from"`
-	DateTo       pgtype.Date `json:"date_to"`
-	Search       *string     `json:"search"`
-	Off          int32       `json:"off"`
-	Lim          int32       `json:"lim"`
+	Assigned        *bool       `json:"assigned"`
+	Direction       *string     `json:"direction"`
+	Category        *string     `json:"category"`
+	IncludeChildren bool        `json:"include_children"`
+	MatchedBy       *string     `json:"matched_by"`
+	MemberNumber    *int32      `json:"member_number"`
+	DateFrom        pgtype.Date `json:"date_from"`
+	DateTo          pgtype.Date `json:"date_to"`
+	Search          *string     `json:"search"`
+	Off             int32       `json:"off"`
+	Lim             int32       `json:"lim"`
 }
 
 type ListTransactionsRow struct {
@@ -2125,6 +2142,7 @@ func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsPara
 		arg.Assigned,
 		arg.Direction,
 		arg.Category,
+		arg.IncludeChildren,
 		arg.MatchedBy,
 		arg.MemberNumber,
 		arg.DateFrom,

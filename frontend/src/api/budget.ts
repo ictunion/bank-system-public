@@ -23,12 +23,15 @@ export interface CategorySummaryQuery {
   from?: string
   /** inclusive, YYYY-MM-DD */
   to?: string
+  /** true = sub-category totals reported under their parent category */
+  rollup?: boolean
 }
 
 export function fetchCategorySummary(q: CategorySummaryQuery = {}): Promise<CategorySummary> {
   const params = new URLSearchParams()
   if (q.from) params.set('from', q.from)
   if (q.to) params.set('to', q.to)
+  if (q.rollup) params.set('rollup', 'true')
   const qs = params.toString()
   return apiGet<CategorySummary>(`/api/transactions/summary${qs ? `?${qs}` : ''}`)
 }

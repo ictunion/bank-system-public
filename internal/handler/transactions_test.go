@@ -122,6 +122,7 @@ func TestListTransactions_Validation(t *testing.T) {
 		{"non-numeric member_number", "member_number=abc"},
 		{"malformed from date", "from=not-a-date"},
 		{"malformed to date", "to=2026-13-40"},
+		{"invalid include_children", "include_children=yes"},
 		{"zero limit", "limit=0"},
 		{"negative offset", "offset=-1"},
 	}
@@ -166,6 +167,65 @@ func TestListTransactions_FiltersByDirectionAndCategory(t *testing.T) {
 	byCategory := listWith("category=salary")
 	if len(byCategory.Transactions) != 1 || byCategory.Transactions[0].Direction != "outgoing" {
 		t.Errorf("category=salary: got %+v, want exactly the salary row", byCategory.Transactions)
+	}
+}
+
+// seedSubCategory creates a custom category with the given parent, directly
+// via *db.Queries — a fixture dependency, not what these tests are about.
+func seedSubCategory(t *testing.T, queries *db.Queries, name, parentName string) {
+	t.Helper()
+	if _, err := queries.CreateCategory(context.Background(), db.CreateCategoryParams{
+		Name:       name,
+		ParentName: &parentName,
+	}); err != nil {
+		t.Fatalf("CreateCategory(%q, parent %q): %v", name, parentName, err)
+	}
+}
+
+func TestListTransactions_IncludeChildren(t *testing.T) {
+	queries := dbtest.Tx(t)
+	account := seedBankAccount(t, queries, "9100000005")
+	seedSubCategory(t, queries, "test_legal", "salary")
+
+	seedTransaction(t, queries, account.ID, 1101, "-500.00", "salary", "outgoing", nil)
+	seedTransaction(t, queries, account.ID, 1102, "-300.00", "test_legal", "outgoing", nil)
+	seedTransaction(t, queries, account.ID, 1103, "-100.00", "other_expense", "outgoing", nil)
+
+	tests := []struct {
+		name  string
+		query string
+		want  map[string]bool
+	}{
+		{"parent only by default", "category=salary", map[string]bool{"salary": true}},
+		{"parent only when false", "category=salary&include_children=false", map[string]bool{"salary": true}},
+		{"parent and children", "category=salary&include_children=true", map[string]bool{"salary": true, "test_legal": true}},
+		{"child alone", "category=test_legal&include_children=true", map[string]bool{"test_legal": true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/transactions?"+tt.query, nil)
+			ListTransactions(queries)(recorder, request)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
+			}
+			var got transactionsResponse
+			if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decoding response: %v", err)
+			}
+			gotCategories := make(map[string]bool)
+			for _, transaction := range got.Transactions {
+				gotCategories[transaction.Category] = true
+			}
+			if len(got.Transactions) != len(tt.want) || len(gotCategories) != len(tt.want) {
+				t.Fatalf("got categories %v (%d rows), want %v", gotCategories, len(got.Transactions), tt.want)
+			}
+			for category := range tt.want {
+				if !gotCategories[category] {
+					t.Errorf("missing category %q, got %v", category, gotCategories)
+				}
+			}
+		})
 	}
 }
 
@@ -409,4 +469,71 @@ func parseAmount(t *testing.T, s string) float64 {
 		t.Fatalf("parsing amount %q: %v", s, err)
 	}
 	return f
+}
+
+func TestCategorySummary_Rollup(t *testing.T) {
+	queries := dbtest.Tx(t)
+	account := seedBankAccount(t, queries, "9100000006")
+	seedSubCategory(t, queries, "test_legal", "salary")
+	seedSubCategory(t, queries, "test_transfer_child", "internal_transfer")
+
+	seedTransaction(t, queries, account.ID, 3101, "-500.00", "salary", "outgoing", nil)
+	seedTransaction(t, queries, account.ID, 3102, "-300.00", "test_legal", "outgoing", nil)
+	// A sub-category of internal_transfer is excluded like its parent,
+	// rolled up or not.
+	seedTransaction(t, queries, account.ID, 3103, "-900.00", "test_transfer_child", "outgoing", nil)
+
+	summaryWith := func(query string) map[string]float64 {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/transactions/summary?"+query, nil)
+		CategorySummary(queries)(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
+		}
+		var got categorySummaryResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decoding response: %v", err)
+		}
+		totals := make(map[string]float64)
+		for _, total := range got.Outgoing {
+			if _, duplicate := totals[total.Category]; duplicate {
+				t.Errorf("category %q listed twice in Outgoing", total.Category)
+			}
+			totals[total.Category] = parseAmount(t, total.Total)
+		}
+		return totals
+	}
+
+	tests := []struct {
+		name  string
+		query string
+		want  map[string]float64
+	}{
+		{"separate by default", "", map[string]float64{"salary": 500, "test_legal": 300}},
+		{"rolled up into parent", "rollup=true", map[string]float64{"salary": 800}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := summaryWith(tt.query)
+			if len(got) != len(tt.want) {
+				t.Fatalf("Outgoing = %v, want %v", got, tt.want)
+			}
+			for category, wantTotal := range tt.want {
+				if got[category] != wantTotal {
+					t.Errorf("Outgoing[%q] = %v, want %v", category, got[category], wantTotal)
+				}
+			}
+		})
+	}
+}
+
+func TestCategorySummary_InvalidRollup(t *testing.T) {
+	queries := dbtest.Tx(t)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/transactions/summary?rollup=yes", nil)
+	CategorySummary(queries)(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d, body = %s", recorder.Code, http.StatusBadRequest, recorder.Body)
+	}
 }
