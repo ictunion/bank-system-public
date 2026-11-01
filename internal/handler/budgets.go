@@ -45,7 +45,7 @@ type budgetLineResponse struct {
 	Kind        string        `json:"kind"` // income | expense
 	GroupName   *string       `json:"group_name"`
 	Name        string        `json:"name"`
-	Projected   string        `json:"projected"` // always positive; kind gives the sign
+	Budgeted    string        `json:"budgeted"` // always positive; kind gives the sign
 	CategoryIDs []pgtype.UUID `json:"category_ids"`
 	SortOrder   int32         `json:"sort_order"`
 	Note        *string       `json:"note"`
@@ -60,7 +60,7 @@ func toBudgetLineResponse(line db.BudgetLine, categoryIDs []pgtype.UUID) budgetL
 		Kind:        line.Kind,
 		GroupName:   line.GroupName,
 		Name:        line.Name,
-		Projected:   line.ProjectedAmount,
+		Budgeted:    line.BudgetedAmount,
 		CategoryIDs: categoryIDs,
 		SortOrder:   line.SortOrder,
 		Note:        line.Note,
@@ -72,10 +72,10 @@ func toBudgetLineResponse(line db.BudgetLine, categoryIDs []pgtype.UUID) budgetL
 // editor reloads the report after a save.
 type budgetReportLine struct {
 	budgetLineResponse
-	// Real is the year's actual CZK amount for the line's categories, signed
-	// so it reads positive in the normal case (spend for an expense line,
-	// receipts for an income line); a refund lowers it.
-	Real string `json:"real"`
+	// Actual is the year's actual CZK amount for the line's categories,
+	// signed so it reads positive in the normal case (spend for an expense
+	// line, receipts for an income line); a refund lowers it.
+	Actual string `json:"actual"`
 }
 
 // unbudgetedTotal is one category's actual amount in a year where no line of
@@ -84,7 +84,7 @@ type unbudgetedTotal struct {
 	CategoryID pgtype.UUID `json:"category_id"`
 	Category   string      `json:"category"`  // name, for display
 	Direction  string      `json:"direction"` // incoming | outgoing
-	Real       string      `json:"real"`      // positive; direction gives the sign
+	Actual     string      `json:"actual"`    // positive; direction gives the sign
 }
 
 type budgetResponse struct {
@@ -173,13 +173,13 @@ func ListBudgets(queries *db.Queries) http.HandlerFunc {
 }
 
 // GetBudget handles GET /budgets/{year} — the budget vs. actual report: the
-// budget's lines (display order), each with its mapped categories, projected
-// and real amount, plus the year's unbudgeted category totals. Same privacy
+// budget's lines (display order), each with its mapped categories, budgeted
+// and actual amount, plus the year's unbudgeted category totals. Same privacy
 // level as /transactions/summary: aggregates only, no per-transaction data,
 // so view-budget.
 //
 // @Summary      Get one year's budget vs. actual
-// @Description  Requires the view-budget role. Lines in display order (sort_order, then id), each with its mapped category_ids, projected and real (that year's CZK transactions in those categories; signed, a refund lowers it). unbudgeted: categories with transactions that year but no line (internal transfers excluded). other_currency_count: non-CZK transactions left out. Amounts are decimal strings, always CZK.
+// @Description  Requires the view-budget role. Lines in display order (sort_order, then id), each with its mapped category_ids, budgeted and actual (that year's CZK transactions in those categories; signed, a refund lowers it). unbudgeted: categories with transactions that year but no line (internal transfers excluded). other_currency_count: non-CZK transactions left out. Amounts are decimal strings, always CZK.
 // @Tags         budgets
 // @Security     BearerAuth
 // @Produce      json
@@ -220,9 +220,9 @@ func GetBudget(queries *db.Queries) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "failed to compute budget actuals")
 			return
 		}
-		realByLine := make(map[int64]string, len(actuals))
+		actualByLine := make(map[int64]string, len(actuals))
 		for _, actual := range actuals {
-			realByLine[actual.BudgetLineID] = actual.RealTotal
+			actualByLine[actual.BudgetLineID] = actual.ActualTotal
 		}
 		unbudgetedRows, err := queries.ListUnbudgetedCategoryTotals(r.Context(), db.ListUnbudgetedCategoryTotalsParams{
 			BudgetYear:                 year,
@@ -248,13 +248,13 @@ func GetBudget(queries *db.Queries) http.HandlerFunc {
 			OtherCurrencyCount: otherCurrencyCount,
 		}
 		for i, line := range lines {
-			realTotal, ok := realByLine[line.ID]
+			actualTotal, ok := actualByLine[line.ID]
 			if !ok {
-				realTotal = "0.00"
+				actualTotal = "0.00"
 			}
 			response.Lines[i] = budgetReportLine{
 				budgetLineResponse: toBudgetLineResponse(line, categoriesByLine[line.ID]),
-				Real:               realTotal,
+				Actual:             actualTotal,
 			}
 		}
 		for i, row := range unbudgetedRows {
@@ -262,7 +262,7 @@ func GetBudget(queries *db.Queries) http.HandlerFunc {
 				CategoryID: row.CategoryID,
 				Category:   row.Category,
 				Direction:  row.Direction,
-				Real:       row.Total,
+				Actual:     row.Total,
 			}
 		}
 		writeJSON(w, http.StatusOK, response)
@@ -273,7 +273,7 @@ type createBudgetRequest struct {
 	Year int32   `json:"year"`
 	Note *string `json:"note"`
 	// CopyFromYear, if set, copies that year's lines — names, groups, order,
-	// projected amounts and category mappings — into the new budget, so a
+	// budgeted amounts and category mappings — into the new budget, so a
 	// new year starts from last year's sheet.
 	CopyFromYear *int32 `json:"copy_from_year"`
 }
@@ -282,7 +282,7 @@ type createBudgetRequest struct {
 // as a copy of another year's lines (one DB transaction).
 //
 // @Summary      Create a budget
-// @Description  Requires the manage-budget role. Creates an empty budget, or with copy_from_year a copy of that year's lines (projected amounts and category mappings included). 409 if the year already has one; 400 if copy_from_year has no budget.
+// @Description  Requires the manage-budget role. Creates an empty budget, or with copy_from_year a copy of that year's lines (budgeted amounts and category mappings included). 409 if the year already has one; 400 if copy_from_year has no budget.
 // @Tags         budgets
 // @Security     BearerAuth
 // @Accept       json
@@ -448,7 +448,7 @@ type budgetLineRequest struct {
 	Kind        string        `json:"kind"` // income | expense
 	GroupName   *string       `json:"group_name"`
 	Name        string        `json:"name"`
-	Projected   string        `json:"projected"` // decimal string, >= 0, e.g. "60000.00"
+	Budgeted    string        `json:"budgeted"` // decimal string, >= 0, e.g. "60000.00"
 	CategoryIDs []pgtype.UUID `json:"category_ids"`
 	SortOrder   int32         `json:"sort_order"`
 	Note        *string       `json:"note"` // optional; omit or "" to clear
@@ -458,7 +458,7 @@ type normalizedBudgetLine struct {
 	kind        string
 	groupName   *string
 	name        string
-	projected   string
+	budgeted    string
 	categoryIDs []pgtype.UUID
 	sortOrder   int32
 	note        *string
@@ -490,12 +490,12 @@ func normalizeBudgetLine(request budgetLineRequest) (normalizedBudgetLine, strin
 			note = &trimmed
 		}
 	}
-	projected := strings.TrimSpace(request.Projected)
-	if projected == "" {
-		projected = "0"
+	budgeted := strings.TrimSpace(request.Budgeted)
+	if budgeted == "" {
+		budgeted = "0"
 	}
-	if !budgetAmountPattern.MatchString(projected) {
-		return normalizedBudgetLine{}, "projected must be a non-negative amount like 60000 or 60000.50"
+	if !budgetAmountPattern.MatchString(budgeted) {
+		return normalizedBudgetLine{}, "budgeted must be a non-negative amount like 60000 or 60000.50"
 	}
 
 	// Deduplicated, order kept.
@@ -513,10 +513,10 @@ func normalizeBudgetLine(request budgetLineRequest) (normalizedBudgetLine, strin
 	}
 
 	return normalizedBudgetLine{
-		kind:       request.Kind,
-		groupName:  groupName,
-		name:       name,
-		projected:  projected,
+		kind:        request.Kind,
+		groupName:   groupName,
+		name:        name,
+		budgeted:    budgeted,
 		categoryIDs: categoryIDs,
 		sortOrder:   request.SortOrder,
 		note:        note,
@@ -592,7 +592,7 @@ func saveBudgetLine(r *http.Request, pool *pgxpool.Pool, year int32, lineID int6
 			Kind:            line.kind,
 			GroupName:       line.groupName,
 			Name:            line.name,
-			ProjectedAmount: line.projected,
+			BudgetedAmount:  line.budgeted,
 			SortOrder:       line.sortOrder,
 			Note:            line.note,
 		})
@@ -606,7 +606,7 @@ func saveBudgetLine(r *http.Request, pool *pgxpool.Pool, year int32, lineID int6
 			Kind:            line.kind,
 			GroupName:       line.groupName,
 			Name:            line.name,
-			ProjectedAmount: line.projected,
+			BudgetedAmount:  line.budgeted,
 			SortOrder:       line.sortOrder,
 			Note:            line.note,
 		})
@@ -708,7 +708,7 @@ func handleBudgetLineSave(w http.ResponseWriter, r *http.Request, pool *pgxpool.
 // CreateBudgetLine handles POST /budgets/{year}/lines.
 //
 // @Summary      Add a budget line
-// @Description  Requires the manage-budget role. projected is a non-negative decimal string; kind gives the sign. Each category (by id in category_ids) may feed only one line per year (409 names the line that has it). Unknown category → 400.
+// @Description  Requires the manage-budget role. budgeted is a non-negative decimal string; kind gives the sign. Each category (by id in category_ids) may feed only one line per year (409 names the line that has it). Unknown category → 400.
 // @Tags         budgets
 // @Security     BearerAuth
 // @Accept       json

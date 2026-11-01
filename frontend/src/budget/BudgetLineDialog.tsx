@@ -44,7 +44,7 @@ export function BudgetLineDialog({
   const [name, setName] = useState(line?.name ?? '')
   const [lineKind, setLineKind] = useState<BudgetLineKind>(line?.kind ?? kind)
   const [groupName, setGroupName] = useState(line?.group_name ?? '')
-  const [projected, setProjected] = useState(line?.projected ?? '')
+  const [budgeted, setBudgeted] = useState(line?.budgeted ?? '')
   const [categoryIds, setCategoryIds] = useState<string[]>(line?.category_ids ?? [])
   const [note, setNote] = useState(line?.note ?? '')
 
@@ -61,14 +61,14 @@ export function BudgetLineDialog({
     onClose()
   }
 
-  const normalizedProjected = normalizeAmount(projected)
+  const normalizedBudgeted = normalizeAmount(budgeted)
   const save = useMutation({
     mutationFn: () => {
       const input = {
         kind: lineKind,
         group_name: groupName.trim() === '' ? null : groupName.trim(),
         name: name.trim(),
-        projected: normalizedProjected ?? '0',
+        budgeted: normalizedBudgeted ?? '0',
         category_ids: categoryIds,
         note: note.trim() === '' ? null : note.trim(),
         // A new line goes last; an edited one keeps its place.
@@ -86,7 +86,7 @@ export function BudgetLineDialog({
   const toggleCategory = (id: string, checked: boolean) =>
     setCategoryIds((previous) => (checked ? [...previous, id] : previous.filter((c) => c !== id)))
 
-  const canSave = name.trim() !== '' && normalizedProjected !== null && !save.isPending && !remove.isPending
+  const canSave = name.trim() !== '' && normalizedBudgeted !== null && !save.isPending && !remove.isPending
   const error = save.error ?? remove.error
 
   return (
@@ -125,9 +125,9 @@ export function BudgetLineDialog({
         </label>
         <label style={field}>
           Budgeted (CZK)
-          <input value={projected} onChange={(e) => setProjected(e.target.value)} inputMode="decimal" placeholder="60000" />
+          <input value={budgeted} onChange={(e) => setBudgeted(e.target.value)} inputMode="decimal" placeholder="60000" />
         </label>
-        {normalizedProjected === null && (
+        {normalizedBudgeted === null && (
           <p style={{ color: '#b00', margin: '-0.5rem 0 0.75rem' }}>Enter a non-negative amount, e.g. 60000 or 60000.50.</p>
         )}
         <label style={field}>

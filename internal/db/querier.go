@@ -25,7 +25,7 @@ type Querier interface {
 	// After CopyBudgetLines: copies the category mappings, matching old and new
 	// lines by name (unique within a year).
 	CopyBudgetLineCategories(ctx context.Context, arg CopyBudgetLineCategoriesParams) error
-	// Copies every line (with its projected amount) of one year's budget into
+	// Copies every line (with its budgeted amount) of one year's budget into
 	// another, already created one. Runs with CopyBudgetLineCategories in the
 	// caller's transaction.
 	CopyBudgetLines(ctx context.Context, arg CopyBudgetLinesParams) error
@@ -112,7 +112,7 @@ type Querier interface {
 	// ListBankAccountsWithToken, same never-expose-over-HTTP caveat.
 	GetBankAccountWithToken(ctx context.Context, arg GetBankAccountWithTokenParams) (GetBankAccountWithTokenRow, error)
 	GetBudget(ctx context.Context, year int32) (Budget, error)
-	// "Real" per budget line: the year's CZK transactions in the line's mapped
+	// "Actual" per budget line: the year's CZK transactions in the line's mapped
 	// categories. A signed sum, not SUM(ABS(amount)) like
 	// GetTransactionCategorySummary: a refund (money coming back on an expense
 	// category, e.g. a cancelled venue deposit) reduces that line's spend rather

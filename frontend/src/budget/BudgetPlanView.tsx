@@ -33,14 +33,14 @@ function formatCents(cents: number): string {
 }
 
 interface Figures {
-  projected: number
-  real: number
+  budgeted: number
+  actual: number
 }
 
 function sumFigures(lines: BudgetReportLine[]): Figures {
   return lines.reduce(
-    (sum, line) => ({ projected: sum.projected + toCents(line.projected), real: sum.real + toCents(line.real) }),
-    { projected: 0, real: 0 },
+    (sum, line) => ({ budgeted: sum.budgeted + toCents(line.budgeted), actual: sum.actual + toCents(line.actual) }),
+    { budgeted: 0, actual: 0 },
   )
 }
 
@@ -282,8 +282,8 @@ function BudgetTable({ report, editing }: { report: BudgetReport; editing: boole
   const unbudgetedIncoming = report.unbudgeted.filter((u) => u.direction === 'incoming')
   const unbudgetedOutgoing = report.unbudgeted.filter((u) => u.direction === 'outgoing')
   const unbudgetedNet =
-    unbudgetedIncoming.reduce((sum, u) => sum + toCents(u.real), 0) -
-    unbudgetedOutgoing.reduce((sum, u) => sum + toCents(u.real), 0)
+    unbudgetedIncoming.reduce((sum, u) => sum + toCents(u.actual), 0) -
+    unbudgetedOutgoing.reduce((sum, u) => sum + toCents(u.actual), 0)
 
   const categoryNames = (line: BudgetReportLine) =>
     line.category_ids.map((id) => categoryLabelById(categories.data, id)).join(', ')
@@ -325,9 +325,9 @@ function BudgetTable({ report, editing }: { report: BudgetReport; editing: boole
               <SpacerRow />
 
               <FigureRow
-                label="Difference (incomes − expenses)"
+                label="Difference"
                 kind="income"
-                figures={{ projected: incomes.projected - expenses.projected, real: incomes.real - expenses.real }}
+                figures={{ budgeted: incomes.budgeted - expenses.budgeted, actual: incomes.actual - expenses.actual }}
                 emphasis="total"
               />
 
@@ -344,7 +344,7 @@ function BudgetTable({ report, editing }: { report: BudgetReport; editing: boole
                   <tr>
                     <td style={{ ...td, fontWeight: 600, textAlign: 'center' }}>Difference incl. unbudgeted</td>
                     <td style={tdNumber}>—</td>
-                    <td style={{ ...tdNumber, fontWeight: 600 }}>{formatCents(incomes.real - expenses.real + unbudgetedNet)}</td>
+                    <td style={{ ...tdNumber, fontWeight: 600 }}>{formatCents(incomes.actual - expenses.actual + unbudgetedNet)}</td>
                     <td style={td} />
                     <td style={tdNumber} />
                     {editing && <td style={td} />}
@@ -450,7 +450,7 @@ function LineRow({
         </>
       }
       kind={kind}
-      figures={{ projected: toCents(line.projected), real: toCents(line.real) }}
+      figures={{ budgeted: toCents(line.budgeted), actual: toCents(line.actual) }}
       line={line}
     />
   )
@@ -488,7 +488,7 @@ function LineActions({ line }: { line: BudgetReportLine }) {
   )
 }
 
-// % = Real / Projected. Colors: a line's name cell carries its kind's
+// % = Actual / Budgeted. Colors: a line's name cell carries its kind's
 // color; group and sum rows are colored across the whole row.
 function FigureRow({
   label,
@@ -505,7 +505,15 @@ function FigureRow({
   line?: BudgetReportLine
 }) {
   const edit = useContext(EditContext)
-  const percent = figures.projected === 0 ? '—' : `${Math.round((figures.real / figures.projected) * 100)} %`
+  // The Difference row compares two balances, not two amounts of the same
+  // kind — with a near-zero or negative budgeted balance the ratio reads
+  // misleadingly (a good result as a negative %), so it shows none.
+  const percent =
+    emphasis === 'total'
+      ? ''
+      : figures.budgeted === 0
+        ? '—'
+        : `${Math.round((figures.actual / figures.budgeted) * 100)} %`
 
   const kindColor = KIND_COLORS[kind]
   const rowStyle: CSSProperties = {
@@ -523,8 +531,8 @@ function FigureRow({
   return (
     <tr style={rowStyle}>
       <td style={labelStyle}>{label}</td>
-      <td style={tdNumber}>{formatCents(figures.projected)}</td>
-      <td style={tdNumber}>{formatCents(figures.real)}</td>
+      <td style={tdNumber}>{formatCents(figures.budgeted)}</td>
+      <td style={tdNumber}>{formatCents(figures.actual)}</td>
       <td style={tdNote}>{line?.note}</td>
       <td style={tdNumber}>{percent}</td>
       {edit && <td style={tdNumber}>{line && <LineActions line={line} />}</td>}
@@ -534,7 +542,7 @@ function FigureRow({
 
 function UnbudgetedRow({ total }: { total: UnbudgetedTotal }) {
   const edit = useContext(EditContext)
-  const cents = toCents(total.real)
+  const cents = toCents(total.actual)
   return (
     <tr style={{ color: WARNING_COLOR }}>
       <td style={td}>

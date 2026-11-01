@@ -94,6 +94,9 @@ definitions:
     type: object
   handler.budgetLineRequest:
     properties:
+      budgeted:
+        description: decimal string, >= 0, e.g. "60000.00"
+        type: string
       category_ids:
         items:
           type: string
@@ -108,14 +111,14 @@ definitions:
       note:
         description: optional; omit or "" to clear
         type: string
-      projected:
-        description: decimal string, >= 0, e.g. "60000.00"
-        type: string
       sort_order:
         type: integer
     type: object
   handler.budgetLineResponse:
     properties:
+      budgeted:
+        description: always positive; kind gives the sign
+        type: string
       category_ids:
         items:
           type: string
@@ -130,15 +133,21 @@ definitions:
       name:
         type: string
       note:
-        type: string
-      projected:
-        description: always positive; kind gives the sign
         type: string
       sort_order:
         type: integer
     type: object
   handler.budgetReportLine:
     properties:
+      actual:
+        description: |-
+          Actual is the year's actual CZK amount for the line's categories,
+          signed so it reads positive in the normal case (spend for an expense
+          line, receipts for an income line); a refund lowers it.
+        type: string
+      budgeted:
+        description: always positive; kind gives the sign
+        type: string
       category_ids:
         items:
           type: string
@@ -153,15 +162,6 @@ definitions:
       name:
         type: string
       note:
-        type: string
-      projected:
-        description: always positive; kind gives the sign
-        type: string
-      real:
-        description: |-
-          Real is the year's actual CZK amount for the line's categories, signed
-          so it reads positive in the normal case (spend for an expense line,
-          receipts for an income line); a refund lowers it.
         type: string
       sort_order:
         type: integer
@@ -354,7 +354,7 @@ definitions:
       copy_from_year:
         description: |-
           CopyFromYear, if set, copies that year's lines — names, groups, order,
-          projected amounts and category mappings — into the new budget, so a
+          budgeted amounts and category mappings — into the new budget, so a
           new year starts from last year's sheet.
         type: integer
       note:
@@ -628,6 +628,9 @@ definitions:
     type: object
   handler.unbudgetedTotal:
     properties:
+      actual:
+        description: positive; direction gives the sign
+        type: string
       category:
         description: name, for display
         type: string
@@ -635,9 +638,6 @@ definitions:
         type: string
       direction:
         description: incoming | outgoing
-        type: string
-      real:
-        description: positive; direction gives the sign
         type: string
     type: object
   handler.updateBankAccountRequest:
@@ -1095,7 +1095,7 @@ paths:
       consumes:
       - application/json
       description: Requires the manage-budget role. Creates an empty budget, or with
-        copy_from_year a copy of that year's lines (projected amounts and category
+        copy_from_year a copy of that year's lines (budgeted amounts and category
         mappings included). 409 if the year already has one; 400 if copy_from_year
         has no budget.
       parameters:
@@ -1185,7 +1185,7 @@ paths:
       - budgets
     get:
       description: 'Requires the view-budget role. Lines in display order (sort_order,
-        then id), each with its mapped category_ids, projected and real (that year''s
+        then id), each with its mapped category_ids, budgeted and actual (that year''s
         CZK transactions in those categories; signed, a refund lowers it). unbudgeted:
         categories with transactions that year but no line (internal transfers excluded).
         other_currency_count: non-CZK transactions left out. Amounts are decimal strings,
@@ -1289,7 +1289,7 @@ paths:
     post:
       consumes:
       - application/json
-      description: Requires the manage-budget role. projected is a non-negative decimal
+      description: Requires the manage-budget role. budgeted is a non-negative decimal
         string; kind gives the sign. Each category (by id in category_ids) may feed
         only one line per year (409 names the line that has it). Unknown category
         → 400.

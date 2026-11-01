@@ -44,14 +44,14 @@ type Budget struct {
 }
 
 type BudgetLine struct {
-	ID              int64   `json:"id"`
-	BudgetYear      int32   `json:"budget_year"`
-	Kind            string  `json:"kind"`
-	GroupName       *string `json:"group_name"`
-	Name            string  `json:"name"`
-	ProjectedAmount string  `json:"projected_amount"`
-	SortOrder       int32   `json:"sort_order"`
-	Note            *string `json:"note"`
+	ID             int64   `json:"id"`
+	BudgetYear     int32   `json:"budget_year"`
+	Kind           string  `json:"kind"`
+	GroupName      *string `json:"group_name"`
+	Name           string  `json:"name"`
+	BudgetedAmount string  `json:"budgeted_amount"`
+	SortOrder      int32   `json:"sort_order"`
+	Note           *string `json:"note"`
 }
 
 type BudgetLineCategory struct {

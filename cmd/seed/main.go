@@ -17,12 +17,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
@@ -54,6 +56,45 @@ const (
 )
 
 var lawyerFirstPayment = time.Date(2026, time.March, 10, 0, 0, 0, 0, time.UTC)
+
+// fixtureCategory is a custom (non-mandatory) category the sample budget
+// maps; parentName "" = top-level.
+type fixtureCategory struct {
+	name       string
+	parentName string
+}
+
+var fixtureCategories = []fixtureCategory{
+	{name: "events"},
+	{name: "legal", parentName: "salary"},
+}
+
+// fixtureBudgetLine is one line of the sample budget, with its categories by
+// name.
+type fixtureBudgetLine struct {
+	kind       string
+	groupName  string // "" = no group
+	name       string
+	budgeted   string
+	note       string // "" = none
+	categories []string
+}
+
+// A sample budget for the current year, so the Budget vs. actual view has
+// something to show (the lawyer payments land under Legal once a rule moves
+// them there). Taken from a hand-entered dev budget.
+const fixtureBudgetNote = "preparation of the budget (seed fixture)"
+
+var fixtureBudgetLines = []fixtureBudgetLine{
+	{kind: "income", name: "Membership fees", budgeted: "1200000.00", categories: []string{"membership_fee"}},
+	{kind: "income", name: "Interest", budgeted: "30000.00", categories: []string{"credited_interest"}},
+	{kind: "expense", groupName: "Events expenses", name: "Members Meetings proceedings", budgeted: "24000.00",
+		note: "One all members meeting in Brno", categories: []string{"events"}},
+	{kind: "expense", groupName: "Employment expenses", name: "Legal", budgeted: "150000.00", categories: []string{"legal"}},
+	{kind: "expense", groupName: "Employment expenses", name: "Employee wages", budgeted: "1200000.00", categories: []string{"salary"}},
+	{kind: "expense", name: "Other expenses", budgeted: "0.00", categories: []string{"other_expense"}},
+	{kind: "income", name: "Other income", budgeted: "0.00", categories: []string{"other_income"}},
+}
 
 // fixtureMember describes one seeded member's payment history in terms of
 // "months ago" so the fixture stays meaningful regardless of when `make
@@ -148,6 +189,15 @@ func main() {
 		log.Fatalf("seeding lawyer transactions: %v", err)
 	}
 
+	if err := seedCategories(requestContext, queries); err != nil {
+		log.Fatalf("seeding categories: %v", err)
+	}
+	budgetYear := int32(time.Now().UTC().Year())
+	budgetCreated, err := seedBudget(requestContext, pool, budgetYear)
+	if err != nil {
+		log.Fatalf("seeding budget: %v", err)
+	}
+
 	result, err := processing.Run(requestContext, pool)
 	if err != nil {
 		log.Fatalf("running processing: %v", err)
@@ -160,6 +210,98 @@ func main() {
 	fmt.Printf("seeded %d lawyer payments of %s CZK to %s/%s (%s), monthly since %s\n",
 		lawyerPayments, lawyerMonthlyAmount, lawyerCounterAccountNumber, lawyerCounterBankCode,
 		lawyerCounterAccountName, lawyerFirstPayment.Format("2006-01-02"))
+	if budgetCreated {
+		fmt.Printf("seeded the %d budget with %d lines\n", budgetYear, len(fixtureBudgetLines))
+	} else {
+		fmt.Printf("a %d budget already exists, left as it is\n", budgetYear)
+	}
+}
+
+// seedCategories creates the custom categories the sample budget maps, if
+// they don't exist yet (looked up by name, so a re-run is a no-op).
+func seedCategories(requestContext context.Context, queries *db.Queries) error {
+	for _, fixture := range fixtureCategories {
+		if _, err := queries.GetCategoryByName(requestContext, fixture.name); err == nil {
+			continue
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("looking up category %q: %w", fixture.name, err)
+		}
+
+		var parentID pgtype.UUID
+		if fixture.parentName != "" {
+			parent, err := queries.GetCategoryByName(requestContext, fixture.parentName)
+			if err != nil {
+				return fmt.Errorf("looking up parent %q of %q: %w", fixture.parentName, fixture.name, err)
+			}
+			parentID = parent.ID
+		}
+		if _, err := queries.CreateCategory(requestContext, db.CreateCategoryParams{
+			Name:     fixture.name,
+			ParentID: parentID,
+		}); err != nil {
+			return fmt.Errorf("creating category %q: %w", fixture.name, err)
+		}
+	}
+	return nil
+}
+
+// seedBudget creates the sample budget for year, in one DB transaction —
+// unless that year already has a budget, which is left untouched (it may
+// hold hand-made edits). Reports whether it created one.
+func seedBudget(requestContext context.Context, pool *pgxpool.Pool, year int32) (bool, error) {
+	queries := db.New(pool)
+	if _, err := queries.GetBudget(requestContext, year); err == nil {
+		return false, nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return false, fmt.Errorf("looking up budget: %w", err)
+	}
+
+	tx, err := pool.Begin(requestContext)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(requestContext)
+	txQueries := db.New(tx)
+
+	note := fixtureBudgetNote
+	if _, err := txQueries.CreateBudget(requestContext, db.CreateBudgetParams{Year: year, Note: &note}); err != nil {
+		return false, fmt.Errorf("creating budget: %w", err)
+	}
+	for position, fixture := range fixtureBudgetLines {
+		var groupName, lineNote *string
+		if fixture.groupName != "" {
+			groupName = &fixture.groupName
+		}
+		if fixture.note != "" {
+			lineNote = &fixture.note
+		}
+		lineID, err := txQueries.CreateBudgetLine(requestContext, db.CreateBudgetLineParams{
+			BudgetYear:     year,
+			Kind:           fixture.kind,
+			GroupName:      groupName,
+			Name:           fixture.name,
+			BudgetedAmount: fixture.budgeted,
+			SortOrder:      int32(position+1) * 10,
+			Note:           lineNote,
+		})
+		if err != nil {
+			return false, fmt.Errorf("creating line %q: %w", fixture.name, err)
+		}
+		for _, categoryName := range fixture.categories {
+			category, err := txQueries.GetCategoryByName(requestContext, categoryName)
+			if err != nil {
+				return false, fmt.Errorf("looking up category %q for line %q: %w", categoryName, fixture.name, err)
+			}
+			if err := txQueries.InsertBudgetLineCategory(requestContext, db.InsertBudgetLineCategoryParams{
+				BudgetLineID: lineID,
+				BudgetYear:   year,
+				CategoryID:   category.ID,
+			}); err != nil {
+				return false, fmt.Errorf("mapping %q to line %q: %w", categoryName, fixture.name, err)
+			}
+		}
+	}
+	return true, tx.Commit(requestContext)
 }
 
 // seedBankAccount creates the one fixture bank_accounts row this command

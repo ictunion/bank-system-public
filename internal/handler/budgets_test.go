@@ -113,20 +113,20 @@ func TestBudgetLines_CreateUpdateDelete(t *testing.T) {
 	createBudget(t, pool, `{"year":2026}`, http.StatusCreated)
 
 	wages := decodeLine(t, postLine(t, pool, "2026",
-		`{"kind":"expense","group_name":"Employment expenses","name":"Employee wages","projected":"300000","category_ids":["00000000-0000-4000-8000-000000000002","00000000-0000-4000-8000-000000000002"],"sort_order":10,"note":" two part-time staff "}`),
+		`{"kind":"expense","group_name":"Employment expenses","name":"Employee wages","budgeted":"300000","category_ids":["00000000-0000-4000-8000-000000000002","00000000-0000-4000-8000-000000000002"],"sort_order":10,"note":" two part-time staff "}`),
 		http.StatusCreated)
-	if wages.Projected != "300000.00" || len(wages.CategoryIDs) != 1 || wages.CategoryIDs[0] != categoryid.Salary {
-		t.Errorf("created = %+v, want projected 300000.00 and category_ids [salary] (deduplicated)", wages)
+	if wages.Budgeted != "300000.00" || len(wages.CategoryIDs) != 1 || wages.CategoryIDs[0] != categoryid.Salary {
+		t.Errorf("created = %+v, want budgeted 300000.00 and category_ids [salary] (deduplicated)", wages)
 	}
 	if wages.Note == nil || *wages.Note != "two part-time staff" {
 		t.Errorf("created note = %v, want trimmed \"two part-time staff\"", wages.Note)
 	}
-	decodeLine(t, postLine(t, pool, "2026", `{"kind":"income","name":"Membership fees","projected":"600000.50","category_ids":["00000000-0000-4000-8000-000000000001"]}`),
+	decodeLine(t, postLine(t, pool, "2026", `{"kind":"income","name":"Membership fees","budgeted":"600000.50","category_ids":["00000000-0000-4000-8000-000000000001"]}`),
 		http.StatusCreated)
 
 	// Re-saving a line with its own categories isn't a conflict with itself.
 	updated := decodeLine(t, putLine(t, pool, "2026", wages.ID,
-		`{"kind":"expense","name":"Wages","projected":"310000","category_ids":["00000000-0000-4000-8000-000000000002","00000000-0000-4000-8000-000000000004"],"sort_order":5}`),
+		`{"kind":"expense","name":"Wages","budgeted":"310000","category_ids":["00000000-0000-4000-8000-000000000002","00000000-0000-4000-8000-000000000004"],"sort_order":5}`),
 		http.StatusOK)
 	if updated.Name != "Wages" || updated.GroupName != nil || len(updated.CategoryIDs) != 2 || updated.SortOrder != 5 {
 		t.Errorf("updated = %+v, want renamed, ungrouped, two categories, sort_order 5", updated)
@@ -192,9 +192,9 @@ func TestBudgetLines_Validation(t *testing.T) {
 		{"invalid JSON", "2026", `not json`, http.StatusBadRequest},
 		{"invalid kind", "2026", `{"kind":"other","name":"X"}`, http.StatusBadRequest},
 		{"missing name", "2026", `{"kind":"income","name":"  "}`, http.StatusBadRequest},
-		{"negative projected", "2026", `{"kind":"income","name":"X","projected":"-5"}`, http.StatusBadRequest},
+		{"negative budgeted", "2026", `{"kind":"income","name":"X","budgeted":"-5"}`, http.StatusBadRequest},
 		{"note too long", "2026", `{"kind":"income","name":"X","note":"` + strings.Repeat("x", budgetNoteMaxLength+1) + `"}`, http.StatusBadRequest},
-		{"three decimals", "2026", `{"kind":"income","name":"X","projected":"1.005"}`, http.StatusBadRequest},
+		{"three decimals", "2026", `{"kind":"income","name":"X","budgeted":"1.005"}`, http.StatusBadRequest},
 		{"null category id", "2026", `{"kind":"income","name":"X","category_ids":[null]}`, http.StatusBadRequest},
 		{"malformed category id", "2026", `{"kind":"income","name":"X","category_ids":["salary"]}`, http.StatusBadRequest},
 		{"unknown category", "2026", `{"kind":"income","name":"X","category_ids":["11111111-1111-4111-8111-111111111111"]}`, http.StatusBadRequest},
@@ -300,9 +300,9 @@ func TestGetBudget_Actuals(t *testing.T) {
 	queries := db.New(pool)
 	account := seedBankAccount(t, queries, "9500000001")
 	createBudget(t, pool, `{"year":2026}`, http.StatusCreated)
-	fees := decodeLine(t, postLine(t, pool, "2026", `{"kind":"income","name":"Membership fees","projected":"600000","category_ids":["`+uuidText(t, categoryid.MembershipFee)+`"]}`), http.StatusCreated)
-	wages := decodeLine(t, postLine(t, pool, "2026", `{"kind":"expense","name":"Employee wages","projected":"300000","category_ids":["`+uuidText(t, categoryid.Salary)+`"]}`), http.StatusCreated)
-	empty := decodeLine(t, postLine(t, pool, "2026", `{"kind":"expense","name":"Legal","projected":"60000"}`), http.StatusCreated)
+	fees := decodeLine(t, postLine(t, pool, "2026", `{"kind":"income","name":"Membership fees","budgeted":"600000","category_ids":["`+uuidText(t, categoryid.MembershipFee)+`"]}`), http.StatusCreated)
+	wages := decodeLine(t, postLine(t, pool, "2026", `{"kind":"expense","name":"Employee wages","budgeted":"300000","category_ids":["`+uuidText(t, categoryid.Salary)+`"]}`), http.StatusCreated)
+	empty := decodeLine(t, postLine(t, pool, "2026", `{"kind":"expense","name":"Legal","budgeted":"60000"}`), http.StatusCreated)
 
 	day := func(month time.Month, dayOfMonth, year int) time.Time {
 		return time.Date(year, month, dayOfMonth, 0, 0, 0, 0, time.UTC)
@@ -320,13 +320,13 @@ func TestGetBudget_Actuals(t *testing.T) {
 
 	got := getBudget(t, pool, "2026")
 
-	wantReal := map[int64]string{fees.ID: "300.00", wages.ID: "450.00", empty.ID: "0.00"}
-	if len(got.Lines) != len(wantReal) {
-		t.Fatalf("lines = %+v, want %d", got.Lines, len(wantReal))
+	wantActual := map[int64]string{fees.ID: "300.00", wages.ID: "450.00", empty.ID: "0.00"}
+	if len(got.Lines) != len(wantActual) {
+		t.Fatalf("lines = %+v, want %d", got.Lines, len(wantActual))
 	}
 	for _, line := range got.Lines {
-		if line.Real != wantReal[line.ID] {
-			t.Errorf("line %q real = %q, want %q", line.Name, line.Real, wantReal[line.ID])
+		if line.Actual != wantActual[line.ID] {
+			t.Errorf("line %q actual = %q, want %q", line.Name, line.Actual, wantActual[line.ID])
 		}
 	}
 
@@ -335,7 +335,7 @@ func TestGetBudget_Actuals(t *testing.T) {
 		t.Fatalf("unbudgeted = %+v, want only other_expense", got.Unbudgeted)
 	}
 	unbudgeted := got.Unbudgeted[0]
-	if unbudgeted.CategoryID != categoryid.OtherExpense || unbudgeted.Direction != "outgoing" || unbudgeted.Real != "80.00" {
+	if unbudgeted.CategoryID != categoryid.OtherExpense || unbudgeted.Direction != "outgoing" || unbudgeted.Actual != "80.00" {
 		t.Errorf("unbudgeted = %+v, want other_expense outgoing 80.00", unbudgeted)
 	}
 	if got.OtherCurrencyCount != 1 {
@@ -349,8 +349,8 @@ func TestGetBudget_Actuals(t *testing.T) {
 func TestCreateBudget_CopyFromYear(t *testing.T) {
 	pool := dbtest.Pool(t)
 	createBudget(t, pool, `{"year":2026}`, http.StatusCreated)
-	decodeLine(t, postLine(t, pool, "2026", `{"kind":"expense","group_name":"Employment expenses","name":"Employee wages","projected":"300000","category_ids":["`+uuidText(t, categoryid.Salary)+`"],"sort_order":10}`), http.StatusCreated)
-	decodeLine(t, postLine(t, pool, "2026", `{"kind":"income","name":"Interest","projected":"500","category_ids":["`+uuidText(t, categoryid.CreditedInterest)+`"],"note":"savings account"}`), http.StatusCreated)
+	decodeLine(t, postLine(t, pool, "2026", `{"kind":"expense","group_name":"Employment expenses","name":"Employee wages","budgeted":"300000","category_ids":["`+uuidText(t, categoryid.Salary)+`"],"sort_order":10}`), http.StatusCreated)
+	decodeLine(t, postLine(t, pool, "2026", `{"kind":"income","name":"Interest","budgeted":"500","category_ids":["`+uuidText(t, categoryid.CreditedInterest)+`"],"note":"savings account"}`), http.StatusCreated)
 
 	createBudget(t, pool, `{"year":2027,"copy_from_year":2026}`, http.StatusCreated)
 
@@ -361,7 +361,7 @@ func TestCreateBudget_CopyFromYear(t *testing.T) {
 	}
 	for i, line := range copied.Lines {
 		want := source.Lines[i]
-		if line.ID == want.ID || line.Name != want.Name || line.Kind != want.Kind || line.Projected != want.Projected ||
+		if line.ID == want.ID || line.Name != want.Name || line.Kind != want.Kind || line.Budgeted != want.Budgeted ||
 			line.SortOrder != want.SortOrder || len(line.CategoryIDs) != 1 || line.CategoryIDs[0] != want.CategoryIDs[0] ||
 			(line.Note == nil) != (want.Note == nil) || (line.Note != nil && *line.Note != *want.Note) {
 			t.Errorf("copied line %d = %+v, want a new line like %+v", i, line, want)

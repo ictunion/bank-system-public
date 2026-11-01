@@ -1002,10 +1002,10 @@ WHERE blc.budget_year = sqlc.arg(budget_year)
 ORDER BY blc.budget_line_id, tc.name;
 
 -- name: CreateBudgetLine :one
-INSERT INTO budget_lines (budget_year, kind, group_name, name, projected_amount, sort_order, note)
+INSERT INTO budget_lines (budget_year, kind, group_name, name, budgeted_amount, sort_order, note)
 VALUES (
     sqlc.arg(budget_year), sqlc.arg(kind), sqlc.narg(group_name), sqlc.arg(name),
-    sqlc.arg(projected_amount)::numeric, sqlc.arg(sort_order), sqlc.narg(note)
+    sqlc.arg(budgeted_amount)::numeric, sqlc.arg(sort_order), sqlc.narg(note)
 )
 RETURNING id;
 
@@ -1016,7 +1016,7 @@ UPDATE budget_lines
 SET kind = sqlc.arg(kind),
     group_name = sqlc.narg(group_name),
     name = sqlc.arg(name),
-    projected_amount = sqlc.arg(projected_amount)::numeric,
+    budgeted_amount = sqlc.arg(budgeted_amount)::numeric,
     sort_order = sqlc.arg(sort_order),
     note = sqlc.narg(note)
 WHERE id = sqlc.arg(id) AND budget_year = sqlc.arg(budget_year);
@@ -1033,7 +1033,7 @@ VALUES (sqlc.arg(budget_line_id), sqlc.arg(budget_year), sqlc.arg(category_id));
 DELETE FROM budget_lines WHERE id = sqlc.arg(id) AND budget_year = sqlc.arg(budget_year);
 
 -- name: GetBudgetLineActuals :many
--- "Real" per budget line: the year's CZK transactions in the line's mapped
+-- "Actual" per budget line: the year's CZK transactions in the line's mapped
 -- categories. A signed sum, not SUM(ABS(amount)) like
 -- GetTransactionCategorySummary: a refund (money coming back on an expense
 -- category, e.g. a cancelled venue deposit) reduces that line's spend rather
@@ -1045,7 +1045,7 @@ DELETE FROM budget_lines WHERE id = sqlc.arg(id) AND budget_year = sqlc.arg(budg
 -- other amount (pgx renders a numeric zero as plain "0").
 SELECT
     bl.id AS budget_line_id,
-    COALESCE(SUM(CASE WHEN bl.kind = 'income' THEN rt.amount ELSE -rt.amount END), 0)::numeric(14,2)::text AS real_total
+    COALESCE(SUM(CASE WHEN bl.kind = 'income' THEN rt.amount ELSE -rt.amount END), 0)::numeric(14,2)::text AS actual_total
 FROM budget_lines bl
 LEFT JOIN budget_line_categories blc ON blc.budget_line_id = bl.id
 LEFT JOIN processed_transactions pt ON pt.category_id = blc.category_id
@@ -1093,11 +1093,11 @@ WHERE currency != 'CZK'
   AND transaction_date <  make_date(sqlc.arg(budget_year)::int + 1, 1, 1);
 
 -- name: CopyBudgetLines :exec
--- Copies every line (with its projected amount) of one year's budget into
+-- Copies every line (with its budgeted amount) of one year's budget into
 -- another, already created one. Runs with CopyBudgetLineCategories in the
 -- caller's transaction.
-INSERT INTO budget_lines (budget_year, kind, group_name, name, projected_amount, sort_order, note)
-SELECT sqlc.arg(to_year)::int, kind, group_name, name, projected_amount, sort_order, note
+INSERT INTO budget_lines (budget_year, kind, group_name, name, budgeted_amount, sort_order, note)
+SELECT sqlc.arg(to_year)::int, kind, group_name, name, budgeted_amount, sort_order, note
 FROM budget_lines
 WHERE budget_year = sqlc.arg(from_year)::int;
 

@@ -607,7 +607,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the manage-budget role. Creates an empty budget, or with copy_from_year a copy of that year's lines (projected amounts and category mappings included). 409 if the year already has one; 400 if copy_from_year has no budget.",
+                "description": "Requires the manage-budget role. Creates an empty budget, or with copy_from_year a copy of that year's lines (budgeted amounts and category mappings included). 409 if the year already has one; 400 if copy_from_year has no budget.",
                 "consumes": [
                     "application/json"
                 ],
@@ -682,7 +682,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the view-budget role. Lines in display order (sort_order, then id), each with its mapped category_ids, projected and real (that year's CZK transactions in those categories; signed, a refund lowers it). unbudgeted: categories with transactions that year but no line (internal transfers excluded). other_currency_count: non-CZK transactions left out. Amounts are decimal strings, always CZK.",
+                "description": "Requires the view-budget role. Lines in display order (sort_order, then id), each with its mapped category_ids, budgeted and actual (that year's CZK transactions in those categories; signed, a refund lowers it). unbudgeted: categories with transactions that year but no line (internal transfers excluded). other_currency_count: non-CZK transactions left out. Amounts are decimal strings, always CZK.",
                 "produces": [
                     "application/json"
                 ],
@@ -894,7 +894,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the manage-budget role. projected is a non-negative decimal string; kind gives the sign. Each category (by id in category_ids) may feed only one line per year (409 names the line that has it). Unknown category → 400.",
+                "description": "Requires the manage-budget role. budgeted is a non-negative decimal string; kind gives the sign. Each category (by id in category_ids) may feed only one line per year (409 names the line that has it). Unknown category → 400.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3285,6 +3285,10 @@ const docTemplate = `{
         "handler.budgetLineRequest": {
             "type": "object",
             "properties": {
+                "budgeted": {
+                    "description": "decimal string, \u003e= 0, e.g. \"60000.00\"",
+                    "type": "string"
+                },
                 "category_ids": {
                     "type": "array",
                     "items": {
@@ -3305,10 +3309,6 @@ const docTemplate = `{
                     "description": "optional; omit or \"\" to clear",
                     "type": "string"
                 },
-                "projected": {
-                    "description": "decimal string, \u003e= 0, e.g. \"60000.00\"",
-                    "type": "string"
-                },
                 "sort_order": {
                     "type": "integer"
                 }
@@ -3317,6 +3317,10 @@ const docTemplate = `{
         "handler.budgetLineResponse": {
             "type": "object",
             "properties": {
+                "budgeted": {
+                    "description": "always positive; kind gives the sign",
+                    "type": "string"
+                },
                 "category_ids": {
                     "type": "array",
                     "items": {
@@ -3337,10 +3341,6 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "note": {
-                    "type": "string"
-                },
-                "projected": {
-                    "description": "always positive; kind gives the sign",
                     "type": "string"
                 },
                 "sort_order": {
@@ -3351,6 +3351,14 @@ const docTemplate = `{
         "handler.budgetReportLine": {
             "type": "object",
             "properties": {
+                "actual": {
+                    "description": "Actual is the year's actual CZK amount for the line's categories,\nsigned so it reads positive in the normal case (spend for an expense\nline, receipts for an income line); a refund lowers it.",
+                    "type": "string"
+                },
+                "budgeted": {
+                    "description": "always positive; kind gives the sign",
+                    "type": "string"
+                },
                 "category_ids": {
                     "type": "array",
                     "items": {
@@ -3371,14 +3379,6 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "note": {
-                    "type": "string"
-                },
-                "projected": {
-                    "description": "always positive; kind gives the sign",
-                    "type": "string"
-                },
-                "real": {
-                    "description": "Real is the year's actual CZK amount for the line's categories, signed\nso it reads positive in the normal case (spend for an expense line,\nreceipts for an income line); a refund lowers it.",
                     "type": "string"
                 },
                 "sort_order": {
@@ -3652,7 +3652,7 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "copy_from_year": {
-                    "description": "CopyFromYear, if set, copies that year's lines — names, groups, order,\nprojected amounts and category mappings — into the new budget, so a\nnew year starts from last year's sheet.",
+                    "description": "CopyFromYear, if set, copies that year's lines — names, groups, order,\nbudgeted amounts and category mappings — into the new budget, so a\nnew year starts from last year's sheet.",
                     "type": "integer"
                 },
                 "note": {
@@ -4046,6 +4046,10 @@ const docTemplate = `{
         "handler.unbudgetedTotal": {
             "type": "object",
             "properties": {
+                "actual": {
+                    "description": "positive; direction gives the sign",
+                    "type": "string"
+                },
                 "category": {
                     "description": "name, for display",
                     "type": "string"
@@ -4055,10 +4059,6 @@ const docTemplate = `{
                 },
                 "direction": {
                     "description": "incoming | outgoing",
-                    "type": "string"
-                },
-                "real": {
-                    "description": "positive; direction gives the sign",
                     "type": "string"
                 }
             }

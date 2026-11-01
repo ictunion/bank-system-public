@@ -54,7 +54,7 @@ export interface BudgetLine {
   group_name: string | null
   name: string
   /** decimal string, always positive; kind gives the sign */
-  projected: string
+  budgeted: string
   category_ids: string[]
   sort_order: number
   note: string | null
@@ -62,7 +62,7 @@ export interface BudgetLine {
 
 export interface BudgetReportLine extends BudgetLine {
   /** that year's actual CZK amount in the line's categories, signed so it reads positive normally; a refund lowers it */
-  real: string
+  actual: string
 }
 
 export interface UnbudgetedTotal {
@@ -71,7 +71,7 @@ export interface UnbudgetedTotal {
   category: string
   direction: 'incoming' | 'outgoing'
   /** positive; direction gives the sign */
-  real: string
+  actual: string
 }
 
 export interface BudgetReport {
@@ -115,7 +115,7 @@ export interface BudgetLineInput {
   group_name: string | null
   name: string
   /** decimal string >= 0, at most two decimals */
-  projected: string
+  budgeted: string
   category_ids: string[]
   sort_order: number
   /** null or '' clears it */
@@ -127,7 +127,7 @@ export function lineToInput(line: BudgetLine): BudgetLineInput {
     kind: line.kind,
     group_name: line.group_name,
     name: line.name,
-    projected: line.projected,
+    budgeted: line.budgeted,
     category_ids: line.category_ids,
     sort_order: line.sort_order,
     note: line.note,
