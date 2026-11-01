@@ -37,6 +37,22 @@ type BankAccount struct {
 	Color             *string            `json:"color"`
 }
 
+type CategorizationRule struct {
+	ID                      int64     `json:"id"`
+	Priority                int32     `json:"priority"`
+	Kind                    string    `json:"kind"`
+	Category                string    `json:"category"`
+	Enabled                 bool      `json:"enabled"`
+	CounterAccountNumber    *string   `json:"counter_account_number"`
+	VariableSymbol          *string   `json:"variable_symbol"`
+	ConstantSymbol          *string   `json:"constant_symbol"`
+	TextContains            *string   `json:"text_contains"`
+	TransactionTypeContains *string   `json:"transaction_type_contains"`
+	Direction               *string   `json:"direction"`
+	Note                    *string   `json:"note"`
+	CreatedAt               time.Time `json:"created_at"`
+}
+
 type Member struct {
 	MemberNumber                   int32       `json:"member_number"`
 	FeeStartDate                   pgtype.Date `json:"fee_start_date"`
@@ -79,15 +95,17 @@ type PaymentWaiver struct {
 }
 
 type ProcessedTransaction struct {
-	ID               int64     `json:"id"`
-	RawTransactionID int64     `json:"raw_transaction_id"`
-	MemberNumber     *int32    `json:"member_number"`
-	Category         string    `json:"category"`
-	Direction        string    `json:"direction"`
-	MatchedBy        *string   `json:"matched_by"`
-	IsPublicVisible  bool      `json:"is_public_visible"`
-	ProcessedAt      time.Time `json:"processed_at"`
-	AdminComment     *string   `json:"admin_comment"`
+	ID                   int64     `json:"id"`
+	RawTransactionID     int64     `json:"raw_transaction_id"`
+	MemberNumber         *int32    `json:"member_number"`
+	Category             string    `json:"category"`
+	Direction            string    `json:"direction"`
+	MatchedBy            *string   `json:"matched_by"`
+	IsPublicVisible      bool      `json:"is_public_visible"`
+	ProcessedAt          time.Time `json:"processed_at"`
+	AdminComment         *string   `json:"admin_comment"`
+	CategorySetManually  bool      `json:"category_set_manually"`
+	CategorizationRuleID *int64    `json:"categorization_rule_id"`
 }
 
 type RawTransaction struct {

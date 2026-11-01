@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kubik/bank-system/internal/db"
+	"github.com/kubik/bank-system/internal/processing"
 )
 
 const (
@@ -554,10 +555,7 @@ func UnassignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		category := "other_expense"
-		if detail.Direction == "incoming" {
-			category = "other_income"
-		}
+		category := processing.FallbackCategory(detail.Direction)
 
 		tx, err := pool.Begin(r.Context())
 		if err != nil {

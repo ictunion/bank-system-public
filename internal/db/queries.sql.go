@@ -17,7 +17,8 @@ UPDATE processed_transactions
 SET member_number = $1,
     category = $2,
     matched_by = $3,
-    admin_comment = $4
+    admin_comment = $4,
+    category_set_manually = true
 WHERE id = $5
 RETURNING id
 `
@@ -35,7 +36,8 @@ type AssignTransactionToMemberParams struct {
 // passes both as NULL. Coverage rows are managed separately by the caller in
 // the same DB transaction. admin_comment is also a full overwrite, same as
 // member_number — the caller (handler.AssignTransaction) always resends the
-// intended value, NULL clears it.
+// intended value, NULL clears it. Always marks category_set_manually, so
+// automatic re-categorization leaves this row alone from now on.
 func (q *Queries) AssignTransactionToMember(ctx context.Context, arg AssignTransactionToMemberParams) (int64, error) {
 	row := q.db.QueryRow(ctx, assignTransactionToMember,
 		arg.MemberNumber,
@@ -254,19 +256,21 @@ func (q *Queries) CreatePaymentWaiver(ctx context.Context, arg CreatePaymentWaiv
 }
 
 const createProcessedTransaction = `-- name: CreateProcessedTransaction :one
-INSERT INTO processed_transactions (raw_transaction_id, member_number, category, direction, matched_by)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, raw_transaction_id, member_number, category, direction, matched_by, is_public_visible, processed_at, admin_comment
+INSERT INTO processed_transactions (raw_transaction_id, member_number, category, direction, matched_by, categorization_rule_id)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, raw_transaction_id, member_number, category, direction, matched_by, is_public_visible, processed_at, admin_comment, category_set_manually, categorization_rule_id
 `
 
 type CreateProcessedTransactionParams struct {
-	RawTransactionID int64   `json:"raw_transaction_id"`
-	MemberNumber     *int32  `json:"member_number"`
-	Category         string  `json:"category"`
-	Direction        string  `json:"direction"`
-	MatchedBy        *string `json:"matched_by"`
+	RawTransactionID     int64   `json:"raw_transaction_id"`
+	MemberNumber         *int32  `json:"member_number"`
+	Category             string  `json:"category"`
+	Direction            string  `json:"direction"`
+	MatchedBy            *string `json:"matched_by"`
+	CategorizationRuleID *int64  `json:"categorization_rule_id"`
 }
 
+// categorization_rule_id is NULL when no rule matched (direction fallback).
 func (q *Queries) CreateProcessedTransaction(ctx context.Context, arg CreateProcessedTransactionParams) (ProcessedTransaction, error) {
 	row := q.db.QueryRow(ctx, createProcessedTransaction,
 		arg.RawTransactionID,
@@ -274,6 +278,7 @@ func (q *Queries) CreateProcessedTransaction(ctx context.Context, arg CreateProc
 		arg.Category,
 		arg.Direction,
 		arg.MatchedBy,
+		arg.CategorizationRuleID,
 	)
 	var i ProcessedTransaction
 	err := row.Scan(
@@ -286,6 +291,8 @@ func (q *Queries) CreateProcessedTransaction(ctx context.Context, arg CreateProc
 		&i.IsPublicVisible,
 		&i.ProcessedAt,
 		&i.AdminComment,
+		&i.CategorySetManually,
+		&i.CategorizationRuleID,
 	)
 	return i, err
 }
@@ -1587,6 +1594,48 @@ func (q *Queries) ListCoverageForTransaction(ctx context.Context, processedTrans
 	return items, nil
 }
 
+const listEnabledCategorizationRules = `-- name: ListEnabledCategorizationRules :many
+SELECT id, priority, kind, category, enabled, counter_account_number, variable_symbol, constant_symbol, text_contains, transaction_type_contains, direction, note, created_at FROM categorization_rules
+WHERE enabled
+ORDER BY priority, id
+`
+
+// The rule chain processing.Run walks, in evaluation order. Disabled rules
+// are skipped as if they didn't exist.
+func (q *Queries) ListEnabledCategorizationRules(ctx context.Context) ([]CategorizationRule, error) {
+	rows, err := q.db.Query(ctx, listEnabledCategorizationRules)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CategorizationRule
+	for rows.Next() {
+		var i CategorizationRule
+		if err := rows.Scan(
+			&i.ID,
+			&i.Priority,
+			&i.Kind,
+			&i.Category,
+			&i.Enabled,
+			&i.CounterAccountNumber,
+			&i.VariableSymbol,
+			&i.ConstantSymbol,
+			&i.TextContains,
+			&i.TransactionTypeContains,
+			&i.Direction,
+			&i.Note,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listEventLogs = `-- name: ListEventLogs :many
 SELECT event_type, id, started_at, finished_at, status, detail, fetched, processed, error_message, count(*) OVER () AS total_count
 FROM (
@@ -1679,6 +1728,7 @@ FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
 WHERE pt.category != 'credited_interest'
   AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
+  AND NOT pt.category_set_manually
   AND rt.transaction_type ILIKE '%úrok%'
 `
 
@@ -1688,8 +1738,9 @@ WHERE pt.category != 'credited_interest'
 // existed landed in other_income and, since a processed row is never
 // revisited on its own (see ListUnprocessedTransactions), stays there
 // forever without this. Same exclusions as ListInternalTransferCandidates —
-// skip matched_by='manual' (never override an admin's explicit decision) and
-// already-interest rows, so a repeat run only touches what's still wrong.
+// skip matched_by='manual' and category_set_manually (never override an
+// admin's explicit decision) and already-interest rows, so a repeat run only
+// touches what's still wrong.
 // ILIKE, not =, since transaction_type is Fio's free-form label for the
 // movement type, not an enum — same "not error-proof" caveat as the "mzda"
 // salary heuristic in processing.go.
@@ -1719,6 +1770,7 @@ FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
 WHERE pt.category != 'internal_transfer'
   AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
+  AND NOT pt.category_set_manually
   AND rt.counter_account_number = ANY($1::text[])
 `
 
@@ -1729,8 +1781,9 @@ WHERE pt.category != 'internal_transfer'
 // second/new account later leaves earlier transfers to/from it permanently
 // miscategorized. Excludes matched_by = 'manual' — never silently override
 // an admin's explicit decision, same rule as elsewhere in this schema (see
-// payment_waivers, admin_comment). Excludes already-internal_transfer rows
-// so a repeat run only touches what's still wrong.
+// payment_waivers, admin_comment) — both a manual member match and a
+// manual category-only edit (category_set_manually). Excludes
+// already-internal_transfer rows so a repeat run only touches what's still wrong.
 func (q *Queries) ListInternalTransferCandidates(ctx context.Context, accountNumbers []string) ([]int64, error) {
 	rows, err := q.db.Query(ctx, listInternalTransferCandidates, accountNumbers)
 	if err != nil {
@@ -2003,6 +2056,7 @@ JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
 WHERE pt.member_number IS NULL
   AND pt.category != 'internal_transfer'
   AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
+  AND NOT pt.category_set_manually
   AND rt.variable_symbol IS NOT NULL AND rt.variable_symbol != ''
 `
 
@@ -2023,7 +2077,9 @@ type ListRematchCandidatesRow struct {
 // ReclassifyInternalTransfers for the transfer side of the same idea).
 // member_number IS NULL already implies matched_by IS NULL in practice
 // (matched_by is only ever set alongside a member_number) — the explicit
-// matched_by check is just defensive.
+// matched_by check is just defensive. Also skips category_set_manually
+// rows — a category-only manual edit has no member, so matched_by alone
+// doesn't protect it.
 func (q *Queries) ListRematchCandidates(ctx context.Context) ([]ListRematchCandidatesRow, error) {
 	rows, err := q.db.Query(ctx, listRematchCandidates)
 	if err != nil {
@@ -2410,7 +2466,8 @@ const unassignTransaction = `-- name: UnassignTransaction :one
 UPDATE processed_transactions
 SET member_number = NULL,
     matched_by = NULL,
-    category = $1
+    category = $1,
+    category_set_manually = false
 WHERE id = $2
 RETURNING id
 `
@@ -2422,6 +2479,9 @@ type UnassignTransactionParams struct {
 
 // Reverts a manual (or automatic) match: clears the member and matched_by, and
 // resets category to the direction-based default the caller passes in.
+// Clears category_set_manually: the row is back to automatic categorization.
+// Also used by processing's reclassify actions, which only ever touch rows
+// that aren't manual anyway.
 func (q *Queries) UnassignTransaction(ctx context.Context, arg UnassignTransactionParams) (int64, error) {
 	row := q.db.QueryRow(ctx, unassignTransaction, arg.Category, arg.ID)
 	var id int64

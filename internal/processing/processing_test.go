@@ -744,3 +744,96 @@ func TestRematchUnmatched_SkipsInternalTransfer(t *testing.T) {
 		t.Errorf("got = %+v, want unchanged internal_transfer with no member", got)
 	}
 }
+
+// setCategorySetManually simulates an admin's category-only manual edit
+// (PUT /transactions/{id}/assignment with no member) — matched_by stays
+// NULL, only category_set_manually protects the row.
+func setCategorySetManually(t *testing.T, pool *pgxpool.Pool, fioTransactionID int64) {
+	t.Helper()
+	tag, err := pool.Exec(context.Background(), `
+		UPDATE processed_transactions SET category_set_manually = true
+		FROM raw_transactions rt
+		WHERE processed_transactions.raw_transaction_id = rt.id AND rt.fio_transaction_id = $1
+	`, fioTransactionID)
+	if err != nil {
+		t.Fatalf("setCategorySetManually(fio_transaction_id=%d): %v", fioTransactionID, err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("setCategorySetManually(fio_transaction_id=%d): affected %d rows, want 1", fioTransactionID, tag.RowsAffected())
+	}
+}
+
+// TestReclassifyActions_SkipCategoryOnlyManualEdits makes sure a manual
+// category-only edit (no member, so matched_by stays NULL) is never
+// overwritten by any of the automatic re-check actions.
+func TestReclassifyActions_SkipCategoryOnlyManualEdits(t *testing.T) {
+	pool := dbtest.Pool(t)
+	queries := db.New(pool)
+	account := seedBankAccount(t, queries, "9400000031")
+
+	// Would become internal_transfer once 9400000032 is registered.
+	seedTransferTransaction(t, queries, account.ID, 6031, "-750.00", "9400000032", nil)
+	// Would become credited_interest by transaction_type.
+	if _, err := queries.InsertRawTransaction(context.Background(), db.InsertRawTransactionParams{
+		BankAccountID:    account.ID,
+		FioTransactionID: 6032,
+		TransactionDate:  time.Now(),
+		Amount:           "12.00",
+		Currency:         "CZK",
+		TransactionType:  strPtr("Připsaný úrok"),
+		RawPayload:       []byte("{}"),
+	}); err != nil {
+		t.Fatalf("InsertRawTransaction(6032): %v", err)
+	}
+	// Would match member 900631 once the member exists.
+	seedRawTransactionOnDate(t, queries, account.ID, 6033, "500.00", strPtr("900631"), time.Now().AddDate(0, -6, 0))
+
+	// Interest detection runs at processing time too, so process before the
+	// detection could apply: move 6032 to other_income by hand first.
+	if _, err := Run(context.Background(), pool); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+		UPDATE processed_transactions SET category = 'other_income'
+		FROM raw_transactions rt
+		WHERE processed_transactions.raw_transaction_id = rt.id AND rt.fio_transaction_id = 6032
+	`); err != nil {
+		t.Fatalf("resetting 6032 category: %v", err)
+	}
+	for _, fioTransactionID := range []int64{6031, 6032, 6033} {
+		setCategorySetManually(t, pool, fioTransactionID)
+	}
+
+	seedBankAccount(t, queries, "9400000032")
+	seedMemberWithIdentifier(t, queries, 900631, "900631")
+
+	transfers, err := ReclassifyInternalTransfers(context.Background(), pool)
+	if err != nil {
+		t.Fatalf("ReclassifyInternalTransfers: %v", err)
+	}
+	interest, err := ReclassifyInterest(context.Background(), pool)
+	if err != nil {
+		t.Fatalf("ReclassifyInterest: %v", err)
+	}
+	rematch, err := RematchUnmatched(context.Background(), pool)
+	if err != nil {
+		t.Fatalf("RematchUnmatched: %v", err)
+	}
+	if transfers.Reclassified != 0 || interest.Reclassified != 0 || rematch.Matched != 0 {
+		t.Fatalf("transfers = %+v, interest = %+v, rematch = %+v, want nothing touched", transfers, interest, rematch)
+	}
+
+	tests := []struct {
+		fioTransactionID int64
+		wantCategory     string
+	}{
+		{6031, "other_expense"},
+		{6032, "other_income"},
+		{6033, "other_income"},
+	}
+	for _, tt := range tests {
+		if got := queryProcessed(t, pool, tt.fioTransactionID); got.category != tt.wantCategory || got.memberNumber != nil {
+			t.Errorf("fio_transaction_id=%d: got %+v, want unchanged %s with no member", tt.fioTransactionID, got, tt.wantCategory)
+		}
+	}
+}

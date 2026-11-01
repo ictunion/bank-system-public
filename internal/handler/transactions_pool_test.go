@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/kubik/bank-system/internal/db"
 	"github.com/kubik/bank-system/internal/dbtest"
 )
@@ -93,6 +95,11 @@ func TestAssignTransaction_CategoryOnlyNoMember(t *testing.T) {
 	}
 	if len(got.CoveredMonths) != 0 {
 		t.Errorf("CoveredMonths = %v, want empty — no member given", got.CoveredMonths)
+	}
+	// matched_by stays NULL without a member, so this flag is what protects
+	// the edit from automatic re-categorization.
+	if !categorySetManually(t, pool, pt.ID) {
+		t.Error("category_set_manually = false, want true after a category-only edit")
 	}
 }
 
@@ -244,4 +251,20 @@ func TestUnassignTransaction_ClearsMemberAndCoverageResetsCategory(t *testing.T)
 	if len(coverage) != 0 {
 		t.Errorf("coverage = %v, want empty after unassign", coverage)
 	}
+	if categorySetManually(t, pool, pt.ID) {
+		t.Error("category_set_manually = true, want false after unassign")
+	}
+}
+
+// categorySetManually reads processed_transactions.category_set_manually
+// directly — not exposed by any endpoint.
+func categorySetManually(t *testing.T, pool *pgxpool.Pool, processedTransactionID int64) bool {
+	t.Helper()
+	var value bool
+	if err := pool.QueryRow(context.Background(),
+		`SELECT category_set_manually FROM processed_transactions WHERE id = $1`, processedTransactionID,
+	).Scan(&value); err != nil {
+		t.Fatalf("reading category_set_manually for %d: %v", processedTransactionID, err)
+	}
+	return value
 }

@@ -721,13 +721,16 @@ LIMIT 1;
 -- ReclassifyInternalTransfers for the transfer side of the same idea).
 -- member_number IS NULL already implies matched_by IS NULL in practice
 -- (matched_by is only ever set alongside a member_number) — the explicit
--- matched_by check is just defensive.
+-- matched_by check is just defensive. Also skips category_set_manually
+-- rows — a category-only manual edit has no member, so matched_by alone
+-- doesn't protect it.
 SELECT pt.id, rt.variable_symbol, rt.transaction_date
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
 WHERE pt.member_number IS NULL
   AND pt.category != 'internal_transfer'
   AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
+  AND NOT pt.category_set_manually
   AND rt.variable_symbol IS NOT NULL AND rt.variable_symbol != '';
 
 -- name: RematchTransactionToMember :exec
@@ -742,9 +745,17 @@ SET member_number = sqlc.arg(member_number),
 WHERE id = sqlc.arg(id);
 
 -- name: CreateProcessedTransaction :one
-INSERT INTO processed_transactions (raw_transaction_id, member_number, category, direction, matched_by)
-VALUES (sqlc.arg(raw_transaction_id), sqlc.narg(member_number), sqlc.arg(category), sqlc.arg(direction), sqlc.narg(matched_by))
+-- categorization_rule_id is NULL when no rule matched (direction fallback).
+INSERT INTO processed_transactions (raw_transaction_id, member_number, category, direction, matched_by, categorization_rule_id)
+VALUES (sqlc.arg(raw_transaction_id), sqlc.narg(member_number), sqlc.arg(category), sqlc.arg(direction), sqlc.narg(matched_by), sqlc.narg(categorization_rule_id))
 RETURNING *;
+
+-- name: ListEnabledCategorizationRules :many
+-- The rule chain processing.Run walks, in evaluation order. Disabled rules
+-- are skipped as if they didn't exist.
+SELECT * FROM categorization_rules
+WHERE enabled
+ORDER BY priority, id;
 
 -- name: CreatePaymentCoverage :exec
 -- Several transactions may cover the same member/month (dues split across
@@ -827,22 +838,28 @@ SELECT * FROM transaction_categories WHERE name = sqlc.arg(name);
 -- passes both as NULL. Coverage rows are managed separately by the caller in
 -- the same DB transaction. admin_comment is also a full overwrite, same as
 -- member_number — the caller (handler.AssignTransaction) always resends the
--- intended value, NULL clears it.
+-- intended value, NULL clears it. Always marks category_set_manually, so
+-- automatic re-categorization leaves this row alone from now on.
 UPDATE processed_transactions
 SET member_number = sqlc.arg(member_number),
     category = sqlc.arg(category),
     matched_by = sqlc.narg(matched_by),
-    admin_comment = sqlc.arg(admin_comment)
+    admin_comment = sqlc.arg(admin_comment),
+    category_set_manually = true
 WHERE id = sqlc.arg(id)
 RETURNING id;
 
 -- name: UnassignTransaction :one
 -- Reverts a manual (or automatic) match: clears the member and matched_by, and
 -- resets category to the direction-based default the caller passes in.
+-- Clears category_set_manually: the row is back to automatic categorization.
+-- Also used by processing's reclassify actions, which only ever touch rows
+-- that aren't manual anyway.
 UPDATE processed_transactions
 SET member_number = NULL,
     matched_by = NULL,
-    category = sqlc.arg(category)
+    category = sqlc.arg(category),
+    category_set_manually = false
 WHERE id = sqlc.arg(id)
 RETURNING id;
 
@@ -857,13 +874,15 @@ DELETE FROM payment_coverage WHERE processed_transaction_id = sqlc.arg(processed
 -- second/new account later leaves earlier transfers to/from it permanently
 -- miscategorized. Excludes matched_by = 'manual' — never silently override
 -- an admin's explicit decision, same rule as elsewhere in this schema (see
--- payment_waivers, admin_comment). Excludes already-internal_transfer rows
--- so a repeat run only touches what's still wrong.
+-- payment_waivers, admin_comment) — both a manual member match and a
+-- manual category-only edit (category_set_manually). Excludes
+-- already-internal_transfer rows so a repeat run only touches what's still wrong.
 SELECT pt.id
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
 WHERE pt.category != 'internal_transfer'
   AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
+  AND NOT pt.category_set_manually
   AND rt.counter_account_number = ANY(sqlc.arg(account_numbers)::text[]);
 
 -- name: ListInterestReclassifyCandidates :many
@@ -873,8 +892,9 @@ WHERE pt.category != 'internal_transfer'
 -- existed landed in other_income and, since a processed row is never
 -- revisited on its own (see ListUnprocessedTransactions), stays there
 -- forever without this. Same exclusions as ListInternalTransferCandidates —
--- skip matched_by='manual' (never override an admin's explicit decision) and
--- already-interest rows, so a repeat run only touches what's still wrong.
+-- skip matched_by='manual' and category_set_manually (never override an
+-- admin's explicit decision) and already-interest rows, so a repeat run only
+-- touches what's still wrong.
 -- ILIKE, not =, since transaction_type is Fio's free-form label for the
 -- movement type, not an enum — same "not error-proof" caveat as the "mzda"
 -- salary heuristic in processing.go.
@@ -883,6 +903,7 @@ FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
 WHERE pt.category != 'credited_interest'
   AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
+  AND NOT pt.category_set_manually
   AND rt.transaction_type ILIKE '%úrok%';
 
 -- name: InsertCoverageRow :exec

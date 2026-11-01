@@ -1,6 +1,8 @@
 // Package processing turns raw_transactions into processed_transactions
 // (member match + category) and, for the default membership_fee case,
-// payment_coverage — the derived-data step on top of the sync jobs. Runs
+// payment_coverage — the derived-data step on top of the sync jobs.
+// Categorization walks the enabled categorization_rules in priority order,
+// first match wins, with a direction-based fallback when none matches. Runs
 // after both the Orca and Fio syncs (see cmd/server/main.go) so
 // member/payment-identifier and transaction data are both fresh before
 // matching.
@@ -37,9 +39,12 @@ func Run(requestContext context.Context, pool *pgxpool.Pool) (Result, error) {
 		return Result{}, fmt.Errorf("listing unprocessed transactions: %w", err)
 	}
 
-	// Fetched once per run, not per transaction — a transfer between our own
-	// accounts is recognized by its counterparty being one of these, see
-	// processOne. Soft-deleted accounts excluded (ListActiveBankAccountNumbers).
+	// Rules and our own account numbers are both fetched once per run, not
+	// per transaction. Soft-deleted accounts excluded (ListActiveBankAccountNumbers).
+	rules, err := queries.ListEnabledCategorizationRules(requestContext)
+	if err != nil {
+		return Result{}, fmt.Errorf("listing categorization rules: %w", err)
+	}
 	ourAccountNumbers, err := queries.ListActiveBankAccountNumbers(requestContext)
 	if err != nil {
 		return Result{}, fmt.Errorf("listing active bank account numbers: %w", err)
@@ -51,7 +56,7 @@ func Run(requestContext context.Context, pool *pgxpool.Pool) (Result, error) {
 
 	var result Result
 	for _, rt := range rows {
-		if err := processOne(requestContext, pool, queries, rt, ourAccounts); err != nil {
+		if err := processOne(requestContext, pool, queries, rt, rules, ourAccounts); err != nil {
 			result.TransactionsFailed++
 			log.Printf("processing: raw_transaction_id=%d: %v", rt.ID, err)
 			continue
@@ -61,6 +66,113 @@ func Run(requestContext context.Context, pool *pgxpool.Pool) (Result, error) {
 	return result, nil
 }
 
+// outcome is what categorize decided for one transaction. ruleID is nil
+// when no rule matched and the direction fallback applied; memberNumber and
+// matchedBy are only set by the member_variable_symbol rule.
+type outcome struct {
+	category     string
+	ruleID       *int64
+	memberNumber *int32
+	matchedBy    *string
+}
+
+func transactionDirection(amount string) string {
+	if strings.HasPrefix(amount, "-") {
+		return "outgoing"
+	}
+	return "incoming"
+}
+
+// FallbackCategory is the category for a transaction no rule matched —
+// direction alone. Also what handler.UnassignTransaction resets a row to, so
+// the two can't drift.
+func FallbackCategory(direction string) string {
+	if direction == "incoming" {
+		return "other_income"
+	}
+	return "other_expense"
+}
+
+// categorize walks rules (already in evaluation order, enabled only) and
+// returns the first match. Only the member_variable_symbol rule queries the
+// database; every other kind is decided from rt and ourAccounts alone.
+func categorize(requestContext context.Context, queries *db.Queries, rt db.RawTransaction, direction string, rules []db.CategorizationRule, ourAccounts map[string]bool) (outcome, error) {
+	for _, rule := range rules {
+		switch rule.Kind {
+		case "own_account":
+			// Matched on counter_account_number alone (no bank-code check —
+			// this app only syncs Fio accounts, so a collision is unlikely).
+			if rt.CounterAccountNumber != nil && ourAccounts[*rt.CounterAccountNumber] {
+				return outcome{category: rule.Category, ruleID: &rule.ID}, nil
+			}
+		case "member_variable_symbol":
+			if rt.VariableSymbol == nil || *rt.VariableSymbol == "" {
+				continue
+			}
+			member, err := queries.FindMemberByVariableSymbol(requestContext, db.FindMemberByVariableSymbolParams{
+				VariableSymbol:  normalizeVariableSymbol(*rt.VariableSymbol),
+				TransactionDate: rt.TransactionDate,
+			})
+			switch {
+			case err == nil:
+				matchedBy := "variable_symbol"
+				return outcome{category: rule.Category, ruleID: &rule.ID, memberNumber: &member, matchedBy: &matchedBy}, nil
+			case errors.Is(err, pgx.ErrNoRows):
+				// no member currently claims this variable symbol — next rule.
+			default:
+				return outcome{}, fmt.Errorf("matching variable_symbol %q: %w", *rt.VariableSymbol, err)
+			}
+		case "pattern":
+			if matchesPattern(rule, rt, direction) {
+				return outcome{category: rule.Category, ruleID: &rule.ID}, nil
+			}
+		default:
+			// The kind CHECK constraint makes this unreachable; skip rather
+			// than fail the whole transaction if it ever isn't.
+			log.Printf("processing: categorization rule %d has unknown kind %q, skipped", rule.ID, rule.Kind)
+		}
+	}
+	return outcome{category: FallbackCategory(direction)}, nil
+}
+
+// matchesPattern reports whether every non-NULL condition of a pattern rule
+// holds for rt. The schema guarantees at least one condition besides
+// direction is set.
+func matchesPattern(rule db.CategorizationRule, rt db.RawTransaction, direction string) bool {
+	if rule.Direction != nil && *rule.Direction != direction {
+		return false
+	}
+	if rule.CounterAccountNumber != nil && !equalField(rt.CounterAccountNumber, *rule.CounterAccountNumber) {
+		return false
+	}
+	if rule.VariableSymbol != nil &&
+		(rt.VariableSymbol == nil || normalizeVariableSymbol(*rt.VariableSymbol) != normalizeVariableSymbol(*rule.VariableSymbol)) {
+		return false
+	}
+	if rule.ConstantSymbol != nil && !equalField(rt.ConstantSymbol, *rule.ConstantSymbol) {
+		return false
+	}
+	if rule.TextContains != nil &&
+		!containsFold(rt.Comment, *rule.TextContains) &&
+		!containsFold(rt.UserIdentification, *rule.TextContains) &&
+		!containsFold(rt.MessageForRecipient, *rule.TextContains) {
+		return false
+	}
+	if rule.TransactionTypeContains != nil && !containsFold(rt.TransactionType, *rule.TransactionTypeContains) {
+		return false
+	}
+	return true
+}
+
+func equalField(field *string, value string) bool {
+	return field != nil && *field == value
+}
+
+// containsFold is a case-insensitive substring check on a nullable field.
+func containsFold(field *string, substring string) bool {
+	return field != nil && strings.Contains(strings.ToLower(*field), strings.ToLower(substring))
+}
+
 // processOne categorizes and matches one raw transaction, then writes the
 // processed_transactions row (and, for a matched membership fee, the default
 // payment_coverage row for the transaction's own month) in one DB transaction
@@ -68,71 +180,12 @@ func Run(requestContext context.Context, pool *pgxpool.Pool) (Result, error) {
 // committed processed_transactions row would silently and permanently drop
 // that month's coverage, since the row would no longer show up as
 // unprocessed on the next run.
-func processOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.Queries, rt db.RawTransaction, ourAccounts map[string]bool) error {
-	direction := "incoming"
-	if strings.HasPrefix(rt.Amount, "-") {
-		direction = "outgoing"
-	}
+func processOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.Queries, rt db.RawTransaction, rules []db.CategorizationRule, ourAccounts map[string]bool) error {
+	direction := transactionDirection(rt.Amount)
 
-	var memberNumber *int32
-	var matchedBy *string
-	category := ""
-
-	// Transfer between our own bank_accounts: checked first, ahead of
-	// variable_symbol/salary, since it's the most specific signal available
-	// and shouldn't be shadowed by a coincidental VS collision. Matched on
-	// counter_account_number alone (no bank-code check — this app only syncs
-	// Fio accounts, so a mismatch here is unlikely; revisit if it misfires,
-	// same as the "mzda" salary heuristic below).
-	if rt.CounterAccountNumber != nil && ourAccounts[*rt.CounterAccountNumber] {
-		category = "internal_transfer"
-	}
-
-	// Interest credited on a savings account: checked next, still ahead of
-	// variable_symbol, for the same reason internal_transfer is checked first
-	// — a system-generated interest posting shouldn't be shadowed by a
-	// coincidental VS collision with a live member. Unlike the "mzda" salary
-	// heuristic below, this reads Fio's own typed transaction_type field
-	// (column8, e.g. "Připsaný úrok"), not free text — more reliable, though
-	// still a substring match, not an exact enum compare (Fio's own wording
-	// isn't documented as stable); revisit if it misfires.
-	if category == "" && containsUrok(rt.TransactionType) {
-		category = "credited_interest"
-	}
-
-	if category == "" && rt.VariableSymbol != nil && *rt.VariableSymbol != "" {
-		member, err := queries.FindMemberByVariableSymbol(requestContext, db.FindMemberByVariableSymbolParams{
-			VariableSymbol:  normalizeVariableSymbol(*rt.VariableSymbol),
-			TransactionDate: rt.TransactionDate,
-		})
-		switch {
-		case err == nil:
-			memberNumber = &member
-			by := "variable_symbol"
-			matchedBy = &by
-			category = "membership_fee"
-		case errors.Is(err, pgx.ErrNoRows):
-			// no member currently claims this variable symbol — falls through
-			// to the salary/other_income/other_expense categorization below.
-		default:
-			return fmt.Errorf("matching variable_symbol %q: %w", *rt.VariableSymbol, err)
-		}
-	}
-
-	// Salary detection: substring match on "mzda" (Czech for wage/salary) in
-	// either free-text field payroll transactions were observed to carry it
-	// in — not error-proof, but a good-enough first version. Only checked when not
-	// already matched to a member above.
-	if category == "" && (containsMzda(rt.Comment) || containsMzda(rt.UserIdentification)) {
-		category = "salary"
-	}
-
-	if category == "" {
-		if direction == "incoming" {
-			category = "other_income"
-		} else {
-			category = "other_expense"
-		}
+	result, err := categorize(requestContext, queries, rt, direction, rules, ourAccounts)
+	if err != nil {
+		return err
 	}
 
 	tx, err := pool.Begin(requestContext)
@@ -143,17 +196,18 @@ func processOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.
 	txQueries := db.New(tx)
 
 	pt, err := txQueries.CreateProcessedTransaction(requestContext, db.CreateProcessedTransactionParams{
-		RawTransactionID: rt.ID,
-		MemberNumber:     memberNumber,
-		Category:         category,
-		Direction:        direction,
-		MatchedBy:        matchedBy,
+		RawTransactionID:     rt.ID,
+		MemberNumber:         result.memberNumber,
+		Category:             result.category,
+		Direction:            direction,
+		MatchedBy:            result.matchedBy,
+		CategorizationRuleID: result.ruleID,
 	})
 	if err != nil {
 		return fmt.Errorf("inserting processed_transactions: %w", err)
 	}
 
-	if category == "membership_fee" && memberNumber != nil {
+	if result.memberNumber != nil {
 		// Dues for month M are paid during month M+1 — a transaction received this month covers
 		// *last* month's fee by default, not its own month. AssignTransaction's
 		// manual default follows the same convention; either can be overridden
@@ -164,7 +218,7 @@ func processOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.
 		// (dues split across two payments) just gets a second row.
 		if err := txQueries.CreatePaymentCoverage(requestContext, db.CreatePaymentCoverageParams{
 			ProcessedTransactionID: pt.ID,
-			MemberNumber:           *memberNumber,
+			MemberNumber:           *result.memberNumber,
 			CoversYear:             int32(coveredMonth.Year()),
 			CoversMonth:            int16(coveredMonth.Month()),
 		}); err != nil {
@@ -173,18 +227,6 @@ func processOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.
 	}
 
 	return tx.Commit(requestContext)
-}
-
-func containsMzda(field *string) bool {
-	return field != nil && strings.Contains(strings.ToLower(*field), "mzda")
-}
-
-// containsUrok checks transaction_type for "úrok" (Czech for "interest") —
-// Fio's own wording for a credited-interest posting is "Připsaný úrok";
-// substring rather than exact match so this also catches any other form
-// Fio might use (e.g. "Vyúčtování úroků", still contains "úrok").
-func containsUrok(field *string) bool {
-	return field != nil && strings.Contains(strings.ToLower(*field), "úrok")
 }
 
 // normalizeVariableSymbol strips leading zeroes Fio sometimes pads a
@@ -218,7 +260,7 @@ type ReclassifyResult struct {
 // so a transaction synced/processed before a second (or newly taken-over)
 // bank account was registered here stays miscategorized forever otherwise,
 // even after the account is added and Run is called again. Skips
-// matched_by='manual' rows (never override an admin's explicit decision) and
+// matched_by='manual' and category_set_manually rows (never override an admin's explicit decision) and
 // anything already internal_transfer, so repeat calls are safe/idempotent —
 // only ever touching what's still wrong.
 func ReclassifyInternalTransfers(requestContext context.Context, pool *pgxpool.Pool) (ReclassifyResult, error) {
@@ -288,7 +330,7 @@ type ReclassifyInterestResult struct {
 // category=credited_interest — same "detection added after some rows were
 // already processed" fix as ReclassifyInternalTransfers, for the
 // credited_interest category instead of internal_transfer (see
-// ListInterestReclassifyCandidates). Skips matched_by='manual' rows and
+// ListInterestReclassifyCandidates). Skips matched_by='manual' and category_set_manually rows and
 // anything already category=credited_interest, so repeat calls are
 // safe/idempotent.
 func ReclassifyInterest(requestContext context.Context, pool *pgxpool.Pool) (ReclassifyInterestResult, error) {
@@ -327,7 +369,7 @@ type RematchResult struct {
 // salary/other_income/other_expense), corrected upstream in Orca, and
 // re-synced (see "Orca member sync") — the corrected liability window only
 // helps *new* processing, since Run only ever touches unprocessed rows.
-// Skips matched_by='manual' rows (never override an admin's explicit
+// Skips matched_by='manual' and category_set_manually rows (never override an admin's explicit
 // decision) and anything already category='internal_transfer' (that
 // precedence is fixed by processOne, not up for re-evaluation here). Safe to
 // call repeatedly — a transaction that still doesn't resolve to a member is

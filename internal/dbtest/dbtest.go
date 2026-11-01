@@ -45,8 +45,10 @@ func sharedPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// truncateTables lists every app table except transaction_categories, whose
-// four mandatory rows are seeded by migration and must survive every test.
+// truncateTables lists every app table except transaction_categories and
+// categorization_rules, whose rows are seeded by migration and must survive
+// every test. A test that adds or changes rows in either cleans up after
+// itself.
 var truncateTables = []string{
 	"bank_accounts",
 	"raw_transactions",
