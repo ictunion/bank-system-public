@@ -26,6 +26,8 @@ function Dashboard() {
   const canViewAuditLogs = useHasRole('view-audit-logs')
   const canViewBudget = useHasRole('view-budget')
   const canManageTransactions = useHasRole('manage-transactions')
+  const canViewRules = useHasRole('view-rules')
+  const canManageRules = useHasRole('manage-rules')
 
   return (
     <main>
@@ -53,9 +55,11 @@ function Dashboard() {
             <Link to="/categories" style={{ color: '#fff' }}>
               Categories
             </Link>
-            <Link to="/rules" style={{ color: '#fff' }}>
-              Rules
-            </Link>
+            {(canViewRules || canManageRules) && (
+              <Link to="/rules" style={{ color: '#fff' }}>
+                Rules
+              </Link>
+            )}
             {canViewBudget && (
               <Link to="/budget" style={{ color: '#fff' }}>
                 Budget

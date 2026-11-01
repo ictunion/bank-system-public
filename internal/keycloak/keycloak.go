@@ -47,7 +47,7 @@ const (
 	// RoleListTransactions protects:
 	//   GET /transactions
 	//   GET /transactions/{id}
-	//   GET /categories
+	//   GET /categories  (also accepts RoleManageRules)
 	RoleListTransactions Role = "list-transactions"
 
 	// RoleManageTransactions protects:
@@ -80,6 +80,25 @@ const (
 	// RoleViewBudget protects:
 	//   GET /transactions/summary
 	RoleViewBudget Role = "view-budget"
+
+	// RoleViewRules protects (read-only):
+	//   GET /categorization-rules  (also accepts RoleManageRules)
+	RoleViewRules Role = "view-rules"
+
+	// RoleManageRules protects:
+	//   GET /categorization-rules
+	//   POST /categorization-rules
+	//   PUT /categorization-rules/{id}
+	//   DELETE /categorization-rules/{id}
+	//   POST /categorization-rules/{id}/reapply  (from no earlier than 1 January of the current year)
+	//   GET /categories  (for the rule dialog's category picker)
+	RoleManageRules Role = "manage-rules"
+
+	// RoleOverrideRules is a capability on top of RoleManageRules, checked
+	// inside handler.ReapplyCategorizationRule rather than on a route: lets
+	// POST /categorization-rules/{id}/reapply use any from date, including
+	// closed years. For superadmins only.
+	RoleOverrideRules Role = "override-rules"
 
 	// RoleViewWorkplacePaymentHistory protects:
 	//   GET /payments/{member_number}/history  (also accepts RolePaymentHistory)

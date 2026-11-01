@@ -73,9 +73,10 @@ export interface ReapplyRuleResult {
 
 // Applies only this rule to every already-processed transaction it matches
 // dated on or after from (YYYY-MM-DD, inclusive; the backend refuses a date
-// before 1 January of the current year) — no other rule is evaluated. Manual
-// edits and transactions decided by an earlier rule are kept; 400 for a
-// disabled rule. Needs manage-transactions.
+// before 1 January of the current year unless the caller holds
+// override-rules) — no other rule is evaluated. Manual edits and transactions
+// decided by an earlier rule are kept; 400 for a disabled rule. Needs
+// manage-rules.
 export async function reapplyRule(id: number, from: string): Promise<ReapplyRuleResult> {
   const result = await apiSend<{ succeeded: number; failed: number }>(
     'POST',

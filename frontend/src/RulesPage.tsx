@@ -37,7 +37,8 @@ function conditionsText(rule: CategorizationRule): string {
 }
 
 export function RulesPage() {
-  const canManage = useHasRole('manage-transactions')
+  // view-rules alone sees the table read-only; manage-rules edits and re-applies.
+  const canManage = useHasRole('manage-rules')
   // null = closed, 'new' = add dialog, a rule = edit dialog
   const [editing, setEditing] = useState<CategorizationRule | 'new' | null>(null)
   const [reapplying, setReapplying] = useState<CategorizationRule | null>(null)
@@ -220,8 +221,11 @@ function startOfCurrentYear(): string {
 
 function ReapplyDialog({ rule, onClose }: { rule: CategorizationRule; onClose: () => void }) {
   const qc = useQueryClient()
-  const minimum = startOfCurrentYear()
-  const [from, setFrom] = useState(minimum)
+  // override-rules (superadmins) may pick any date, closed years included.
+  const canOverride = useHasRole('override-rules')
+  const yearStart = startOfCurrentYear()
+  const minimum = canOverride ? undefined : yearStart
+  const [from, setFrom] = useState(yearStart)
 
   const reapply = useMutation({
     mutationFn: () => reapplyRule(rule.id, from),
@@ -229,7 +233,7 @@ function ReapplyDialog({ rule, onClose }: { rule: CategorizationRule; onClose: (
   })
 
   // ISO dates compare correctly as strings.
-  const fromValid = /^\d{4}-\d{2}-\d{2}$/.test(from) && from >= minimum
+  const fromValid = /^\d{4}-\d{2}-\d{2}$/.test(from) && (minimum === undefined || from >= minimum)
 
   return (
     <Overlay onClose={onClose}>
@@ -240,7 +244,10 @@ function ReapplyDialog({ rule, onClose }: { rule: CategorizationRule; onClose: (
       <p style={{ color: '#666', fontSize: '0.875rem' }}>
         Applies only this rule to already-processed transactions it matches. Other rules are not applied; manual
         edits and transactions decided by an earlier rule are kept. Transactions before the date below stay as they
-        are — it can't go before {minimum}, so earlier years never change.
+        are.{' '}
+        {minimum !== undefined
+          ? `It can't go before ${minimum}, so earlier years never change.`
+          : 'You can pick a date in a closed year — budgets already reported for it may change.'}
       </p>
 
       {reapply.data ? (
@@ -262,7 +269,9 @@ function ReapplyDialog({ rule, onClose }: { rule: CategorizationRule; onClose: (
             From (inclusive)
             <input type="date" value={from} min={minimum} onChange={(e) => setFrom(e.target.value)} />
           </label>
-          {!fromValid && <p style={{ color: '#b00' }}>Choose a date on or after {minimum}.</p>}
+          {!fromValid && (
+            <p style={{ color: '#b00' }}>{minimum !== undefined ? `Choose a date on or after ${minimum}.` : 'Choose a date.'}</p>
+          )}
           {reapply.error && <p style={{ color: '#b00' }}>{errMessage(reapply.error)}</p>}
           <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem' }}>
             <button type="submit" disabled={!fromValid || reapply.isPending}>

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kubik/bank-system/internal/db"
+	"github.com/kubik/bank-system/internal/keycloak"
 	"github.com/kubik/bank-system/internal/processing"
 )
 
@@ -194,7 +195,7 @@ func writeRule(w http.ResponseWriter, r *http.Request, queries *db.Queries, id i
 // listed; it always applies last.
 //
 // @Summary      List categorization rules
-// @Description  Requires the list-transactions role. Evaluation order; disabled rules included.
+// @Description  Requires the view-rules or manage-rules role. Evaluation order; disabled rules included.
 // @Tags         categorization-rules
 // @Security     BearerAuth
 // @Produce      json
@@ -222,7 +223,7 @@ func ListCategorizationRules(queries *db.Queries) http.HandlerFunc {
 // New rules only apply to transactions processed from now on.
 //
 // @Summary      Add a categorization rule
-// @Description  Requires the manage-transactions role. Always kind=pattern. Every set condition must match (AND); at least one besides direction is required. Blank strings count as unset.
+// @Description  Requires the manage-rules role. Always kind=pattern. Every set condition must match (AND); at least one besides direction is required. Blank strings count as unset.
 // @Tags         categorization-rules
 // @Security     BearerAuth
 // @Accept       json
@@ -275,7 +276,7 @@ func CreateCategorizationRule(queries *db.Queries) http.HandlerFunc {
 // conditions). Doesn't recategorize already-processed transactions.
 //
 // @Summary      Update a categorization rule
-// @Description  Requires the manage-transactions role. Full overwrite: omitted optional fields are cleared. Built-in rules (own_account, member_variable_symbol): only priority, enabled and note may change.
+// @Description  Requires the manage-rules role. Full overwrite: omitted optional fields are cleared. Built-in rules (own_account, member_variable_symbol): only priority, enabled and note may change.
 // @Tags         categorization-rules
 // @Security     BearerAuth
 // @Accept       json
@@ -359,7 +360,7 @@ func UpdateCategorizationRule(queries *db.Queries) http.HandlerFunc {
 // rule decided keep their category.
 //
 // @Summary      Delete a categorization rule
-// @Description  Requires the manage-transactions role. Built-in rules cannot be deleted, only disabled. Already-categorized transactions keep their category.
+// @Description  Requires the manage-rules role. Built-in rules cannot be deleted, only disabled. Already-categorized transactions keep their category.
 // @Tags         categorization-rules
 // @Security     BearerAuth
 // @Param        id  path  int  true  "Rule ID"
@@ -405,7 +406,8 @@ func DeleteCategorizationRule(queries *db.Queries) http.HandlerFunc {
 type reapplyRuleRequest struct {
 	// From is the first transaction date (YYYY-MM-DD, inclusive) the rule is
 	// applied to. Optional, defaults to 1 January of the current year, which
-	// is also the earliest allowed — closed years are never rewritten.
+	// is also the earliest allowed — closed years are never rewritten —
+	// unless the caller holds override-rules.
 	From string `json:"from"`
 }
 
@@ -415,8 +417,9 @@ func startOfCurrentYear(now time.Time) time.Time {
 }
 
 // reapplyFromDate validates the request's from date against the
-// current-year minimum. Returns a client-facing error message on failure.
-func reapplyFromDate(value string, now time.Time) (time.Time, string) {
+// current-year minimum, which override lifts. Returns a client-facing error
+// message on failure.
+func reapplyFromDate(value string, now time.Time, override bool) (time.Time, string) {
 	minimum := startOfCurrentYear(now)
 	if value == "" {
 		return minimum, ""
@@ -425,7 +428,7 @@ func reapplyFromDate(value string, now time.Time) (time.Time, string) {
 	if err != nil {
 		return time.Time{}, "from must be YYYY-MM-DD"
 	}
-	if from.Before(minimum) {
+	if from.Before(minimum) && !override {
 		return time.Time{}, "from cannot be before " + minimum.Format("2006-01-02")
 	}
 	return from, ""
@@ -436,11 +439,13 @@ func reapplyFromDate(value string, now time.Time) (time.Time, string) {
 // not set by hand that it matches, dated on or after the body's from date
 // (see processing.ReapplyRule; a transaction decided by an earlier rule in
 // the order is kept). from can't go before the current year, so a closed
-// year's categorization — and the budget figures built on it — stays as it was. A route of its own
+// year's categorization — and the budget figures built on it — stays as it
+// was; only a caller holding override-rules (on top of the route's
+// manage-rules) may pick an earlier date. A route of its own
 // rather than a processing action so the audit log's path records which rule.
 //
 // @Summary      Apply one categorization rule to history
-// @Description  Requires the manage-transactions role. Applies only this rule to already-processed transactions it matches, dated on or after from (inclusive; optional, defaults to and may not precede 1 January of the current year); no other rule is evaluated. Manual edits and transactions decided by an earlier rule are kept. succeeded = transactions changed. 400 for a disabled rule or an invalid from.
+// @Description  Requires the manage-rules role. Applies only this rule to already-processed transactions it matches, dated on or after from (inclusive; optional, defaults to 1 January of the current year, which is also the minimum unless the caller holds override-rules); no other rule is evaluated. Manual edits and transactions decided by an earlier rule are kept. succeeded = transactions changed. 400 for a disabled rule or an invalid from.
 // @Tags         categorization-rules
 // @Security     BearerAuth
 // @Accept       json
@@ -452,7 +457,7 @@ func reapplyFromDate(value string, now time.Time) (time.Time, string) {
 // @Failure      404  {object}  map[string]string
 // @Failure      500  {object}  map[string]string
 // @Router       /categorization-rules/{id}/reapply [post]
-func ReapplyCategorizationRule(pool *pgxpool.Pool) http.HandlerFunc {
+func ReapplyCategorizationRule(pool *pgxpool.Pool, provider *keycloak.Provider) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseRuleID(r)
 		if !ok {
@@ -465,7 +470,13 @@ func ReapplyCategorizationRule(pool *pgxpool.Pool) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
-		from, message := reapplyFromDate(request.From, time.Now())
+		claims, ok := ClaimsFromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusForbidden, "not authorized")
+			return
+		}
+		override := provider.HasRole(claims, keycloak.RoleOverrideRules)
+		from, message := reapplyFromDate(request.From, time.Now(), override)
 		if message != "" {
 			writeError(w, http.StatusBadRequest, message)
 			return

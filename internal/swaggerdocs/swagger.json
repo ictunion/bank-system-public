@@ -556,7 +556,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the list-transactions role. Mandatory categories first. parent_name is null for top-level categories.",
+                "description": "Requires the list-transactions or manage-rules role. Mandatory categories first. parent_name is null for top-level categories.",
                 "produces": [
                     "application/json"
                 ],
@@ -748,7 +748,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the list-transactions role. Evaluation order; disabled rules included.",
+                "description": "Requires the view-rules or manage-rules role. Evaluation order; disabled rules included.",
                 "produces": [
                     "application/json"
                 ],
@@ -792,7 +792,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the manage-transactions role. Always kind=pattern. Every set condition must match (AND); at least one besides direction is required. Blank strings count as unset.",
+                "description": "Requires the manage-rules role. Always kind=pattern. Every set condition must match (AND); at least one besides direction is required. Blank strings count as unset.",
                 "consumes": [
                     "application/json"
                 ],
@@ -858,7 +858,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the manage-transactions role. Full overwrite: omitted optional fields are cleared. Built-in rules (own_account, member_variable_symbol): only priority, enabled and note may change.",
+                "description": "Requires the manage-rules role. Full overwrite: omitted optional fields are cleared. Built-in rules (own_account, member_variable_symbol): only priority, enabled and note may change.",
                 "consumes": [
                     "application/json"
                 ],
@@ -938,7 +938,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the manage-transactions role. Built-in rules cannot be deleted, only disabled. Already-categorized transactions keep their category.",
+                "description": "Requires the manage-rules role. Built-in rules cannot be deleted, only disabled. Already-categorized transactions keep their category.",
                 "tags": [
                     "categorization-rules"
                 ],
@@ -1002,7 +1002,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the manage-transactions role. Applies only this rule to already-processed transactions it matches, dated on or after from (inclusive; optional, defaults to and may not precede 1 January of the current year); no other rule is evaluated. Manual edits and transactions decided by an earlier rule are kept. succeeded = transactions changed. 400 for a disabled rule or an invalid from.",
+                "description": "Requires the manage-rules role. Applies only this rule to already-processed transactions it matches, dated on or after from (inclusive; optional, defaults to 1 January of the current year, which is also the minimum unless the caller holds override-rules); no other rule is evaluated. Manual edits and transactions decided by an earlier rule are kept. succeeded = transactions changed. 400 for a disabled rule or an invalid from.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3073,7 +3073,7 @@
             "type": "object",
             "properties": {
                 "from": {
-                    "description": "From is the first transaction date (YYYY-MM-DD, inclusive) the rule is\napplied to. Optional, defaults to 1 January of the current year, which\nis also the earliest allowed — closed years are never rewritten.",
+                    "description": "From is the first transaction date (YYYY-MM-DD, inclusive) the rule is\napplied to. Optional, defaults to 1 January of the current year, which\nis also the earliest allowed — closed years are never rewritten —\nunless the caller holds override-rules.",
                     "type": "string"
                 }
             }

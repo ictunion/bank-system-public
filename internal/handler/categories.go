@@ -33,7 +33,7 @@ func toCategoryResponse(category db.TransactionCategory) categoryResponse {
 // FE groups sub-categories under their parent itself.
 //
 // @Summary      List transaction categories
-// @Description  Requires the list-transactions role. Mandatory categories first. parent_name is null for top-level categories.
+// @Description  Requires the list-transactions or manage-rules role. Mandatory categories first. parent_name is null for top-level categories.
 // @Tags         categories
 // @Security     BearerAuth
 // @Produce      json
