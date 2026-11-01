@@ -2,6 +2,7 @@ package processing
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -10,6 +11,11 @@ import (
 	"github.com/kubik/bank-system/internal/db"
 	"github.com/kubik/bank-system/internal/dbtest"
 )
+
+// allHistory as ReapplyRule's from date reaches every fixture transaction —
+// several are dated months back, which can fall in the previous year. The
+// current-year minimum is enforced by the handler, not ReapplyRule.
+var allHistory = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 
 func TestMatchesPattern(t *testing.T) {
 	transaction := db.RawTransaction{
@@ -283,87 +289,155 @@ func TestRun_DisabledRuleIsSkipped(t *testing.T) {
 	}
 }
 
-// A rule added after a transaction was processed reaches it through
-// ReapplyRules — the lawyer payment tagged salary by "mzda" moves to its own
-// category.
-func TestReapplyRules_NewRuleRecategorizesHistory(t *testing.T) {
-	pool := dbtest.Pool(t)
-	queries := db.New(pool)
-	account := seedBankAccount(t, queries, "9400000047")
+// seedMzdaPaymentTo inserts an outgoing payment to counterAccountNumber with
+// "mzda" in its comment — salary under the seeded rules alone.
+func seedMzdaPaymentTo(t *testing.T, queries *db.Queries, bankAccountID int32, fioTransactionID int64, counterAccountNumber string) {
+	t.Helper()
 	if _, err := queries.InsertRawTransaction(context.Background(), db.InsertRawTransactionParams{
-		BankAccountID:        account.ID,
-		FioTransactionID:     6048,
+		BankAccountID:        bankAccountID,
+		FioTransactionID:     fioTransactionID,
 		TransactionDate:      time.Now(),
 		Amount:               "-5000.00",
 		Currency:             "CZK",
-		CounterAccountNumber: strPtr("2900000003"),
-		Comment:              strPtr("mzda pravni sluzby"),
+		CounterAccountNumber: &counterAccountNumber,
+		Comment:              strPtr("mzda"),
 		RawPayload:           []byte("{}"),
 	}); err != nil {
-		t.Fatalf("InsertRawTransaction: %v", err)
+		t.Fatalf("InsertRawTransaction(%d): %v", fioTransactionID, err)
 	}
+}
+
+// Re-applying one rule applies only that rule: the matching payments move to
+// it (whether "mzda" or the fallback decided them), while history another new
+// rule would change stays as it was.
+func TestReapplyRule_AppliesOnlyThatRule(t *testing.T) {
+	pool := dbtest.Pool(t)
+	queries := db.New(pool)
+	account := seedBankAccount(t, queries, "9400000049")
+	// 6050 and 6051 become salary ("mzda"), 6053 the fallback other_expense.
+	seedMzdaPaymentTo(t, queries, account.ID, 6050, "2900000004")
+	seedTransferTransaction(t, queries, account.ID, 6053, "-700.00", "2900000004", nil)
+	seedMzdaPaymentTo(t, queries, account.ID, 6051, "2900000005")
 	if _, err := Run(context.Background(), pool); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got := queryProcessed(t, pool, 6048); got.category != "salary" {
-		t.Fatalf("category before the rule = %q, want salary", got.category)
-	}
 
 	insertTestCategory(t, pool, "test_legal")
-	ruleID := insertPatternRule(t, pool, 400, "test_legal", strPtr("2900000003"), nil)
+	lawyerRule := insertPatternRule(t, pool, 400, "test_legal", strPtr("2900000004"), nil)
+	insertPatternRule(t, pool, 410, "test_legal", strPtr("2900000005"), nil)
 
-	result, err := ReapplyRules(context.Background(), pool)
+	result, err := ReapplyRule(context.Background(), pool, lawyerRule, allHistory)
 	if err != nil {
-		t.Fatalf("ReapplyRules: %v", err)
+		t.Fatalf("ReapplyRule: %v", err)
 	}
-	if result.Changed != 1 || result.Failed != 0 {
-		t.Fatalf("result = %+v, want {1 0}", result)
+	if result.Changed != 2 || result.Failed != 0 {
+		t.Fatalf("result = %+v, want {2 0}", result)
 	}
-	if got := queryProcessed(t, pool, 6048); got.category != "test_legal" {
-		t.Errorf("category = %q, want test_legal", got.category)
+	for _, fioTransactionID := range []int64{6050, 6053} {
+		if got := queryProcessed(t, pool, fioTransactionID); got.category != "test_legal" {
+			t.Errorf("%d category = %q, want test_legal", fioTransactionID, got.category)
+		}
+		if id := ruleIDFor(t, pool, fioTransactionID); id == nil || *id != lawyerRule {
+			t.Errorf("%d rule id = %v, want %d", fioTransactionID, id, lawyerRule)
+		}
 	}
-	if id := ruleIDFor(t, pool, 6048); id == nil || *id != ruleID {
-		t.Errorf("rule id = %v, want %d", id, ruleID)
+	if got := queryProcessed(t, pool, 6051); got.category != "salary" {
+		t.Errorf("6051 category = %q, want salary — the other rule wasn't applied", got.category)
 	}
 
-	second, err := ReapplyRules(context.Background(), pool)
+	second, err := ReapplyRule(context.Background(), pool, lawyerRule, allHistory)
 	if err != nil {
-		t.Fatalf("second ReapplyRules: %v", err)
+		t.Fatalf("second ReapplyRule: %v", err)
 	}
 	if second.Changed != 0 || second.Failed != 0 {
 		t.Errorf("second result = %+v, want {0 0}", second)
 	}
 }
 
-// When the member rule no longer matches (here: disabled), an automatic
-// member match is undone — member cleared, default coverage removed.
-func TestReapplyRules_UndoesMemberMatchThatNoLongerApplies(t *testing.T) {
+// A transaction decided by a rule that runs earlier keeps that rule's
+// outcome — a new transaction would get it too.
+func TestReapplyRule_KeepsEarlierRulesDecision(t *testing.T) {
 	pool := dbtest.Pool(t)
 	queries := db.New(pool)
-	account := seedBankAccount(t, queries, "9400000048")
-	seedMemberWithIdentifier(t, queries, 900648, "900648")
-	seedRawTransaction(t, queries, account.ID, 6049, "500.00", strPtr("900648"), nil)
+	account := seedBankAccount(t, queries, "9400000050")
+	seedBankAccount(t, queries, "9400000051")
+	seedTransferTransaction(t, queries, account.ID, 6052, "-700.00", "9400000051", nil)
 	if _, err := Run(context.Background(), pool); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if n := coverageMonthsFor(t, pool, 900648); n != 1 {
-		t.Fatalf("coverage before = %d, want 1", n)
-	}
 
-	disableSeededRule(t, pool, "membership_fee")
+	insertTestCategory(t, pool, "test_legal")
+	rule := insertPatternRule(t, pool, 400, "test_legal", strPtr("9400000051"), nil)
 
-	result, err := ReapplyRules(context.Background(), pool)
+	result, err := ReapplyRule(context.Background(), pool, rule, allHistory)
 	if err != nil {
-		t.Fatalf("ReapplyRules: %v", err)
+		t.Fatalf("ReapplyRule: %v", err)
 	}
-	if result.Changed != 1 || result.Failed != 0 {
-		t.Fatalf("result = %+v, want {1 0}", result)
+	if result.Changed != 0 || result.Failed != 0 {
+		t.Fatalf("result = %+v, want {0 0}", result)
 	}
-	got := queryProcessed(t, pool, 6049)
-	if got.category != "other_income" || got.memberNumber != nil || got.matchedBy != nil {
-		t.Errorf("got %+v, want other_income with no member", got)
+	if got := queryProcessed(t, pool, 6052); got.category != "internal_transfer" {
+		t.Errorf("category = %q, want internal_transfer (own_account runs first)", got.category)
 	}
-	if n := coverageMonthsFor(t, pool, 900648); n != 0 {
-		t.Errorf("coverage after = %d, want 0", n)
+}
+
+func TestReapplyRule_DisabledRefused(t *testing.T) {
+	pool := dbtest.Pool(t)
+	disableSeededRule(t, pool, "salary")
+	if _, err := ReapplyRule(context.Background(), pool, seededRuleID(t, pool, "salary"), allHistory); !errors.Is(err, ErrRuleDisabled) {
+		t.Errorf("err = %v, want ErrRuleDisabled", err)
+	}
+}
+
+func TestReapplyRule_NotFound(t *testing.T) {
+	pool := dbtest.Pool(t)
+	if _, err := ReapplyRule(context.Background(), pool, 999999, allHistory); !errors.Is(err, ErrRuleNotFound) {
+		t.Errorf("err = %v, want ErrRuleNotFound", err)
+	}
+}
+
+// Transactions dated before from stay as they are; from itself is included.
+func TestReapplyRule_OnlyFromDateOnwards(t *testing.T) {
+	pool := dbtest.Pool(t)
+	queries := db.New(pool)
+	account := seedBankAccount(t, queries, "9400000052")
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	dates := map[int64]time.Time{
+		6054: time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC),
+		6055: from,
+		6056: time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC),
+	}
+	for fioTransactionID, date := range dates {
+		if _, err := queries.InsertRawTransaction(context.Background(), db.InsertRawTransactionParams{
+			BankAccountID:        account.ID,
+			FioTransactionID:     fioTransactionID,
+			TransactionDate:      date,
+			Amount:               "-5000.00",
+			Currency:             "CZK",
+			CounterAccountNumber: strPtr("2900000007"),
+			RawPayload:           []byte("{}"),
+		}); err != nil {
+			t.Fatalf("InsertRawTransaction(%d): %v", fioTransactionID, err)
+		}
+	}
+	if _, err := Run(context.Background(), pool); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	insertTestCategory(t, pool, "test_legal")
+	rule := insertPatternRule(t, pool, 400, "test_legal", strPtr("2900000007"), nil)
+
+	result, err := ReapplyRule(context.Background(), pool, rule, from)
+	if err != nil {
+		t.Fatalf("ReapplyRule: %v", err)
+	}
+	if result.Changed != 2 || result.Failed != 0 {
+		t.Fatalf("result = %+v, want {2 0}", result)
+	}
+	want := map[int64]string{6054: "other_expense", 6055: "test_legal", 6056: "test_legal"}
+	for fioTransactionID, category := range want {
+		if got := queryProcessed(t, pool, fioTransactionID); got.category != category {
+			t.Errorf("%d category = %q, want %q", fioTransactionID, got.category, category)
+		}
 	}
 }

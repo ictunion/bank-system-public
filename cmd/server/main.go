@@ -152,6 +152,7 @@ func main() {
 	api.HandleFunc("POST /categorization-rules", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.CreateCategorizationRule(db.New(pool))))
 	api.HandleFunc("PUT /categorization-rules/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.UpdateCategorizationRule(db.New(pool))))
 	api.HandleFunc("DELETE /categorization-rules/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.DeleteCategorizationRule(db.New(pool))))
+	api.HandleFunc("POST /categorization-rules/{id}/reapply", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.ReapplyCategorizationRule(pool)))
 	api.HandleFunc("GET /payments/{member_number}/history", handler.RequireAnyRole(keycloakProvider, []keycloak.Role{keycloak.RolePaymentHistory, keycloak.RoleViewWorkplacePaymentHistory}, handler.PaymentHistory(keycloakProvider, db.New(pool))))
 	api.HandleFunc("GET /payments/me/history", handler.RequireAuth(keycloakProvider, handler.MyPaymentHistory(db.New(pool))))
 	api.HandleFunc("GET /payments/{year}/{month}/missing", handler.RequireRole(keycloakProvider, keycloak.RolePaymentHistory, handler.MissingPayments(db.New(pool))))

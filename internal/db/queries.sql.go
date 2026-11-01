@@ -2106,6 +2106,7 @@ FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
 WHERE NOT pt.category_set_manually
   AND pt.matched_by IS DISTINCT FROM 'manual'
+  AND rt.transaction_date >= $1::date
 ORDER BY pt.id
 `
 
@@ -2127,11 +2128,11 @@ type ListReapplyCandidatesRow struct {
 	TransactionType      *string   `json:"transaction_type"`
 }
 
-// Backs POST /processing/run action=reapply_rules: every processed
-// transaction not set by hand, with the raw fields the rules read and its
-// current outcome to compare against.
-func (q *Queries) ListReapplyCandidates(ctx context.Context) ([]ListReapplyCandidatesRow, error) {
-	rows, err := q.db.Query(ctx, listReapplyCandidates)
+// Backs POST /categorization-rules/{id}/reapply: every processed
+// transaction not set by hand dated on or after date_from, with the raw
+// fields the rules read and its current outcome to compare against.
+func (q *Queries) ListReapplyCandidates(ctx context.Context, dateFrom time.Time) ([]ListReapplyCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listReapplyCandidates, dateFrom)
 	if err != nil {
 		return nil, err
 	}

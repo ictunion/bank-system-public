@@ -995,6 +995,96 @@
                 }
             }
         },
+        "/categorization-rules/{id}/reapply": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Requires the manage-transactions role. Applies only this rule to already-processed transactions it matches, dated on or after from (inclusive; optional, defaults to and may not precede 1 January of the current year); no other rule is evaluated. Manual edits and transactions decided by an earlier rule are kept. succeeded = transactions changed. 400 for a disabled rule or an invalid from.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "categorization-rules"
+                ],
+                "summary": "Apply one categorization rule to history",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Rule ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Earliest transaction date",
+                        "name": "request",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/handler.reapplyRuleRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handler.processingActionResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/event-logs": {
             "get": {
                 "security": [
@@ -1994,7 +2084,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires manage-bank-accounts or manage-transactions (which, depends on the action). Body selects the action: \"run\" (categorize unprocessed transactions, needs manage-bank-accounts) or \"reapply_rules\" (re-evaluate the current categorization rules for every already-processed transaction not set by hand, rewriting those whose outcome changed; succeeded = transactions changed; needs manage-transactions).",
+                "description": "Requires manage-bank-accounts or manage-transactions (which, depends on the action). Body selects the action: \"run\" (categorize unprocessed transactions, needs manage-bank-accounts).",
                 "consumes": [
                     "application/json"
                 ],
@@ -2975,6 +3065,15 @@
             "type": "object",
             "properties": {
                 "action": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.reapplyRuleRequest": {
+            "type": "object",
+            "properties": {
+                "from": {
+                    "description": "From is the first transaction date (YYYY-MM-DD, inclusive) the rule is\napplied to. Optional, defaults to 1 January of the current year, which\nis also the earliest allowed — closed years are never rewritten.",
                     "type": "string"
                 }
             }

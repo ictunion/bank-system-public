@@ -83,7 +83,7 @@ export function backfillAccount(id: number, from: string, to: string): Promise<S
 // — see internal/handler/processing.go. `succeeded`/`failed` mean whatever
 // that action's own unit of work is; new actions reuse this same shape
 // rather than getting a bespoke response type each.
-type ProcessingAction = 'run' | 'reapply_rules'
+type ProcessingAction = 'run'
 
 interface ProcessingActionResult {
   action: ProcessingAction
@@ -108,22 +108,4 @@ export interface ProcessingResult {
 export async function triggerProcessing(): Promise<ProcessingResult> {
   const result = await runProcessingAction('run')
   return { transactions_processed: result.succeeded, transactions_failed: result.failed }
-}
-
-export interface ReapplyRulesResult {
-  changed: number
-  failed: number
-}
-
-// Re-evaluates the current categorization rules for every already-processed
-// transaction not set by hand, and rewrites those whose outcome changed — for
-// a new or edited rule, a bank account added after its transfers were
-// processed, or a member's liability window corrected in Orca (run after the
-// corrected data has synced). Skips manual edits; safe/idempotent to call
-// repeatedly. Needs manage-transactions, since it rewrites
-// processed_transactions rows.
-export async function reapplyRules(): Promise<ReapplyRulesResult> {
-  const result = await runProcessingAction('reapply_rules')
-  return { changed: result.succeeded, failed: result.failed }
-}
 }

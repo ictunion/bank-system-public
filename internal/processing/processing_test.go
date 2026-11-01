@@ -432,13 +432,13 @@ func setMatchedBy(t *testing.T, pool *pgxpool.Pool, fioTransactionID int64, matc
 	}
 }
 
-// TestReapplyRules_FixesTransferProcessedBeforeCounterpartyAccountExisted
+// TestReapplyRule_FixesTransferProcessedBeforeCounterpartyAccountExisted
 // reproduces the real bug: a transfer's counterparty account gets registered
 // in bank_accounts *after* the transfer was already synced and processed —
 // internal-transfer detection in Run only ever sees the roster as of that
 // moment, so it's miscategorized, and Run alone can never fix it afterward
 // since it skips already-processed rows.
-func TestReapplyRules_FixesTransferProcessedBeforeCounterpartyAccountExisted(t *testing.T) {
+func TestReapplyRule_FixesTransferProcessedBeforeCounterpartyAccountExisted(t *testing.T) {
 	pool := dbtest.Pool(t)
 	queries := db.New(pool)
 	accountA := seedBankAccount(t, queries, "9400000017")
@@ -464,9 +464,9 @@ func TestReapplyRules_FixesTransferProcessedBeforeCounterpartyAccountExisted(t *
 
 	seedBankAccount(t, queries, "9400000018")
 
-	result, err := ReapplyRules(context.Background(), pool)
+	result, err := ReapplyRule(context.Background(), pool, seededRuleID(t, pool, "internal_transfer"), allHistory)
 	if err != nil {
-		t.Fatalf("ReapplyRules: %v", err)
+		t.Fatalf("ReapplyRule: %v", err)
 	}
 	if result.Changed != 1 || result.Failed != 0 {
 		t.Fatalf("result = %+v, want {1 0}", result)
@@ -481,19 +481,19 @@ func TestReapplyRules_FixesTransferProcessedBeforeCounterpartyAccountExisted(t *
 	}
 
 	// Idempotent: nothing left to change on a second call.
-	second, err := ReapplyRules(context.Background(), pool)
+	second, err := ReapplyRule(context.Background(), pool, seededRuleID(t, pool, "internal_transfer"), allHistory)
 	if err != nil {
-		t.Fatalf("second ReapplyRules: %v", err)
+		t.Fatalf("second ReapplyRule: %v", err)
 	}
 	if second.Changed != 0 || second.Failed != 0 {
 		t.Errorf("second result = %+v, want {0 0}", second)
 	}
 }
 
-// TestReapplyRules_SkipsManuallyMatchedTransfer makes sure an
+// TestReapplyRule_SkipsManuallyMatchedTransfer makes sure an
 // admin's explicit manual match is never silently overridden, even if the
 // counterparty later turns out to be one of our own accounts.
-func TestReapplyRules_SkipsManuallyMatchedTransfer(t *testing.T) {
+func TestReapplyRule_SkipsManuallyMatchedTransfer(t *testing.T) {
 	pool := dbtest.Pool(t)
 	queries := db.New(pool)
 	accountA := seedBankAccount(t, queries, "9400000019")
@@ -506,9 +506,9 @@ func TestReapplyRules_SkipsManuallyMatchedTransfer(t *testing.T) {
 
 	seedBankAccount(t, queries, "9400000020")
 
-	result, err := ReapplyRules(context.Background(), pool)
+	result, err := ReapplyRule(context.Background(), pool, seededRuleID(t, pool, "internal_transfer"), allHistory)
 	if err != nil {
-		t.Fatalf("ReapplyRules: %v", err)
+		t.Fatalf("ReapplyRule: %v", err)
 	}
 	if result.Changed != 0 || result.Failed != 0 {
 		t.Fatalf("result = %+v, want {0 0} — manually-matched rows must be skipped", result)
@@ -539,14 +539,14 @@ func seedRawTransactionOnDate(t *testing.T, queries *db.Queries, bankAccountID i
 	}
 }
 
-// TestReapplyRules_MatchesAfterMemberStartDateCorrected reproduces the
+// TestReapplyRule_MatchesAfterMemberStartDateCorrected reproduces the
 // real reported bug: a member's fee_start_date was wrong in Orca (too late),
 // so member_payment_identifiers had no row covering their actual, earlier
 // payments — those transactions processed as unmatched other_income. Once
 // Orca's data is corrected and re-synced (simulated here directly via
 // UpsertDefaultPaymentIdentifier, same call the Orca sync itself makes),
-// ReapplyRules must find and fix them.
-func TestReapplyRules_MatchesAfterMemberStartDateCorrected(t *testing.T) {
+// re-applying the member rule must find and fix them.
+func TestReapplyRule_MatchesAfterMemberStartDateCorrected(t *testing.T) {
 	pool := dbtest.Pool(t)
 	queries := db.New(pool)
 	account := seedBankAccount(t, queries, "9400000021")
@@ -593,9 +593,9 @@ func TestReapplyRules_MatchesAfterMemberStartDateCorrected(t *testing.T) {
 		t.Fatalf("UpsertDefaultPaymentIdentifier (corrected): %v", err)
 	}
 
-	result, err := ReapplyRules(context.Background(), pool)
+	result, err := ReapplyRule(context.Background(), pool, seededRuleID(t, pool, "membership_fee"), allHistory)
 	if err != nil {
-		t.Fatalf("ReapplyRules: %v", err)
+		t.Fatalf("ReapplyRule: %v", err)
 	}
 	if result.Changed != 1 || result.Failed != 0 {
 		t.Fatalf("result = %+v, want {1 0}", result)
@@ -616,22 +616,22 @@ func TestReapplyRules_MatchesAfterMemberStartDateCorrected(t *testing.T) {
 	}
 
 	// Idempotent: nothing left to change on a second call.
-	second, err := ReapplyRules(context.Background(), pool)
+	second, err := ReapplyRule(context.Background(), pool, seededRuleID(t, pool, "membership_fee"), allHistory)
 	if err != nil {
-		t.Fatalf("second ReapplyRules: %v", err)
+		t.Fatalf("second ReapplyRule: %v", err)
 	}
 	if second.Changed != 0 || second.Failed != 0 {
 		t.Errorf("second result = %+v, want {0 0}", second)
 	}
 }
 
-// TestReapplyRules_MemberMatchStripsLeadingZeroes covers the same Fio
+// TestReapplyRule_MemberMatchStripsLeadingZeroes covers the same Fio
 // zero-padded-variable-symbol quirk as TestRun_VariableSymbolMatchStripsLeadingZeroes
 // (e.g. "00900613" for VS 900613), but on the reapply path — a real
 // regression once: the zero-stripping fix was only applied in processOne,
 // not on the re-check path, so an already-processed zero-padded-VS transaction
 // stayed unmatched forever even after re-checking should have fixed it.
-func TestReapplyRules_MemberMatchStripsLeadingZeroes(t *testing.T) {
+func TestReapplyRule_MemberMatchStripsLeadingZeroes(t *testing.T) {
 	pool := dbtest.Pool(t)
 	queries := db.New(pool)
 	account := seedBankAccount(t, queries, "9400000025")
@@ -649,9 +649,9 @@ func TestReapplyRules_MemberMatchStripsLeadingZeroes(t *testing.T) {
 
 	seedMemberWithIdentifier(t, queries, 900613, "900613")
 
-	result, err := ReapplyRules(context.Background(), pool)
+	result, err := ReapplyRule(context.Background(), pool, seededRuleID(t, pool, "membership_fee"), allHistory)
 	if err != nil {
-		t.Fatalf("ReapplyRules: %v", err)
+		t.Fatalf("ReapplyRule: %v", err)
 	}
 	if result.Changed != 1 || result.Failed != 0 {
 		t.Fatalf("result = %+v, want {1 0}", result)
@@ -666,10 +666,10 @@ func TestReapplyRules_MemberMatchStripsLeadingZeroes(t *testing.T) {
 	}
 }
 
-// TestReapplyRules_SkipsManuallyMatchedMember makes sure an admin's
+// TestReapplyRule_SkipsManuallyMatchedMember makes sure an admin's
 // explicit manual match/category is never silently overridden even if a
 // member now happens to resolve for that variable symbol/date.
-func TestReapplyRules_SkipsManuallyMatchedMember(t *testing.T) {
+func TestReapplyRule_SkipsManuallyMatchedMember(t *testing.T) {
 	pool := dbtest.Pool(t)
 	queries := db.New(pool)
 	account := seedBankAccount(t, queries, "9400000022")
@@ -683,9 +683,9 @@ func TestReapplyRules_SkipsManuallyMatchedMember(t *testing.T) {
 
 	seedMemberWithIdentifier(t, queries, 900611, "900611")
 
-	result, err := ReapplyRules(context.Background(), pool)
+	result, err := ReapplyRule(context.Background(), pool, seededRuleID(t, pool, "membership_fee"), allHistory)
 	if err != nil {
-		t.Fatalf("ReapplyRules: %v", err)
+		t.Fatalf("ReapplyRule: %v", err)
 	}
 	if result.Changed != 0 || result.Failed != 0 {
 		t.Fatalf("result = %+v, want {0 0} — manually-matched rows must be skipped", result)
@@ -697,12 +697,12 @@ func TestReapplyRules_SkipsManuallyMatchedMember(t *testing.T) {
 	}
 }
 
-// TestReapplyRules_InternalTransferStillBeatsMemberMatch makes sure a transaction already
+// TestReapplyRule_InternalTransferStillBeatsMemberMatch makes sure a transaction already
 // categorized internal_transfer is never reconsidered for member matching,
 // even if its variable_symbol happens to coincide with a live member's — same
 // precedence rule processOne itself enforces (see
 // TestRun_InternalTransferTakesPriorityOverVariableSymbolMatch).
-func TestReapplyRules_InternalTransferStillBeatsMemberMatch(t *testing.T) {
+func TestReapplyRule_InternalTransferStillBeatsMemberMatch(t *testing.T) {
 	pool := dbtest.Pool(t)
 	queries := db.New(pool)
 	accountA := seedBankAccount(t, queries, "9400000023")
@@ -731,9 +731,9 @@ func TestReapplyRules_InternalTransferStillBeatsMemberMatch(t *testing.T) {
 		t.Fatalf("before: category = %q, want internal_transfer", before.category)
 	}
 
-	result, err := ReapplyRules(context.Background(), pool)
+	result, err := ReapplyRule(context.Background(), pool, seededRuleID(t, pool, "membership_fee"), allHistory)
 	if err != nil {
-		t.Fatalf("ReapplyRules: %v", err)
+		t.Fatalf("ReapplyRule: %v", err)
 	}
 	if result.Changed != 0 || result.Failed != 0 {
 		t.Fatalf("result = %+v, want {0 0} — internal_transfer rows must be skipped", result)
@@ -764,8 +764,8 @@ func setCategorySetManually(t *testing.T, pool *pgxpool.Pool, fioTransactionID i
 }
 
 // A manual category-only edit (no member, so matched_by stays NULL) is never
-// overwritten by ReapplyRules.
-func TestReapplyRules_SkipsCategoryOnlyManualEdits(t *testing.T) {
+// overwritten by ReapplyRule.
+func TestReapplyRule_SkipsCategoryOnlyManualEdits(t *testing.T) {
 	pool := dbtest.Pool(t)
 	queries := db.New(pool)
 	account := seedBankAccount(t, queries, "9400000031")
@@ -806,12 +806,14 @@ func TestReapplyRules_SkipsCategoryOnlyManualEdits(t *testing.T) {
 	seedBankAccount(t, queries, "9400000032")
 	seedMemberWithIdentifier(t, queries, 900631, "900631")
 
-	result, err := ReapplyRules(context.Background(), pool)
-	if err != nil {
-		t.Fatalf("ReapplyRules: %v", err)
-	}
-	if result.Changed != 0 || result.Failed != 0 {
-		t.Fatalf("result = %+v, want nothing touched", result)
+	for _, category := range []string{"internal_transfer", "credited_interest", "membership_fee"} {
+		result, err := ReapplyRule(context.Background(), pool, seededRuleID(t, pool, category), allHistory)
+		if err != nil {
+			t.Fatalf("ReapplyRule(%s): %v", category, err)
+		}
+		if result.Changed != 0 || result.Failed != 0 {
+			t.Fatalf("ReapplyRule(%s) = %+v, want nothing touched", category, result)
+		}
 	}
 
 	tests := []struct {

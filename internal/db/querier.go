@@ -6,6 +6,7 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -254,10 +255,10 @@ type Querier interface {
 	// Workplace-rep counterpart to ListMembersMissingPaymentInYear — same shape
 	// and logic, scoped to members in any of the caller's workplace groups.
 	ListMembersMissingPaymentInYearForWorkplace(ctx context.Context, arg ListMembersMissingPaymentInYearForWorkplaceParams) ([]MemberArrear, error)
-	// Backs POST /processing/run action=reapply_rules: every processed
-	// transaction not set by hand, with the raw fields the rules read and its
-	// current outcome to compare against.
-	ListReapplyCandidates(ctx context.Context) ([]ListReapplyCandidatesRow, error)
+	// Backs POST /categorization-rules/{id}/reapply: every processed
+	// transaction not set by hand dated on or after date_from, with the raw
+	// fields the rules read and its current outcome to compare against.
+	ListReapplyCandidates(ctx context.Context, dateFrom time.Time) ([]ListReapplyCandidatesRow, error)
 	// Admin transaction browser: processed_transactions enriched with their
 	// raw_transactions row, with optional filters. Every filter arg is nullable —
 	// NULL / omitted means "don't filter on this". total_count is the full match

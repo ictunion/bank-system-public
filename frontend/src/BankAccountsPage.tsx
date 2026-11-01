@@ -7,13 +7,11 @@ import {
   createBankAccount,
   deleteBankAccount,
   fetchBankAccounts,
-  reapplyRules,
   triggerFioSync,
   triggerProcessing,
   updateBankAccount,
 } from './api/bankAccounts'
 import { Overlay } from './Overlay'
-import { useHasRole } from './roles'
 
 const COLUMNS = ['', 'Fio account', 'Name', 'Currency', 'Balance', 'IBAN', 'Token', 'Created', ''] as const
 
@@ -54,7 +52,6 @@ function ColorSwatch({ color }: { color: string | null }) {
 
 export function BankAccountsPage() {
   const qc = useQueryClient()
-  const canManageTransactions = useHasRole('manage-transactions')
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<BankAccount | null>(null)
   const [backfilling, setBackfilling] = useState<BankAccount | null>(null)
@@ -73,15 +70,6 @@ export function BankAccountsPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['transactions'] }),
   })
 
-  // Separate from runProcessing: rewrites already-processed rows (see
-  // api/bankAccounts.ts reapplyRules), so it needs manage-transactions, not
-  // manage-bank-accounts, and gets its own explicit button rather than
-  // running automatically.
-  const reapply = useMutation({
-    mutationFn: reapplyRules,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['transactions'] }),
-  })
-
   return (
     <section>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
@@ -97,24 +85,6 @@ export function BankAccountsPage() {
           <button disabled={runProcessing.isPending} onClick={() => runProcessing.mutate()}>
             {runProcessing.isPending ? 'Running…' : 'Run processing'}
           </button>
-          {canManageTransactions && (
-            <>
-              {reapply.error && <span style={{ color: '#b00' }}>{errMessage(reapply.error)}</span>}
-              {reapply.data && (
-                <span style={{ color: '#080' }}>
-                  Changed {reapply.data.changed}
-                  {reapply.data.failed > 0 ? ` (${reapply.data.failed} failed)` : ''}
-                </span>
-              )}
-              <button
-                disabled={reapply.isPending}
-                title="Re-evaluate the categorization rules for already-processed transactions (manual edits are kept)"
-                onClick={() => reapply.mutate()}
-              >
-                {reapply.isPending ? 'Re-applying…' : 'Re-apply rules'}
-              </button>
-            </>
-          )}
           <button onClick={() => setAdding(true)}>Add bank account</button>
         </div>
       </div>

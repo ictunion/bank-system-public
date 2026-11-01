@@ -16,8 +16,7 @@ type processingRunRequest struct {
 
 // processingActionResponse is the one response shape every action returns —
 // Succeeded/Failed means whatever that action's own unit of work is
-// (transactions processed for "run", transactions changed for
-// "reapply_rules"). Keeping one generic {action, succeeded,
+// (transactions processed for "run"). Keeping one generic {action, succeeded,
 // failed} contract, rather than a bespoke shape per action, is what lets new
 // actions get added here later without changing the response contract too.
 type processingActionResponse struct {
@@ -40,7 +39,7 @@ type processingActionResponse struct {
 // manage-transactions write, same as PUT /transactions/{id}/assignment).
 //
 // @Summary      Run an on-demand processing action
-// @Description  Requires manage-bank-accounts or manage-transactions (which, depends on the action). Body selects the action: "run" (categorize unprocessed transactions, needs manage-bank-accounts) or "reapply_rules" (re-evaluate the current categorization rules for every already-processed transaction not set by hand, rewriting those whose outcome changed; succeeded = transactions changed; needs manage-transactions).
+// @Description  Requires manage-bank-accounts or manage-transactions (which, depends on the action). Body selects the action: "run" (categorize unprocessed transactions, needs manage-bank-accounts).
 // @Tags         transactions
 // @Security     BearerAuth
 // @Accept       json
@@ -79,22 +78,6 @@ func RunProcessing(pool *pgxpool.Pool, provider *keycloak.Provider) http.Handler
 				Action:    request.Action,
 				Succeeded: result.TransactionsProcessed,
 				Failed:    result.TransactionsFailed,
-			})
-
-		case "reapply_rules":
-			if !provider.HasRole(claims, keycloak.RoleManageTransactions) {
-				writeError(w, http.StatusForbidden, "not authorized")
-				return
-			}
-			result, err := processing.ReapplyRules(r.Context(), pool)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "reapplying rules failed: "+err.Error())
-				return
-			}
-			writeJSON(w, http.StatusOK, processingActionResponse{
-				Action:    request.Action,
-				Succeeded: result.Changed,
-				Failed:    result.Failed,
 			})
 
 		default:

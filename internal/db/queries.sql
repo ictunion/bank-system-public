@@ -723,9 +723,9 @@ WHERE enabled
 ORDER BY priority, id;
 
 -- name: ListReapplyCandidates :many
--- Backs POST /processing/run action=reapply_rules: every processed
--- transaction not set by hand, with the raw fields the rules read and its
--- current outcome to compare against.
+-- Backs POST /categorization-rules/{id}/reapply: every processed
+-- transaction not set by hand dated on or after date_from, with the raw
+-- fields the rules read and its current outcome to compare against.
 SELECT
     pt.id, pt.direction, pt.category, pt.member_number, pt.matched_by, pt.categorization_rule_id,
     rt.transaction_date, rt.amount, rt.counter_account_number, rt.variable_symbol,
@@ -735,6 +735,7 @@ FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
 WHERE NOT pt.category_set_manually
   AND pt.matched_by IS DISTINCT FROM 'manual'
+  AND rt.transaction_date >= sqlc.arg(date_from)::date
 ORDER BY pt.id;
 
 -- name: ReapplyCategorization :execrows

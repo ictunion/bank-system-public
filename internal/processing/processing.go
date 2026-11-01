@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -103,45 +104,58 @@ func FallbackCategory(direction string) string {
 }
 
 // categorize walks rules (already in evaluation order, enabled only) and
-// returns the first match. Only the member_variable_symbol rule queries the
-// database; every other kind is decided from rt and ourAccounts alone.
+// returns the first match, or the direction fallback when none matches.
 func categorize(requestContext context.Context, queries *db.Queries, rt db.RawTransaction, direction string, rules []db.CategorizationRule, ourAccounts map[string]bool) (outcome, error) {
 	for _, rule := range rules {
-		switch rule.Kind {
-		case "own_account":
-			// Matched on counter_account_number alone (no bank-code check —
-			// this app only syncs Fio accounts, so a collision is unlikely).
-			if rt.CounterAccountNumber != nil && ourAccounts[*rt.CounterAccountNumber] {
-				return outcome{category: rule.Category, ruleID: &rule.ID}, nil
-			}
-		case "member_variable_symbol":
-			if rt.VariableSymbol == nil || *rt.VariableSymbol == "" {
-				continue
-			}
-			member, err := queries.FindMemberByVariableSymbol(requestContext, db.FindMemberByVariableSymbolParams{
-				VariableSymbol:  normalizeVariableSymbol(*rt.VariableSymbol),
-				TransactionDate: rt.TransactionDate,
-			})
-			switch {
-			case err == nil:
-				matchedBy := "variable_symbol"
-				return outcome{category: rule.Category, ruleID: &rule.ID, memberNumber: &member, matchedBy: &matchedBy}, nil
-			case errors.Is(err, pgx.ErrNoRows):
-				// no member currently claims this variable symbol — next rule.
-			default:
-				return outcome{}, fmt.Errorf("matching variable_symbol %q: %w", *rt.VariableSymbol, err)
-			}
-		case "pattern":
-			if matchesPattern(rule, rt, direction) {
-				return outcome{category: rule.Category, ruleID: &rule.ID}, nil
-			}
-		default:
-			// The kind CHECK constraint makes this unreachable; skip rather
-			// than fail the whole transaction if it ever isn't.
-			log.Printf("processing: categorization rule %d has unknown kind %q, skipped", rule.ID, rule.Kind)
+		result, matched, err := applyRule(requestContext, queries, rule, rt, direction, ourAccounts)
+		if err != nil {
+			return outcome{}, err
+		}
+		if matched {
+			return result, nil
 		}
 	}
 	return outcome{category: FallbackCategory(direction)}, nil
+}
+
+// applyRule checks one rule against rt. Only the member_variable_symbol rule
+// queries the database; every other kind is decided from rt and ourAccounts
+// alone.
+func applyRule(requestContext context.Context, queries *db.Queries, rule db.CategorizationRule, rt db.RawTransaction, direction string, ourAccounts map[string]bool) (outcome, bool, error) {
+	switch rule.Kind {
+	case "own_account":
+		// Matched on counter_account_number alone (no bank-code check —
+		// this app only syncs Fio accounts, so a collision is unlikely).
+		if rt.CounterAccountNumber != nil && ourAccounts[*rt.CounterAccountNumber] {
+			return outcome{category: rule.Category, ruleID: &rule.ID}, true, nil
+		}
+	case "member_variable_symbol":
+		if rt.VariableSymbol == nil || *rt.VariableSymbol == "" {
+			return outcome{}, false, nil
+		}
+		member, err := queries.FindMemberByVariableSymbol(requestContext, db.FindMemberByVariableSymbolParams{
+			VariableSymbol:  normalizeVariableSymbol(*rt.VariableSymbol),
+			TransactionDate: rt.TransactionDate,
+		})
+		switch {
+		case err == nil:
+			matchedBy := "variable_symbol"
+			return outcome{category: rule.Category, ruleID: &rule.ID, memberNumber: &member, matchedBy: &matchedBy}, true, nil
+		case errors.Is(err, pgx.ErrNoRows):
+			// no member currently claims this variable symbol — next rule.
+		default:
+			return outcome{}, false, fmt.Errorf("matching variable_symbol %q: %w", *rt.VariableSymbol, err)
+		}
+	case "pattern":
+		if matchesPattern(rule, rt, direction) {
+			return outcome{category: rule.Category, ruleID: &rule.ID}, true, nil
+		}
+	default:
+		// The kind CHECK constraint makes this unreachable; skip rather
+		// than fail the whole transaction if it ever isn't.
+		log.Printf("processing: categorization rule %d has unknown kind %q, skipped", rule.ID, rule.Kind)
+	}
+	return outcome{}, false, nil
 }
 
 // matchesPattern reports whether every non-NULL condition of a pattern rule
@@ -253,52 +267,100 @@ func normalizeVariableSymbol(variableSymbol string) string {
 	return normalized
 }
 
-// ReapplyResult summarizes one ReapplyRules run.
+// ReapplyResult summarizes one ReapplyRule run.
 type ReapplyResult struct {
 	Changed int
 	Failed  int
 }
 
-// ReapplyRules re-evaluates the current rule chain for every already-processed
-// transaction that wasn't set by hand, and rewrites the ones whose outcome
-// differs. Run only ever touches unprocessed rows, so without this a new or
-// edited rule, a bank account added later (own_account), or a corrected
-// member liability window (member_variable_symbol) would never reach
-// existing transactions.
+var (
+	// ErrRuleNotFound is returned by ReapplyRule for an id with no rule.
+	ErrRuleNotFound = errors.New("categorization rule not found")
+	// ErrRuleDisabled is returned by ReapplyRule for a disabled rule — it
+	// doesn't apply to new transactions, so it isn't applied to history either.
+	ErrRuleDisabled = errors.New("categorization rule is disabled")
+)
+
+// ReapplyRule applies one rule — and only that rule — to every
+// already-processed transaction not set by hand dated on or after from
+// (inclusive; older history stays untouched): where its conditions match,
+// the transaction gets this rule's outcome. No other rule is evaluated. Run
+// only ever touches unprocessed rows, so this is the one way a new or edited
+// rule, a bank account added later (own_account) or a corrected member
+// liability window (member_variable_symbol) reaches existing transactions.
+// There's deliberately no "re-apply every rule" counterpart — re-running the
+// whole chain over all history at once is too broad.
 //
 // Skips matched_by='manual' and category_set_manually rows — never override
-// an admin's explicit decision. Such rows only ever have the one default
-// payment_coverage row, so rewriting it is safe. Idempotent: a second call
-// finds nothing left to change.
-func ReapplyRules(requestContext context.Context, pool *pgxpool.Pool) (ReapplyResult, error) {
+// an admin's explicit decision. The remaining rows only ever have the one
+// default payment_coverage row, so rewriting it is safe. Idempotent: a
+// second call finds nothing left to change.
+//
+// One exception keeps history consistent with the rule order: a transaction
+// currently decided by an enabled rule that runs before this one (lower
+// priority, ties by id) is left alone, since that rule would win for a new
+// transaction too. Transactions decided by a later rule, a disabled one, or
+// the fallback are taken over. Transactions this rule decided earlier but no
+// longer matches (after an edit) are not touched either.
+func ReapplyRule(requestContext context.Context, pool *pgxpool.Pool, ruleID int64, from time.Time) (ReapplyResult, error) {
 	queries := db.New(pool)
+
+	target, err := queries.GetCategorizationRule(requestContext, ruleID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ReapplyResult{}, ErrRuleNotFound
+	} else if err != nil {
+		return ReapplyResult{}, fmt.Errorf("loading categorization rule: %w", err)
+	}
+	if !target.Enabled {
+		return ReapplyResult{}, ErrRuleDisabled
+	}
 
 	rules, ourAccounts, err := loadRules(requestContext, queries)
 	if err != nil {
 		return ReapplyResult{}, err
 	}
-	candidates, err := queries.ListReapplyCandidates(requestContext)
+	// Position in evaluation order; only enabled rules are in it.
+	order := make(map[int64]int, len(rules))
+	for i, rule := range rules {
+		order[rule.ID] = i
+	}
+	targetOrder := order[target.ID]
+
+	candidates, err := queries.ListReapplyCandidates(requestContext, from)
 	if err != nil {
 		return ReapplyResult{}, fmt.Errorf("listing reapply candidates: %w", err)
 	}
 
 	var result ReapplyResult
 	for _, candidate := range candidates {
-		changed, err := reapplyOne(requestContext, pool, queries, candidate, rules, ourAccounts)
+		if candidate.CategorizationRuleID != nil {
+			if position, enabled := order[*candidate.CategorizationRuleID]; enabled && position < targetOrder {
+				continue
+			}
+		}
+		outcome, matched, err := applyRule(requestContext, queries, target, candidateTransaction(candidate), candidate.Direction, ourAccounts)
+		if err == nil && matched {
+			err = result.record(writeOutcome(requestContext, pool, candidate, outcome))
+		}
 		if err != nil {
 			result.Failed++
-			log.Printf("reapply rules: processed_transaction_id=%d: %v", candidate.ID, err)
-			continue
-		}
-		if changed {
-			result.Changed++
+			log.Printf("reapply rule %d: processed_transaction_id=%d: %v", ruleID, candidate.ID, err)
 		}
 	}
 	return result, nil
 }
 
-func reapplyOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.Queries, candidate db.ListReapplyCandidatesRow, rules []db.CategorizationRule, ourAccounts map[string]bool) (changed bool, err error) {
-	rt := db.RawTransaction{
+// record counts a writeOutcome result and passes its error through.
+func (result *ReapplyResult) record(changed bool, err error) error {
+	if changed {
+		result.Changed++
+	}
+	return err
+}
+
+// candidateTransaction rebuilds the raw transaction fields the rules read.
+func candidateTransaction(candidate db.ListReapplyCandidatesRow) db.RawTransaction {
+	return db.RawTransaction{
 		TransactionDate:      candidate.TransactionDate,
 		Amount:               candidate.Amount,
 		CounterAccountNumber: candidate.CounterAccountNumber,
@@ -309,11 +371,12 @@ func reapplyOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.
 		MessageForRecipient:  candidate.MessageForRecipient,
 		TransactionType:      candidate.TransactionType,
 	}
-	result, err := categorize(requestContext, queries, rt, candidate.Direction, rules, ourAccounts)
-	if err != nil {
-		return false, err
-	}
+}
 
+// writeOutcome rewrites candidate to result if they differ — category,
+// member, matched_by, deciding rule, and the default payment_coverage row
+// when the member changed. Reports whether anything was written.
+func writeOutcome(requestContext context.Context, pool *pgxpool.Pool, candidate db.ListReapplyCandidatesRow, result outcome) (changed bool, err error) {
 	memberChanged := !equalPointer(result.memberNumber, candidate.MemberNumber)
 	if result.category == candidate.Category && !memberChanged &&
 		equalPointer(result.matchedBy, candidate.MatchedBy) && equalPointer(result.ruleID, candidate.CategorizationRuleID) {

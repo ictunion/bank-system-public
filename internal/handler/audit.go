@@ -61,6 +61,7 @@ var auditRoutes = map[string]auditAction{
 	"POST /categorization-rules":                            {AuditCategoryRule, "create_categorization_rule"},
 	"PUT /categorization-rules/{id}":                        {AuditCategoryRule, "update_categorization_rule"},
 	"DELETE /categorization-rules/{id}":                     {AuditCategoryRule, "delete_categorization_rule"},
+	"POST /categorization-rules/{id}/reapply":               {AuditCategoryRule, "reapply_categorization_rule"},
 	"POST /payments/{member_number}/waive":                  {AuditCategoryWaiver, "create_waiver"},
 	"DELETE /payments/{member_number}/waive/{year}/{month}": {AuditCategoryWaiver, "delete_waiver"},
 }

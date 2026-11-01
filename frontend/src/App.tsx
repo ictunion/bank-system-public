@@ -6,6 +6,7 @@ import { BankAccountsPage } from './BankAccountsPage'
 import { BudgetPage } from './BudgetPage'
 import { CategoriesPage } from './CategoriesPage'
 import { EventLogsPage } from './EventLogsPage'
+import { RulesPage } from './RulesPage'
 import { useHasRole } from './roles'
 import { TransactionsTable } from './TransactionsTable'
 import { WaiversPage } from './waiver/WaiversPage'
@@ -52,6 +53,9 @@ function Dashboard() {
             <Link to="/categories" style={{ color: '#fff' }}>
               Categories
             </Link>
+            <Link to="/rules" style={{ color: '#fff' }}>
+              Rules
+            </Link>
             {canViewBudget && (
               <Link to="/budget" style={{ color: '#fff' }}>
                 Budget
@@ -84,6 +88,7 @@ function Dashboard() {
           <Routes>
             <Route path="/" element={<TransactionsTable />} />
             <Route path="/categories" element={<CategoriesPage />} />
+            <Route path="/rules" element={<RulesPage />} />
             <Route path="/budget" element={<BudgetPage />} />
             <Route path="/bank-accounts" element={<BankAccountsPage />} />
             <Route path="/event-logs" element={<EventLogsPage />} />

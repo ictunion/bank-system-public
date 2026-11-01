@@ -3,14 +3,17 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kubik/bank-system/internal/db"
+	"github.com/kubik/bank-system/internal/processing"
 )
 
 const (
@@ -396,5 +399,94 @@ func DeleteCategorizationRule(queries *db.Queries) http.HandlerFunc {
 		}
 
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+type reapplyRuleRequest struct {
+	// From is the first transaction date (YYYY-MM-DD, inclusive) the rule is
+	// applied to. Optional, defaults to 1 January of the current year, which
+	// is also the earliest allowed — closed years are never rewritten.
+	From string `json:"from"`
+}
+
+// startOfCurrentYear is the earliest date a rule may be re-applied from.
+func startOfCurrentYear(now time.Time) time.Time {
+	return time.Date(now.Year(), time.January, 1, 0, 0, 0, 0, time.UTC)
+}
+
+// reapplyFromDate validates the request's from date against the
+// current-year minimum. Returns a client-facing error message on failure.
+func reapplyFromDate(value string, now time.Time) (time.Time, string) {
+	minimum := startOfCurrentYear(now)
+	if value == "" {
+		return minimum, ""
+	}
+	from, err := time.Parse("2006-01-02", value)
+	if err != nil {
+		return time.Time{}, "from must be YYYY-MM-DD"
+	}
+	if from.Before(minimum) {
+		return time.Time{}, "from cannot be before " + minimum.Format("2006-01-02")
+	}
+	return from, ""
+}
+
+// ReapplyCategorizationRule handles POST /categorization-rules/{id}/reapply —
+// applies this one rule, and no other, to every already-processed transaction
+// not set by hand that it matches, dated on or after the body's from date
+// (see processing.ReapplyRule; a transaction decided by an earlier rule in
+// the order is kept). from can't go before the current year, so a closed
+// year's categorization — and the budget figures built on it — stays as it was. A route of its own
+// rather than a processing action so the audit log's path records which rule.
+//
+// @Summary      Apply one categorization rule to history
+// @Description  Requires the manage-transactions role. Applies only this rule to already-processed transactions it matches, dated on or after from (inclusive; optional, defaults to and may not precede 1 January of the current year); no other rule is evaluated. Manual edits and transactions decided by an earlier rule are kept. succeeded = transactions changed. 400 for a disabled rule or an invalid from.
+// @Tags         categorization-rules
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id       path  int                          true   "Rule ID"
+// @Param        request  body  handler.reapplyRuleRequest  false  "Earliest transaction date"
+// @Success      200  {object}  handler.processingActionResponse
+// @Failure      400,401,403  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /categorization-rules/{id}/reapply [post]
+func ReapplyCategorizationRule(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseRuleID(r)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid id")
+			return
+		}
+
+		var request reapplyRuleRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		from, message := reapplyFromDate(request.From, time.Now())
+		if message != "" {
+			writeError(w, http.StatusBadRequest, message)
+			return
+		}
+
+		result, err := processing.ReapplyRule(r.Context(), pool, id, from)
+		if errors.Is(err, processing.ErrRuleNotFound) {
+			writeError(w, http.StatusNotFound, "categorization rule not found")
+			return
+		} else if errors.Is(err, processing.ErrRuleDisabled) {
+			writeError(w, http.StatusBadRequest, "categorization rule is disabled")
+			return
+		} else if err != nil {
+			writeError(w, http.StatusInternalServerError, "reapplying rule failed: "+err.Error())
+			return
+		}
+
+		writeJSON(w, http.StatusOK, processingActionResponse{
+			Action:    "reapply_rule",
+			Succeeded: result.Changed,
+			Failed:    result.Failed,
+		})
 	}
 }
