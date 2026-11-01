@@ -13,6 +13,7 @@ const CATEGORY_LABELS: Record<AuditCategory, string> = {
   processing: 'Processing',
   transaction: 'Transaction',
   category: 'Category',
+  categorization_rule: 'Categorization rule',
   waiver: 'Waiver',
   other: 'Other',
 }

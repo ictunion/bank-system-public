@@ -459,6 +459,96 @@
                 }
             }
         },
+        "/audit-logs": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Requires the view-audit-logs role. One entry per authenticated POST/PUT/PATCH/DELETE request (who, what, when), newest first. status_code is the response status — rejected attempts are included, filter to 2xx client-side for changes that took effect.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "audit-logs"
+                ],
+                "summary": "List audit log",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "bank_account, processing, transaction, category, waiver or other",
+                        "name": "category",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Keycloak subject of the caller",
+                        "name": "actor_sub",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "YYYY-MM-DD, inclusive",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "YYYY-MM-DD, inclusive",
+                        "name": "to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max results, default 100, capped at 500",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Default 0",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handler.auditLogsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/categories": {
             "get": {
                 "security": [
@@ -466,7 +556,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the list-transactions role. Mandatory categories first.",
+                "description": "Requires the list-transactions role. Mandatory categories first. parent_name is null for top-level categories.",
                 "produces": [
                     "application/json"
                 ],
@@ -510,7 +600,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the manage-transactions role. Always created with is_mandatory=false.",
+                "description": "Requires the manage-transactions role. Always created with is_mandatory=false. Optional parent_name must name an existing top-level category.",
                 "consumes": [
                     "application/json"
                 ],
@@ -640,7 +730,261 @@
                         }
                     },
                     "409": {
-                        "description": "category still referenced by existing transactions",
+                        "description": "category still has sub-categories or is referenced by existing transactions",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/categorization-rules": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Requires the list-transactions role. Evaluation order; disabled rules included.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "categorization-rules"
+                ],
+                "summary": "List categorization rules",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/handler.categorizationRuleResponse"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Requires the manage-transactions role. Always kind=pattern. Every set condition must match (AND); at least one besides direction is required. Blank strings count as unset.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "categorization-rules"
+                ],
+                "summary": "Add a categorization rule",
+                "parameters": [
+                    {
+                        "description": "New rule",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.categorizationRuleRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/handler.categorizationRuleResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/categorization-rules/{id}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Requires the manage-transactions role. Full overwrite: omitted optional fields are cleared. Built-in rules (own_account, member_variable_symbol): only priority, enabled and note may change.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "categorization-rules"
+                ],
+                "summary": "Update a categorization rule",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Rule ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Rule",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.categorizationRuleRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handler.categorizationRuleResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Requires the manage-transactions role. Built-in rules cannot be deleted, only disabled. Already-categorized transactions keep their category.",
+                "tags": [
+                    "categorization-rules"
+                ],
+                "summary": "Delete a categorization rule",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Rule ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "no content"
+                    },
+                    "400": {
+                        "description": "built-in rule",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "built-in rule",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "built-in rule",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": {
@@ -1753,6 +2097,12 @@
                         "in": "query"
                     },
                     {
+                        "type": "boolean",
+                        "description": "With category: also match that category's sub-categories. Default false",
+                        "name": "include_children",
+                        "in": "query"
+                    },
+                    {
                         "type": "string",
                         "description": "variable_symbol, manual, or amount_heuristic",
                         "name": "matched_by",
@@ -1858,6 +2208,12 @@
                         "type": "string",
                         "description": "YYYY-MM-DD, inclusive",
                         "name": "to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "true = report sub-categories under their parent category. Default false",
+                        "name": "rollup",
                         "in": "query"
                     }
                 ],
@@ -2046,15 +2402,6 @@
                                 "type": "string"
                             }
                         }
-                    },
-                    "409": {
-                        "description": "one or more covers months already covered by a different transaction",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        }
                     }
                 }
             },
@@ -2147,6 +2494,61 @@
                 }
             }
         },
+        "handler.auditLogItem": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string"
+                },
+                "actor_email": {
+                    "type": "string"
+                },
+                "actor_sub": {
+                    "type": "string"
+                },
+                "category": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "method": {
+                    "type": "string"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "route": {
+                    "type": "string"
+                },
+                "status_code": {
+                    "type": "integer"
+                }
+            }
+        },
+        "handler.auditLogsResponse": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer"
+                },
+                "logs": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handler.auditLogItem"
+                    }
+                },
+                "offset": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
         "handler.backfillRequest": {
             "type": "object",
             "properties": {
@@ -2200,6 +2602,87 @@
                 }
             }
         },
+        "handler.categorizationRuleRequest": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string"
+                },
+                "constant_symbol": {
+                    "type": "string"
+                },
+                "counter_account_number": {
+                    "type": "string"
+                },
+                "direction": {
+                    "description": "incoming | outgoing",
+                    "type": "string"
+                },
+                "enabled": {
+                    "description": "optional, defaults to true",
+                    "type": "boolean"
+                },
+                "note": {
+                    "type": "string"
+                },
+                "priority": {
+                    "type": "integer"
+                },
+                "text_contains": {
+                    "type": "string"
+                },
+                "transaction_type_contains": {
+                    "type": "string"
+                },
+                "variable_symbol": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.categorizationRuleResponse": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string"
+                },
+                "constant_symbol": {
+                    "type": "string"
+                },
+                "counter_account_number": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "direction": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "kind": {
+                    "type": "string"
+                },
+                "note": {
+                    "type": "string"
+                },
+                "priority": {
+                    "type": "integer"
+                },
+                "text_contains": {
+                    "type": "string"
+                },
+                "transaction_type_contains": {
+                    "type": "string"
+                },
+                "variable_symbol": {
+                    "type": "string"
+                }
+            }
+        },
         "handler.categoryResponse": {
             "type": "object",
             "properties": {
@@ -2207,6 +2690,9 @@
                     "type": "boolean"
                 },
                 "name": {
+                    "type": "string"
+                },
+                "parent_name": {
                     "type": "string"
                 }
             }
@@ -2311,6 +2797,9 @@
             "type": "object",
             "properties": {
                 "name": {
+                    "type": "string"
+                },
+                "parent_name": {
                     "type": "string"
                 }
             }

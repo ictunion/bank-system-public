@@ -172,6 +172,52 @@ func (q *Queries) CreateBankAccount(ctx context.Context, arg CreateBankAccountPa
 	return i, err
 }
 
+const createCategorizationRule = `-- name: CreateCategorizationRule :one
+INSERT INTO categorization_rules (
+    priority, kind, category, enabled,
+    counter_account_number, variable_symbol, constant_symbol,
+    text_contains, transaction_type_contains, direction, note
+) VALUES (
+    $1, 'pattern', $2, $3,
+    $4, $5, $6,
+    $7, $8, $9, $10
+)
+RETURNING id
+`
+
+type CreateCategorizationRuleParams struct {
+	Priority                int32   `json:"priority"`
+	Category                string  `json:"category"`
+	Enabled                 bool    `json:"enabled"`
+	CounterAccountNumber    *string `json:"counter_account_number"`
+	VariableSymbol          *string `json:"variable_symbol"`
+	ConstantSymbol          *string `json:"constant_symbol"`
+	TextContains            *string `json:"text_contains"`
+	TransactionTypeContains *string `json:"transaction_type_contains"`
+	Direction               *string `json:"direction"`
+	Note                    *string `json:"note"`
+}
+
+// Only pattern rules are ever created; the two built-in kinds are seeded by
+// migration and exist at most once each.
+func (q *Queries) CreateCategorizationRule(ctx context.Context, arg CreateCategorizationRuleParams) (int64, error) {
+	row := q.db.QueryRow(ctx, createCategorizationRule,
+		arg.Priority,
+		arg.Category,
+		arg.Enabled,
+		arg.CounterAccountNumber,
+		arg.VariableSymbol,
+		arg.ConstantSymbol,
+		arg.TextContains,
+		arg.TransactionTypeContains,
+		arg.Direction,
+		arg.Note,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const createCategory = `-- name: CreateCategory :one
 INSERT INTO transaction_categories (name, is_mandatory, parent_name)
 VALUES ($1, false, $2)
@@ -354,6 +400,23 @@ WHERE id = $1 AND deleted_at IS NULL
 // "deleted just now" (1 row) and return 404 vs 204 accordingly.
 func (q *Queries) DeleteBankAccount(ctx context.Context, id int32) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteBankAccount, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteCategorizationRule = `-- name: DeleteCategorizationRule :execrows
+DELETE FROM categorization_rules WHERE id = $1 AND kind = 'pattern'
+`
+
+// Built-in rules can't be deleted (only disabled) — the kind guard makes a
+// built-in and a missing id both 0 rows; the caller checks
+// GetCategorizationRule first to tell them apart. processed_transactions
+// that this rule decided keep their category, their categorization_rule_id
+// becomes NULL (ON DELETE SET NULL).
+func (q *Queries) DeleteCategorizationRule(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteCategorizationRule, id)
 	if err != nil {
 		return 0, err
 	}
@@ -564,6 +627,31 @@ func (q *Queries) GetBankAccountWithToken(ctx context.Context, arg GetBankAccoun
 		&i.CreatedAt,
 		&i.FioToken,
 		&i.IsActive,
+	)
+	return i, err
+}
+
+const getCategorizationRule = `-- name: GetCategorizationRule :one
+SELECT id, priority, kind, category, enabled, counter_account_number, variable_symbol, constant_symbol, text_contains, transaction_type_contains, direction, note, created_at FROM categorization_rules WHERE id = $1
+`
+
+func (q *Queries) GetCategorizationRule(ctx context.Context, id int64) (CategorizationRule, error) {
+	row := q.db.QueryRow(ctx, getCategorizationRule, id)
+	var i CategorizationRule
+	err := row.Scan(
+		&i.ID,
+		&i.Priority,
+		&i.Kind,
+		&i.Category,
+		&i.Enabled,
+		&i.CounterAccountNumber,
+		&i.VariableSymbol,
+		&i.ConstantSymbol,
+		&i.TextContains,
+		&i.TransactionTypeContains,
+		&i.Direction,
+		&i.Note,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -1328,6 +1416,47 @@ func (q *Queries) ListCategories(ctx context.Context) ([]TransactionCategory, er
 			&i.IsMandatory,
 			&i.CreatedAt,
 			&i.ParentName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCategorizationRules = `-- name: ListCategorizationRules :many
+SELECT id, priority, kind, category, enabled, counter_account_number, variable_symbol, constant_symbol, text_contains, transaction_type_contains, direction, note, created_at FROM categorization_rules
+ORDER BY priority, id
+`
+
+// Every rule, disabled ones included, in evaluation order — backs the admin
+// rules table.
+func (q *Queries) ListCategorizationRules(ctx context.Context) ([]CategorizationRule, error) {
+	rows, err := q.db.Query(ctx, listCategorizationRules)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CategorizationRule
+	for rows.Next() {
+		var i CategorizationRule
+		if err := rows.Scan(
+			&i.ID,
+			&i.Priority,
+			&i.Kind,
+			&i.Category,
+			&i.Enabled,
+			&i.CounterAccountNumber,
+			&i.VariableSymbol,
+			&i.ConstantSymbol,
+			&i.TextContains,
+			&i.TransactionTypeContains,
+			&i.Direction,
+			&i.Note,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2575,6 +2704,58 @@ type UpdateBankAccountBalanceParams struct {
 func (q *Queries) UpdateBankAccountBalance(ctx context.Context, arg UpdateBankAccountBalanceParams) error {
 	_, err := q.db.Exec(ctx, updateBankAccountBalance, arg.Balance, arg.ID)
 	return err
+}
+
+const updateCategorizationRule = `-- name: UpdateCategorizationRule :one
+UPDATE categorization_rules
+SET priority = $1,
+    category = $2,
+    enabled = $3,
+    counter_account_number = $4,
+    variable_symbol = $5,
+    constant_symbol = $6,
+    text_contains = $7,
+    transaction_type_contains = $8,
+    direction = $9,
+    note = $10
+WHERE id = $11
+RETURNING id
+`
+
+type UpdateCategorizationRuleParams struct {
+	Priority                int32   `json:"priority"`
+	Category                string  `json:"category"`
+	Enabled                 bool    `json:"enabled"`
+	CounterAccountNumber    *string `json:"counter_account_number"`
+	VariableSymbol          *string `json:"variable_symbol"`
+	ConstantSymbol          *string `json:"constant_symbol"`
+	TextContains            *string `json:"text_contains"`
+	TransactionTypeContains *string `json:"transaction_type_contains"`
+	Direction               *string `json:"direction"`
+	Note                    *string `json:"note"`
+	ID                      int64   `json:"id"`
+}
+
+// Full overwrite of every editable field; kind never changes. For a built-in
+// rule the caller passes its fixed category and NULL conditions (the table's
+// CHECK rejects anything else anyway).
+func (q *Queries) UpdateCategorizationRule(ctx context.Context, arg UpdateCategorizationRuleParams) (int64, error) {
+	row := q.db.QueryRow(ctx, updateCategorizationRule,
+		arg.Priority,
+		arg.Category,
+		arg.Enabled,
+		arg.CounterAccountNumber,
+		arg.VariableSymbol,
+		arg.ConstantSymbol,
+		arg.TextContains,
+		arg.TransactionTypeContains,
+		arg.Direction,
+		arg.Note,
+		arg.ID,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
 }
 
 const upsertDefaultPaymentIdentifier = `-- name: UpsertDefaultPaymentIdentifier :exec

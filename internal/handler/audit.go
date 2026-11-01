@@ -20,6 +20,7 @@ const (
 	AuditCategoryProcessing  AuditCategory = "processing"
 	AuditCategoryTransaction AuditCategory = "transaction"
 	AuditCategoryCategory    AuditCategory = "category"
+	AuditCategoryRule        AuditCategory = "categorization_rule"
 	AuditCategoryWaiver      AuditCategory = "waiver"
 	// AuditCategoryOther is the fallback for a mutating route missing from
 	// auditRoutes — the request is still recorded, just uncategorized.
@@ -32,6 +33,7 @@ var AuditCategories = []AuditCategory{
 	AuditCategoryProcessing,
 	AuditCategoryTransaction,
 	AuditCategoryCategory,
+	AuditCategoryRule,
 	AuditCategoryWaiver,
 	AuditCategoryOther,
 }
@@ -56,6 +58,9 @@ var auditRoutes = map[string]auditAction{
 	"DELETE /transactions/{id}/assignment":                  {AuditCategoryTransaction, "unassign_transaction"},
 	"POST /categories":                                      {AuditCategoryCategory, "create_category"},
 	"DELETE /categories/{name}":                             {AuditCategoryCategory, "delete_category"},
+	"POST /categorization-rules":                            {AuditCategoryRule, "create_categorization_rule"},
+	"PUT /categorization-rules/{id}":                        {AuditCategoryRule, "update_categorization_rule"},
+	"DELETE /categorization-rules/{id}":                     {AuditCategoryRule, "delete_categorization_rule"},
 	"POST /payments/{member_number}/waive":                  {AuditCategoryWaiver, "create_waiver"},
 	"DELETE /payments/{member_number}/waive/{year}/{month}": {AuditCategoryWaiver, "delete_waiver"},
 }

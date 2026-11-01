@@ -45,6 +45,13 @@ func seedBankAccount(t *testing.T, queries *db.Queries, fioAccountID string) db.
 // produce, just driven directly instead of through a fake bank feed.
 func seedTransaction(t *testing.T, queries *db.Queries, bankAccountID int32, fioTransactionID int64, amount, category, direction string, memberNumber *int32) db.ProcessedTransaction {
 	t.Helper()
+	return seedTransactionWithRule(t, queries, bankAccountID, fioTransactionID, amount, category, direction, memberNumber, nil)
+}
+
+// seedTransactionWithRule is seedTransaction with the categorization rule that
+// decided the category recorded too.
+func seedTransactionWithRule(t *testing.T, queries *db.Queries, bankAccountID int32, fioTransactionID int64, amount, category, direction string, memberNumber *int32, ruleID *int64) db.ProcessedTransaction {
+	t.Helper()
 	ctx := context.Background()
 
 	if _, err := queries.InsertRawTransaction(ctx, db.InsertRawTransactionParams{
@@ -78,11 +85,12 @@ func seedTransaction(t *testing.T, queries *db.Queries, bankAccountID int32, fio
 		matchedBy = &manual
 	}
 	pt, err := queries.CreateProcessedTransaction(ctx, db.CreateProcessedTransactionParams{
-		RawTransactionID: rawTransactionID,
-		MemberNumber:     memberNumber,
-		Category:         category,
-		Direction:        direction,
-		MatchedBy:        matchedBy,
+		RawTransactionID:     rawTransactionID,
+		MemberNumber:         memberNumber,
+		Category:             category,
+		Direction:            direction,
+		MatchedBy:            matchedBy,
+		CategorizationRuleID: ruleID,
 	})
 	if err != nil {
 		t.Fatalf("CreateProcessedTransaction: %v", err)

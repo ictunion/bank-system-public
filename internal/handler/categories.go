@@ -138,7 +138,8 @@ func CreateCategory(queries *db.Queries) http.HandlerFunc {
 // DeleteCategory handles DELETE /categories/{name} — refuses to delete any
 // of the four mandatory categories (400), a category that still has
 // sub-categories (409), a category still referenced by
-// processed_transactions.category (409, via the FK's violation on delete),
+// processed_transactions.category or categorization_rules.category (409, via
+// the FK's violation on delete),
 // or a name that doesn't exist (404).
 //
 // @Summary      Delete a custom transaction category
@@ -185,7 +186,7 @@ func DeleteCategory(queries *db.Queries) http.HandlerFunc {
 		if err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-				writeError(w, http.StatusConflict, "category is in use by existing transactions")
+				writeError(w, http.StatusConflict, "category is in use by existing transactions or categorization rules")
 				return
 			}
 			writeError(w, http.StatusInternalServerError, "failed to delete category")

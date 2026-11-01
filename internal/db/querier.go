@@ -31,6 +31,9 @@ type Querier interface {
 	// color is optional (sqlc.narg) — NULL means no color assigned, purely
 	// presentational, see the migration's CHECK constraint for accepted shape.
 	CreateBankAccount(ctx context.Context, arg CreateBankAccountParams) (CreateBankAccountRow, error)
+	// Only pattern rules are ever created; the two built-in kinds are seeded by
+	// migration and exist at most once each.
+	CreateCategorizationRule(ctx context.Context, arg CreateCategorizationRuleParams) (int64, error)
 	// is_mandatory is never set true here — only the four seeded in
 	// migrations/20260910000001_add_transaction_categories.sql are mandatory.
 	// parent_name's one-level rule is checked by the caller (handler.CreateCategory).
@@ -57,6 +60,12 @@ type Querier interface {
 	// :execrows lets handler.DeleteBankAccount tell "already gone" (0 rows) from
 	// "deleted just now" (1 row) and return 404 vs 204 accordingly.
 	DeleteBankAccount(ctx context.Context, id int32) (int64, error)
+	// Built-in rules can't be deleted (only disabled) — the kind guard makes a
+	// built-in and a missing id both 0 rows; the caller checks
+	// GetCategorizationRule first to tell them apart. processed_transactions
+	// that this rule decided keep their category, their categorization_rule_id
+	// becomes NULL (ON DELETE SET NULL).
+	DeleteCategorizationRule(ctx context.Context, id int64) (int64, error)
 	// The is_mandatory=false guard means a mandatory category and a missing one
 	// both come back as 0 rows affected — the caller (handler.DeleteCategory)
 	// checks GetCategory first to tell those two cases apart. A category still
@@ -82,6 +91,7 @@ type Querier interface {
 	// syncjob.SyncOneAccount) — single-row counterpart of
 	// ListBankAccountsWithToken, same never-expose-over-HTTP caveat.
 	GetBankAccountWithToken(ctx context.Context, arg GetBankAccountWithTokenParams) (GetBankAccountWithTokenRow, error)
+	GetCategorizationRule(ctx context.Context, id int64) (CategorizationRule, error)
 	GetCategory(ctx context.Context, name string) (TransactionCategory, error)
 	GetMaxFioTransactionID(ctx context.Context, bankAccountID int32) (int64, error)
 	GetMemberNumberBySub(ctx context.Context, sub pgtype.UUID) (int32, error)
@@ -181,6 +191,9 @@ type Querier interface {
 	// is NULL for any account not yet backfilled with a token.
 	ListBankAccountsWithToken(ctx context.Context, encryptionKey string) ([]ListBankAccountsWithTokenRow, error)
 	ListCategories(ctx context.Context) ([]TransactionCategory, error)
+	// Every rule, disabled ones included, in evaluation order — backs the admin
+	// rules table.
+	ListCategorizationRules(ctx context.Context) ([]CategorizationRule, error)
 	// Backs GET /payments/{year}/{month}/commented — every commented
 	// (admin_comment IS NOT NULL) transaction matched to a member, dated in the
 	// given month, regardless of whether that member is otherwise missing a
@@ -337,6 +350,10 @@ type Querier interface {
 	// (now()), not passed in from Go — same convention as sync_fio_runs.started_at
 	// etc., avoids any app/DB clock skew.
 	UpdateBankAccountBalance(ctx context.Context, arg UpdateBankAccountBalanceParams) error
+	// Full overwrite of every editable field; kind never changes. For a built-in
+	// rule the caller passes its fixed category and NULL conditions (the table's
+	// CHECK rejects anything else anyway).
+	UpdateCategorizationRule(ctx context.Context, arg UpdateCategorizationRuleParams) (int64, error)
 	// The member's auto-generated "default" payment identifier: variable_symbol
 	// == member_number, window mirrored from Orca (valid_from = fee_start_date,
 	// valid_to = fee_stop_date). Runs on every Orca sync and owns that window

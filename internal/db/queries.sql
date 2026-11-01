@@ -757,6 +757,55 @@ SELECT * FROM categorization_rules
 WHERE enabled
 ORDER BY priority, id;
 
+-- name: ListCategorizationRules :many
+-- Every rule, disabled ones included, in evaluation order — backs the admin
+-- rules table.
+SELECT * FROM categorization_rules
+ORDER BY priority, id;
+
+-- name: GetCategorizationRule :one
+SELECT * FROM categorization_rules WHERE id = sqlc.arg(id);
+
+-- name: CreateCategorizationRule :one
+-- Only pattern rules are ever created; the two built-in kinds are seeded by
+-- migration and exist at most once each.
+INSERT INTO categorization_rules (
+    priority, kind, category, enabled,
+    counter_account_number, variable_symbol, constant_symbol,
+    text_contains, transaction_type_contains, direction, note
+) VALUES (
+    sqlc.arg(priority), 'pattern', sqlc.arg(category), sqlc.arg(enabled),
+    sqlc.narg(counter_account_number), sqlc.narg(variable_symbol), sqlc.narg(constant_symbol),
+    sqlc.narg(text_contains), sqlc.narg(transaction_type_contains), sqlc.narg(direction), sqlc.narg(note)
+)
+RETURNING id;
+
+-- name: UpdateCategorizationRule :one
+-- Full overwrite of every editable field; kind never changes. For a built-in
+-- rule the caller passes its fixed category and NULL conditions (the table's
+-- CHECK rejects anything else anyway).
+UPDATE categorization_rules
+SET priority = sqlc.arg(priority),
+    category = sqlc.arg(category),
+    enabled = sqlc.arg(enabled),
+    counter_account_number = sqlc.narg(counter_account_number),
+    variable_symbol = sqlc.narg(variable_symbol),
+    constant_symbol = sqlc.narg(constant_symbol),
+    text_contains = sqlc.narg(text_contains),
+    transaction_type_contains = sqlc.narg(transaction_type_contains),
+    direction = sqlc.narg(direction),
+    note = sqlc.narg(note)
+WHERE id = sqlc.arg(id)
+RETURNING id;
+
+-- name: DeleteCategorizationRule :execrows
+-- Built-in rules can't be deleted (only disabled) — the kind guard makes a
+-- built-in and a missing id both 0 rows; the caller checks
+-- GetCategorizationRule first to tell them apart. processed_transactions
+-- that this rule decided keep their category, their categorization_rule_id
+-- becomes NULL (ON DELETE SET NULL).
+DELETE FROM categorization_rules WHERE id = sqlc.arg(id) AND kind = 'pattern';
+
 -- name: CreatePaymentCoverage :exec
 -- Several transactions may cover the same member/month (dues split across
 -- payments), so a second payment landing on an already-covered month just
