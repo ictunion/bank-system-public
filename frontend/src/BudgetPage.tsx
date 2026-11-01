@@ -1,9 +1,11 @@
 import { type CSSProperties, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import { categoryLabel } from './api/categories'
 import { type CategoryTotal, fetchCategorySummary } from './api/budget'
 import { errMessage } from './api/client'
+import { BudgetPlanView } from './budget/BudgetPlanView'
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -53,7 +55,32 @@ function groupByCurrency(totals: CategoryTotal[]): Map<string, CategoryTotal[]> 
   return groups
 }
 
+// Two views of the same page: Overview (category pie charts for any month or
+// year) and Budget vs. actual (the voted yearly budget against real
+// figures). The choice lives in the URL (?view=plan) so a link opens the
+// same view.
 export function BudgetPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const view = searchParams.get('view') === 'plan' ? 'plan' : 'overview'
+  const choose = (next: 'overview' | 'plan') =>
+    setSearchParams(next === 'plan' ? { view: 'plan' } : {}, { replace: true })
+
+  return (
+    <>
+      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+        <button style={view === 'overview' ? activeTab : tab} onClick={() => choose('overview')}>
+          Overview
+        </button>
+        <button style={view === 'plan' ? activeTab : tab} onClick={() => choose('plan')}>
+          Budget vs. actual
+        </button>
+      </div>
+      {view === 'plan' ? <BudgetPlanView /> : <BudgetOverview />}
+    </>
+  )
+}
+
+function BudgetOverview() {
   const [year, setYear] = useState(CURRENT_YEAR)
   const [month, setMonth] = useState<number | null>(null)
 
@@ -202,6 +229,16 @@ function CategoryPie({ currency, totals }: { currency: string; totals: CategoryT
     </div>
   )
 }
+
+const tab: CSSProperties = {
+  padding: '0.3rem 0.8rem',
+  border: '1px solid #ccc',
+  borderRadius: 4,
+  background: '#fff',
+  cursor: 'pointer',
+}
+
+const activeTab: CSSProperties = { ...tab, background: '#2a78d6', borderColor: '#2a78d6', color: '#fff' }
 
 const filterRow: CSSProperties = {
   display: 'flex',
