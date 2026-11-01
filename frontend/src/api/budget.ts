@@ -1,4 +1,4 @@
-import { apiGet } from './client'
+import { apiGet, apiSend } from './client'
 
 export interface CategoryTotal {
   category_id: string
@@ -57,6 +57,7 @@ export interface BudgetLine {
   projected: string
   category_ids: string[]
   sort_order: number
+  note: string | null
 }
 
 export interface BudgetReportLine extends BudgetLine {
@@ -92,4 +93,55 @@ export function fetchBudgets(): Promise<BudgetSummary[]> {
 
 export function fetchBudget(year: number): Promise<BudgetReport> {
   return apiGet<BudgetReport>(`/api/budgets/${year}`)
+}
+
+export function createBudget(year: number, note: string | null, copyFromYear: number | null): Promise<BudgetSummary> {
+  return apiSend<BudgetSummary>('POST', '/api/budgets', { year, note, copy_from_year: copyFromYear })
+}
+
+export function updateBudgetNote(year: number, note: string): Promise<BudgetSummary> {
+  return apiSend<BudgetSummary>('PATCH', `/api/budgets/${year}`, { note })
+}
+
+export function deleteBudget(year: number): Promise<void> {
+  return apiSend<void>('DELETE', `/api/budgets/${year}`)
+}
+
+// Body of both create and update — update is a full overwrite, category_ids
+// included. A category may feed only one line per year; the backend answers
+// 409 naming the line that already has it.
+export interface BudgetLineInput {
+  kind: BudgetLineKind
+  group_name: string | null
+  name: string
+  /** decimal string >= 0, at most two decimals */
+  projected: string
+  category_ids: string[]
+  sort_order: number
+  /** null or '' clears it */
+  note: string | null
+}
+
+export function lineToInput(line: BudgetLine): BudgetLineInput {
+  return {
+    kind: line.kind,
+    group_name: line.group_name,
+    name: line.name,
+    projected: line.projected,
+    category_ids: line.category_ids,
+    sort_order: line.sort_order,
+    note: line.note,
+  }
+}
+
+export function createBudgetLine(year: number, input: BudgetLineInput): Promise<BudgetLine> {
+  return apiSend<BudgetLine>('POST', `/api/budgets/${year}/lines`, input)
+}
+
+export function updateBudgetLine(year: number, id: number, input: BudgetLineInput): Promise<BudgetLine> {
+  return apiSend<BudgetLine>('PUT', `/api/budgets/${year}/lines/${id}`, input)
+}
+
+export function deleteBudgetLine(year: number, id: number): Promise<void> {
+  return apiSend<void>('DELETE', `/api/budgets/${year}/lines/${id}`)
 }

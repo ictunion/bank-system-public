@@ -3301,6 +3301,10 @@ const docTemplate = `{
                 "name": {
                     "type": "string"
                 },
+                "note": {
+                    "description": "optional; omit or \"\" to clear",
+                    "type": "string"
+                },
                 "projected": {
                     "description": "decimal string, \u003e= 0, e.g. \"60000.00\"",
                     "type": "string"
@@ -3332,6 +3336,9 @@ const docTemplate = `{
                 "name": {
                     "type": "string"
                 },
+                "note": {
+                    "type": "string"
+                },
                 "projected": {
                     "description": "always positive; kind gives the sign",
                     "type": "string"
@@ -3361,6 +3368,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "name": {
+                    "type": "string"
+                },
+                "note": {
                     "type": "string"
                 },
                 "projected": {

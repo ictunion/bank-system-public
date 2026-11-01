@@ -23,6 +23,7 @@ const (
 	budgetYearMax = 2100
 
 	budgetTextMaxLength = 128
+	budgetNoteMaxLength = 500
 )
 
 // A non-negative CZK amount with at most two decimals, sent as a string like
@@ -47,6 +48,7 @@ type budgetLineResponse struct {
 	Projected   string        `json:"projected"` // always positive; kind gives the sign
 	CategoryIDs []pgtype.UUID `json:"category_ids"`
 	SortOrder   int32         `json:"sort_order"`
+	Note        *string       `json:"note"`
 }
 
 func toBudgetLineResponse(line db.BudgetLine, categoryIDs []pgtype.UUID) budgetLineResponse {
@@ -61,6 +63,7 @@ func toBudgetLineResponse(line db.BudgetLine, categoryIDs []pgtype.UUID) budgetL
 		Projected:   line.ProjectedAmount,
 		CategoryIDs: categoryIDs,
 		SortOrder:   line.SortOrder,
+		Note:        line.Note,
 	}
 }
 
@@ -448,6 +451,7 @@ type budgetLineRequest struct {
 	Projected   string        `json:"projected"` // decimal string, >= 0, e.g. "60000.00"
 	CategoryIDs []pgtype.UUID `json:"category_ids"`
 	SortOrder   int32         `json:"sort_order"`
+	Note        *string       `json:"note"` // optional; omit or "" to clear
 }
 
 type normalizedBudgetLine struct {
@@ -457,6 +461,7 @@ type normalizedBudgetLine struct {
 	projected   string
 	categoryIDs []pgtype.UUID
 	sortOrder   int32
+	note        *string
 }
 
 // normalizeBudgetLine validates a line request. Returns a client-facing
@@ -475,6 +480,15 @@ func normalizeBudgetLine(request budgetLineRequest) (normalizedBudgetLine, strin
 	groupName, ok := optionalBudgetText(request.GroupName)
 	if !ok {
 		return normalizedBudgetLine{}, "group_name is too long"
+	}
+	var note *string
+	if request.Note != nil {
+		if trimmed := strings.TrimSpace(*request.Note); trimmed != "" {
+			if len(trimmed) > budgetNoteMaxLength {
+				return normalizedBudgetLine{}, "note is too long"
+			}
+			note = &trimmed
+		}
 	}
 	projected := strings.TrimSpace(request.Projected)
 	if projected == "" {
@@ -505,6 +519,7 @@ func normalizeBudgetLine(request budgetLineRequest) (normalizedBudgetLine, strin
 		projected:  projected,
 		categoryIDs: categoryIDs,
 		sortOrder:   request.SortOrder,
+		note:        note,
 	}, ""
 }
 
@@ -579,6 +594,7 @@ func saveBudgetLine(r *http.Request, pool *pgxpool.Pool, year int32, lineID int6
 			Name:            line.name,
 			ProjectedAmount: line.projected,
 			SortOrder:       line.sortOrder,
+			Note:            line.note,
 		})
 		if err != nil {
 			return 0, false, err
@@ -592,6 +608,7 @@ func saveBudgetLine(r *http.Request, pool *pgxpool.Pool, year int32, lineID int6
 			Name:            line.name,
 			ProjectedAmount: line.projected,
 			SortOrder:       line.sortOrder,
+			Note:            line.note,
 		})
 		if err != nil {
 			return 0, false, err

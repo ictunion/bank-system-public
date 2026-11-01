@@ -51,6 +51,7 @@ type BudgetLine struct {
 	Name            string  `json:"name"`
 	ProjectedAmount string  `json:"projected_amount"`
 	SortOrder       int32   `json:"sort_order"`
+	Note            *string `json:"note"`
 }
 
 type BudgetLineCategory struct {

@@ -113,10 +113,13 @@ func TestBudgetLines_CreateUpdateDelete(t *testing.T) {
 	createBudget(t, pool, `{"year":2026}`, http.StatusCreated)
 
 	wages := decodeLine(t, postLine(t, pool, "2026",
-		`{"kind":"expense","group_name":"Employment expenses","name":"Employee wages","projected":"300000","category_ids":["00000000-0000-4000-8000-000000000002","00000000-0000-4000-8000-000000000002"],"sort_order":10}`),
+		`{"kind":"expense","group_name":"Employment expenses","name":"Employee wages","projected":"300000","category_ids":["00000000-0000-4000-8000-000000000002","00000000-0000-4000-8000-000000000002"],"sort_order":10,"note":" two part-time staff "}`),
 		http.StatusCreated)
 	if wages.Projected != "300000.00" || len(wages.CategoryIDs) != 1 || wages.CategoryIDs[0] != categoryid.Salary {
 		t.Errorf("created = %+v, want projected 300000.00 and category_ids [salary] (deduplicated)", wages)
+	}
+	if wages.Note == nil || *wages.Note != "two part-time staff" {
+		t.Errorf("created note = %v, want trimmed \"two part-time staff\"", wages.Note)
 	}
 	decodeLine(t, postLine(t, pool, "2026", `{"kind":"income","name":"Membership fees","projected":"600000.50","category_ids":["00000000-0000-4000-8000-000000000001"]}`),
 		http.StatusCreated)
@@ -127,6 +130,10 @@ func TestBudgetLines_CreateUpdateDelete(t *testing.T) {
 		http.StatusOK)
 	if updated.Name != "Wages" || updated.GroupName != nil || len(updated.CategoryIDs) != 2 || updated.SortOrder != 5 {
 		t.Errorf("updated = %+v, want renamed, ungrouped, two categories, sort_order 5", updated)
+	}
+	// Full overwrite: the omitted note is cleared.
+	if updated.Note != nil {
+		t.Errorf("updated note = %q, want cleared", *updated.Note)
 	}
 
 	got := getBudget(t, pool, "2026")
@@ -186,6 +193,7 @@ func TestBudgetLines_Validation(t *testing.T) {
 		{"invalid kind", "2026", `{"kind":"other","name":"X"}`, http.StatusBadRequest},
 		{"missing name", "2026", `{"kind":"income","name":"  "}`, http.StatusBadRequest},
 		{"negative projected", "2026", `{"kind":"income","name":"X","projected":"-5"}`, http.StatusBadRequest},
+		{"note too long", "2026", `{"kind":"income","name":"X","note":"` + strings.Repeat("x", budgetNoteMaxLength+1) + `"}`, http.StatusBadRequest},
 		{"three decimals", "2026", `{"kind":"income","name":"X","projected":"1.005"}`, http.StatusBadRequest},
 		{"null category id", "2026", `{"kind":"income","name":"X","category_ids":[null]}`, http.StatusBadRequest},
 		{"malformed category id", "2026", `{"kind":"income","name":"X","category_ids":["salary"]}`, http.StatusBadRequest},
@@ -342,7 +350,7 @@ func TestCreateBudget_CopyFromYear(t *testing.T) {
 	pool := dbtest.Pool(t)
 	createBudget(t, pool, `{"year":2026}`, http.StatusCreated)
 	decodeLine(t, postLine(t, pool, "2026", `{"kind":"expense","group_name":"Employment expenses","name":"Employee wages","projected":"300000","category_ids":["`+uuidText(t, categoryid.Salary)+`"],"sort_order":10}`), http.StatusCreated)
-	decodeLine(t, postLine(t, pool, "2026", `{"kind":"income","name":"Interest","projected":"500","category_ids":["`+uuidText(t, categoryid.CreditedInterest)+`"]}`), http.StatusCreated)
+	decodeLine(t, postLine(t, pool, "2026", `{"kind":"income","name":"Interest","projected":"500","category_ids":["`+uuidText(t, categoryid.CreditedInterest)+`"],"note":"savings account"}`), http.StatusCreated)
 
 	createBudget(t, pool, `{"year":2027,"copy_from_year":2026}`, http.StatusCreated)
 
@@ -354,7 +362,8 @@ func TestCreateBudget_CopyFromYear(t *testing.T) {
 	for i, line := range copied.Lines {
 		want := source.Lines[i]
 		if line.ID == want.ID || line.Name != want.Name || line.Kind != want.Kind || line.Projected != want.Projected ||
-			line.SortOrder != want.SortOrder || len(line.CategoryIDs) != 1 || line.CategoryIDs[0] != want.CategoryIDs[0] {
+			line.SortOrder != want.SortOrder || len(line.CategoryIDs) != 1 || line.CategoryIDs[0] != want.CategoryIDs[0] ||
+			(line.Note == nil) != (want.Note == nil) || (line.Note != nil && *line.Note != *want.Note) {
 			t.Errorf("copied line %d = %+v, want a new line like %+v", i, line, want)
 		}
 	}

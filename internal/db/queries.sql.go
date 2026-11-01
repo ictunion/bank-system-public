@@ -95,8 +95,8 @@ func (q *Queries) CopyBudgetLineCategories(ctx context.Context, arg CopyBudgetLi
 }
 
 const copyBudgetLines = `-- name: CopyBudgetLines :exec
-INSERT INTO budget_lines (budget_year, kind, group_name, name, projected_amount, sort_order)
-SELECT $1::int, kind, group_name, name, projected_amount, sort_order
+INSERT INTO budget_lines (budget_year, kind, group_name, name, projected_amount, sort_order, note)
+SELECT $1::int, kind, group_name, name, projected_amount, sort_order, note
 FROM budget_lines
 WHERE budget_year = $2::int
 `
@@ -250,10 +250,10 @@ func (q *Queries) CreateBudget(ctx context.Context, arg CreateBudgetParams) (Bud
 }
 
 const createBudgetLine = `-- name: CreateBudgetLine :one
-INSERT INTO budget_lines (budget_year, kind, group_name, name, projected_amount, sort_order)
+INSERT INTO budget_lines (budget_year, kind, group_name, name, projected_amount, sort_order, note)
 VALUES (
     $1, $2, $3, $4,
-    $5::numeric, $6
+    $5::numeric, $6, $7
 )
 RETURNING id
 `
@@ -265,6 +265,7 @@ type CreateBudgetLineParams struct {
 	Name            string  `json:"name"`
 	ProjectedAmount string  `json:"projected_amount"`
 	SortOrder       int32   `json:"sort_order"`
+	Note            *string `json:"note"`
 }
 
 func (q *Queries) CreateBudgetLine(ctx context.Context, arg CreateBudgetLineParams) (int64, error) {
@@ -275,6 +276,7 @@ func (q *Queries) CreateBudgetLine(ctx context.Context, arg CreateBudgetLinePara
 		arg.Name,
 		arg.ProjectedAmount,
 		arg.SortOrder,
+		arg.Note,
 	)
 	var id int64
 	err := row.Scan(&id)
@@ -1703,7 +1705,7 @@ func (q *Queries) ListBudgetLineCategories(ctx context.Context, budgetYear int32
 }
 
 const listBudgetLines = `-- name: ListBudgetLines :many
-SELECT id, budget_year, kind, group_name, name, projected_amount, sort_order FROM budget_lines
+SELECT id, budget_year, kind, group_name, name, projected_amount, sort_order, note FROM budget_lines
 WHERE budget_year = $1
 ORDER BY sort_order, id
 `
@@ -1727,6 +1729,7 @@ func (q *Queries) ListBudgetLines(ctx context.Context, budgetYear int32) ([]Budg
 			&i.Name,
 			&i.ProjectedAmount,
 			&i.SortOrder,
+			&i.Note,
 		); err != nil {
 			return nil, err
 		}
@@ -3096,8 +3099,9 @@ SET kind = $1,
     group_name = $2,
     name = $3,
     projected_amount = $4::numeric,
-    sort_order = $5
-WHERE id = $6 AND budget_year = $7
+    sort_order = $5,
+    note = $6
+WHERE id = $7 AND budget_year = $8
 `
 
 type UpdateBudgetLineParams struct {
@@ -3106,6 +3110,7 @@ type UpdateBudgetLineParams struct {
 	Name            string  `json:"name"`
 	ProjectedAmount string  `json:"projected_amount"`
 	SortOrder       int32   `json:"sort_order"`
+	Note            *string `json:"note"`
 	ID              int64   `json:"id"`
 	BudgetYear      int32   `json:"budget_year"`
 }
@@ -3119,6 +3124,7 @@ func (q *Queries) UpdateBudgetLine(ctx context.Context, arg UpdateBudgetLinePara
 		arg.Name,
 		arg.ProjectedAmount,
 		arg.SortOrder,
+		arg.Note,
 		arg.ID,
 		arg.BudgetYear,
 	)

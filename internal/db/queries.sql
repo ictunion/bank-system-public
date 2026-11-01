@@ -1002,10 +1002,10 @@ WHERE blc.budget_year = sqlc.arg(budget_year)
 ORDER BY blc.budget_line_id, tc.name;
 
 -- name: CreateBudgetLine :one
-INSERT INTO budget_lines (budget_year, kind, group_name, name, projected_amount, sort_order)
+INSERT INTO budget_lines (budget_year, kind, group_name, name, projected_amount, sort_order, note)
 VALUES (
     sqlc.arg(budget_year), sqlc.arg(kind), sqlc.narg(group_name), sqlc.arg(name),
-    sqlc.arg(projected_amount)::numeric, sqlc.arg(sort_order)
+    sqlc.arg(projected_amount)::numeric, sqlc.arg(sort_order), sqlc.narg(note)
 )
 RETURNING id;
 
@@ -1017,7 +1017,8 @@ SET kind = sqlc.arg(kind),
     group_name = sqlc.narg(group_name),
     name = sqlc.arg(name),
     projected_amount = sqlc.arg(projected_amount)::numeric,
-    sort_order = sqlc.arg(sort_order)
+    sort_order = sqlc.arg(sort_order),
+    note = sqlc.narg(note)
 WHERE id = sqlc.arg(id) AND budget_year = sqlc.arg(budget_year);
 
 -- name: DeleteBudgetLineCategories :exec
@@ -1095,8 +1096,8 @@ WHERE currency != 'CZK'
 -- Copies every line (with its projected amount) of one year's budget into
 -- another, already created one. Runs with CopyBudgetLineCategories in the
 -- caller's transaction.
-INSERT INTO budget_lines (budget_year, kind, group_name, name, projected_amount, sort_order)
-SELECT sqlc.arg(to_year)::int, kind, group_name, name, projected_amount, sort_order
+INSERT INTO budget_lines (budget_year, kind, group_name, name, projected_amount, sort_order, note)
+SELECT sqlc.arg(to_year)::int, kind, group_name, name, projected_amount, sort_order, note
 FROM budget_lines
 WHERE budget_year = sqlc.arg(from_year)::int;
 
