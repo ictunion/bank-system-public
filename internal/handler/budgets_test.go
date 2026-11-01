@@ -1,12 +1,14 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -29,7 +31,7 @@ func budgetRequest(method, path, body string, pathValues map[string]string) *htt
 func createBudget(t *testing.T, pool *pgxpool.Pool, body string, wantStatus int) {
 	t.Helper()
 	recorder := httptest.NewRecorder()
-	CreateBudget(db.New(pool))(recorder, budgetRequest(http.MethodPost, "/budgets", body, nil))
+	CreateBudget(pool)(recorder, budgetRequest(http.MethodPost, "/budgets", body, nil))
 	if recorder.Code != wantStatus {
 		t.Fatalf("create budget status = %d, want %d, body = %s", recorder.Code, wantStatus, recorder.Body)
 	}
@@ -244,4 +246,124 @@ func TestUpdateAndDeleteBudget(t *testing.T) {
 	// categories mapped again.
 	createBudget(t, pool, `{"year":2026}`, http.StatusCreated)
 	decodeLine(t, postLine(t, pool, "2026", `{"kind":"income","name":"Interest","category_ids":["00000000-0000-4000-8000-000000000006"]}`), http.StatusCreated)
+}
+
+// seedBudgetTransaction inserts one processed transaction with a chosen date,
+// amount, currency and category — the inputs the budget actuals depend on.
+func seedBudgetTransaction(t *testing.T, queries *db.Queries, bankAccountID int32, fioTransactionID int64, date time.Time, amount, currency, category string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := queries.InsertRawTransaction(ctx, db.InsertRawTransactionParams{
+		BankAccountID:    bankAccountID,
+		FioTransactionID: fioTransactionID,
+		TransactionDate:  date,
+		Amount:           amount,
+		Currency:         currency,
+		RawPayload:       []byte("{}"),
+	}); err != nil {
+		t.Fatalf("InsertRawTransaction(%d): %v", fioTransactionID, err)
+	}
+	unprocessed, err := queries.ListUnprocessedTransactions(ctx)
+	if err != nil {
+		t.Fatalf("ListUnprocessedTransactions: %v", err)
+	}
+	for _, raw := range unprocessed {
+		if raw.FioTransactionID != fioTransactionID || raw.BankAccountID != bankAccountID {
+			continue
+		}
+		direction := "incoming"
+		if strings.HasPrefix(amount, "-") {
+			direction = "outgoing"
+		}
+		if _, err := queries.CreateProcessedTransaction(ctx, db.CreateProcessedTransactionParams{
+			RawTransactionID: raw.ID,
+			CategoryID:       categoryIDByName(t, queries, category),
+			Direction:        direction,
+		}); err != nil {
+			t.Fatalf("CreateProcessedTransaction(%d): %v", fioTransactionID, err)
+		}
+		return
+	}
+	t.Fatalf("seedBudgetTransaction: fio_transaction_id=%d not found among unprocessed", fioTransactionID)
+}
+
+func TestGetBudget_Actuals(t *testing.T) {
+	pool := dbtest.Pool(t)
+	queries := db.New(pool)
+	account := seedBankAccount(t, queries, "9500000001")
+	createBudget(t, pool, `{"year":2026}`, http.StatusCreated)
+	fees := decodeLine(t, postLine(t, pool, "2026", `{"kind":"income","name":"Membership fees","projected":"600000","category_ids":["`+uuidText(t, categoryid.MembershipFee)+`"]}`), http.StatusCreated)
+	wages := decodeLine(t, postLine(t, pool, "2026", `{"kind":"expense","name":"Employee wages","projected":"300000","category_ids":["`+uuidText(t, categoryid.Salary)+`"]}`), http.StatusCreated)
+	empty := decodeLine(t, postLine(t, pool, "2026", `{"kind":"expense","name":"Legal","projected":"60000"}`), http.StatusCreated)
+
+	day := func(month time.Month, dayOfMonth, year int) time.Time {
+		return time.Date(year, month, dayOfMonth, 0, 0, 0, 0, time.UTC)
+	}
+	seedBudgetTransaction(t, queries, account.ID, 7001, day(time.January, 1, 2026), "100.00", "CZK", "membership_fee")
+	seedBudgetTransaction(t, queries, account.ID, 7002, day(time.December, 31, 2026), "200.00", "CZK", "membership_fee")
+	// Left out: another year, another currency.
+	seedBudgetTransaction(t, queries, account.ID, 7003, day(time.December, 31, 2025), "999.00", "CZK", "membership_fee")
+	seedBudgetTransaction(t, queries, account.ID, 7004, day(time.March, 1, 2026), "50.00", "EUR", "membership_fee")
+	// A refund lowers the expense line: 500 - 50.
+	seedBudgetTransaction(t, queries, account.ID, 7005, day(time.March, 5, 2026), "-500.00", "CZK", "salary")
+	seedBudgetTransaction(t, queries, account.ID, 7006, day(time.March, 6, 2026), "50.00", "CZK", "salary")
+	seedBudgetTransaction(t, queries, account.ID, 7007, day(time.April, 1, 2026), "-80.00", "CZK", "other_expense")
+	seedBudgetTransaction(t, queries, account.ID, 7008, day(time.April, 2, 2026), "-700.00", "CZK", "internal_transfer")
+
+	got := getBudget(t, pool, "2026")
+
+	wantReal := map[int64]string{fees.ID: "300.00", wages.ID: "450.00", empty.ID: "0.00"}
+	if len(got.Lines) != len(wantReal) {
+		t.Fatalf("lines = %+v, want %d", got.Lines, len(wantReal))
+	}
+	for _, line := range got.Lines {
+		if line.Real != wantReal[line.ID] {
+			t.Errorf("line %q real = %q, want %q", line.Name, line.Real, wantReal[line.ID])
+		}
+	}
+
+	// other_expense is unmapped; internal_transfer is left out entirely.
+	if len(got.Unbudgeted) != 1 {
+		t.Fatalf("unbudgeted = %+v, want only other_expense", got.Unbudgeted)
+	}
+	unbudgeted := got.Unbudgeted[0]
+	if unbudgeted.CategoryID != categoryid.OtherExpense || unbudgeted.Direction != "outgoing" || unbudgeted.Real != "80.00" {
+		t.Errorf("unbudgeted = %+v, want other_expense outgoing 80.00", unbudgeted)
+	}
+	if got.OtherCurrencyCount != 1 {
+		t.Errorf("other_currency_count = %d, want 1", got.OtherCurrencyCount)
+	}
+	if got.AsOf == "" {
+		t.Error("as_of is empty")
+	}
+}
+
+func TestCreateBudget_CopyFromYear(t *testing.T) {
+	pool := dbtest.Pool(t)
+	createBudget(t, pool, `{"year":2026}`, http.StatusCreated)
+	decodeLine(t, postLine(t, pool, "2026", `{"kind":"expense","group_name":"Employment expenses","name":"Employee wages","projected":"300000","category_ids":["`+uuidText(t, categoryid.Salary)+`"],"sort_order":10}`), http.StatusCreated)
+	decodeLine(t, postLine(t, pool, "2026", `{"kind":"income","name":"Interest","projected":"500","category_ids":["`+uuidText(t, categoryid.CreditedInterest)+`"]}`), http.StatusCreated)
+
+	createBudget(t, pool, `{"year":2027,"copy_from_year":2026}`, http.StatusCreated)
+
+	source := getBudget(t, pool, "2026")
+	copied := getBudget(t, pool, "2027")
+	if len(copied.Lines) != len(source.Lines) {
+		t.Fatalf("copied lines = %+v, want %d", copied.Lines, len(source.Lines))
+	}
+	for i, line := range copied.Lines {
+		want := source.Lines[i]
+		if line.ID == want.ID || line.Name != want.Name || line.Kind != want.Kind || line.Projected != want.Projected ||
+			line.SortOrder != want.SortOrder || len(line.CategoryIDs) != 1 || line.CategoryIDs[0] != want.CategoryIDs[0] {
+			t.Errorf("copied line %d = %+v, want a new line like %+v", i, line, want)
+		}
+	}
+
+	// The copy is independent: the copied categories are mapped in 2027, not
+	// taken from 2026.
+	if recorder := postLine(t, pool, "2027", `{"kind":"expense","name":"Other wages","category_ids":["`+uuidText(t, categoryid.Salary)+`"]}`); recorder.Code != http.StatusConflict {
+		t.Errorf("mapping salary again in 2027: status = %d, want %d", recorder.Code, http.StatusConflict)
+	}
+
+	createBudget(t, pool, `{"year":2028,"copy_from_year":2020}`, http.StatusBadRequest)
 }

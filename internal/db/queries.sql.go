@@ -73,6 +73,64 @@ func (q *Queries) CategoryHasChildren(ctx context.Context, id pgtype.UUID) (bool
 	return exists, err
 }
 
+const copyBudgetLineCategories = `-- name: CopyBudgetLineCategories :exec
+INSERT INTO budget_line_categories (budget_line_id, budget_year, category_id)
+SELECT new_line.id, new_line.budget_year, blc.category_id
+FROM budget_line_categories blc
+JOIN budget_lines old_line ON old_line.id = blc.budget_line_id
+JOIN budget_lines new_line ON new_line.budget_year = $1::int AND new_line.name = old_line.name
+WHERE old_line.budget_year = $2::int
+`
+
+type CopyBudgetLineCategoriesParams struct {
+	ToYear   int32 `json:"to_year"`
+	FromYear int32 `json:"from_year"`
+}
+
+// After CopyBudgetLines: copies the category mappings, matching old and new
+// lines by name (unique within a year).
+func (q *Queries) CopyBudgetLineCategories(ctx context.Context, arg CopyBudgetLineCategoriesParams) error {
+	_, err := q.db.Exec(ctx, copyBudgetLineCategories, arg.ToYear, arg.FromYear)
+	return err
+}
+
+const copyBudgetLines = `-- name: CopyBudgetLines :exec
+INSERT INTO budget_lines (budget_year, kind, group_name, name, projected_amount, sort_order)
+SELECT $1::int, kind, group_name, name, projected_amount, sort_order
+FROM budget_lines
+WHERE budget_year = $2::int
+`
+
+type CopyBudgetLinesParams struct {
+	ToYear   int32 `json:"to_year"`
+	FromYear int32 `json:"from_year"`
+}
+
+// Copies every line (with its projected amount) of one year's budget into
+// another, already created one. Runs with CopyBudgetLineCategories in the
+// caller's transaction.
+func (q *Queries) CopyBudgetLines(ctx context.Context, arg CopyBudgetLinesParams) error {
+	_, err := q.db.Exec(ctx, copyBudgetLines, arg.ToYear, arg.FromYear)
+	return err
+}
+
+const countOtherCurrencyTransactions = `-- name: CountOtherCurrencyTransactions :one
+SELECT count(*)::int AS count
+FROM raw_transactions
+WHERE currency != 'CZK'
+  AND transaction_date >= make_date($1::int, 1, 1)
+  AND transaction_date <  make_date($1::int + 1, 1, 1)
+`
+
+// Budgets are always CZK, so the actuals skip any other currency; this count
+// is reported alongside so the skip isn't silent.
+func (q *Queries) CountOtherCurrencyTransactions(ctx context.Context, budgetYear int32) (int32, error) {
+	row := q.db.QueryRow(ctx, countOtherCurrencyTransactions, budgetYear)
+	var count int32
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createAuditLog = `-- name: CreateAuditLog :exec
 INSERT INTO audit_logs (
     actor_sub, actor_email,
@@ -732,6 +790,57 @@ func (q *Queries) GetBudget(ctx context.Context, year int32) (Budget, error) {
 	var i Budget
 	err := row.Scan(&i.Year, &i.Note, &i.CreatedAt)
 	return i, err
+}
+
+const getBudgetLineActuals = `-- name: GetBudgetLineActuals :many
+SELECT
+    bl.id AS budget_line_id,
+    COALESCE(SUM(CASE WHEN bl.kind = 'income' THEN rt.amount ELSE -rt.amount END), 0)::numeric(14,2)::text AS real_total
+FROM budget_lines bl
+LEFT JOIN budget_line_categories blc ON blc.budget_line_id = bl.id
+LEFT JOIN processed_transactions pt ON pt.category_id = blc.category_id
+LEFT JOIN raw_transactions rt
+       ON rt.id = pt.raw_transaction_id
+      AND rt.currency = 'CZK'
+      AND rt.transaction_date >= make_date(bl.budget_year, 1, 1)
+      AND rt.transaction_date <  make_date(bl.budget_year + 1, 1, 1)
+WHERE bl.budget_year = $1
+GROUP BY bl.id
+`
+
+type GetBudgetLineActualsRow struct {
+	BudgetLineID int64  `json:"budget_line_id"`
+	RealTotal    string `json:"real_total"`
+}
+
+// "Real" per budget line: the year's CZK transactions in the line's mapped
+// categories. A signed sum, not SUM(ABS(amount)) like
+// GetTransactionCategorySummary: a refund (money coming back on an expense
+// category, e.g. a cancelled venue deposit) reduces that line's spend rather
+// than adding to it. Expense lines report -SUM(amount), income lines
+// SUM(amount), so both read as positive in the normal case. Lines with no
+// categories or no transactions come back as 0. The date/currency filters
+// sit in the raw_transactions join so a line still gets a row when nothing
+// matches. Formatted as text by Postgres so a zero reads "0.00" like every
+// other amount (pgx renders a numeric zero as plain "0").
+func (q *Queries) GetBudgetLineActuals(ctx context.Context, budgetYear int32) ([]GetBudgetLineActualsRow, error) {
+	rows, err := q.db.Query(ctx, getBudgetLineActuals, budgetYear)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetBudgetLineActualsRow
+	for rows.Next() {
+		var i GetBudgetLineActualsRow
+		if err := rows.Scan(&i.BudgetLineID, &i.RealTotal); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getCategorizationRule = `-- name: GetCategorizationRule :one
@@ -2563,6 +2672,70 @@ func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsPara
 			&i.AdminComment,
 			&i.BankAccountColor,
 			&i.TotalCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUnbudgetedCategoryTotals = `-- name: ListUnbudgetedCategoryTotals :many
+SELECT
+    tc.id AS category_id,
+    tc.name AS category,
+    pt.direction,
+    SUM(ABS(rt.amount))::numeric(14,2) AS total
+FROM processed_transactions pt
+JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+JOIN transaction_categories tc ON tc.id = pt.category_id
+WHERE rt.currency = 'CZK'
+  AND rt.transaction_date >= make_date($1::int, 1, 1)
+  AND rt.transaction_date <  make_date($1::int + 1, 1, 1)
+  AND pt.category_id != $2::uuid
+  AND tc.parent_id IS DISTINCT FROM $2::uuid
+  AND NOT EXISTS (
+        SELECT 1 FROM budget_line_categories blc
+        WHERE blc.budget_year = $1::int AND blc.category_id = pt.category_id)
+GROUP BY tc.id, tc.name, pt.direction
+ORDER BY pt.direction, total DESC
+`
+
+type ListUnbudgetedCategoryTotalsParams struct {
+	BudgetYear                 int32       `json:"budget_year"`
+	InternalTransferCategoryID pgtype.UUID `json:"internal_transfer_category_id"`
+}
+
+type ListUnbudgetedCategoryTotalsRow struct {
+	CategoryID pgtype.UUID `json:"category_id"`
+	Category   string      `json:"category"`
+	Direction  string      `json:"direction"`
+	Total      string      `json:"total"`
+}
+
+// The year's CZK transactions in categories no line of that year's budget
+// maps, per category and direction — what makes the budget table reconcile:
+// without it, a payment in an unmapped category would silently drop out of
+// both sums. internal_transfer and its sub-categories are left out, same as
+// in GetTransactionCategorySummary (money between our own accounts isn't
+// income or expense). total = SUM(ABS(amount)), the direction gives the sign.
+func (q *Queries) ListUnbudgetedCategoryTotals(ctx context.Context, arg ListUnbudgetedCategoryTotalsParams) ([]ListUnbudgetedCategoryTotalsRow, error) {
+	rows, err := q.db.Query(ctx, listUnbudgetedCategoryTotals, arg.BudgetYear, arg.InternalTransferCategoryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListUnbudgetedCategoryTotalsRow
+	for rows.Next() {
+		var i ListUnbudgetedCategoryTotalsRow
+		if err := rows.Scan(
+			&i.CategoryID,
+			&i.Category,
+			&i.Direction,
+			&i.Total,
 		); err != nil {
 			return nil, err
 		}

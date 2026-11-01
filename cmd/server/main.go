@@ -156,7 +156,7 @@ func main() {
 	
 	api.HandleFunc("GET /budgets", handler.RequireRole(keycloakProvider, keycloak.RoleViewBudget, handler.ListBudgets(db.New(pool))))
 	api.HandleFunc("GET /budgets/{year}", handler.RequireRole(keycloakProvider, keycloak.RoleViewBudget, handler.GetBudget(db.New(pool))))
-	api.HandleFunc("POST /budgets", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.CreateBudget(db.New(pool))))
+	api.HandleFunc("POST /budgets", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.CreateBudget(pool)))
 	api.HandleFunc("PATCH /budgets/{year}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.UpdateBudget(db.New(pool))))
 	api.HandleFunc("DELETE /budgets/{year}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.DeleteBudget(db.New(pool))))
 	api.HandleFunc("POST /budgets/{year}/lines", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.CreateBudgetLine(pool)))

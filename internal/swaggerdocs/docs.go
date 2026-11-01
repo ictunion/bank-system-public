@@ -607,7 +607,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the manage-budget role. Creates an empty budget; add lines with POST /budgets/{year}/lines. 409 if the year already has one.",
+                "description": "Requires the manage-budget role. Creates an empty budget, or with copy_from_year a copy of that year's lines (projected amounts and category mappings included). 409 if the year already has one; 400 if copy_from_year has no budget.",
                 "consumes": [
                     "application/json"
                 ],
@@ -682,14 +682,14 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the view-budget role. Lines in display order (sort_order, then id), each with its mapped categories. Amounts are decimal strings, always CZK.",
+                "description": "Requires the view-budget role. Lines in display order (sort_order, then id), each with its mapped category_ids, projected and real (that year's CZK transactions in those categories; signed, a refund lowers it). unbudgeted: categories with transactions that year but no line (internal transfers excluded). other_currency_count: non-CZK transactions left out. Amounts are decimal strings, always CZK.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "budgets"
                 ],
-                "summary": "Get one year's budget",
+                "summary": "Get one year's budget vs. actual",
                 "parameters": [
                     {
                         "type": "integer",
@@ -3341,20 +3341,70 @@ const docTemplate = `{
                 }
             }
         },
+        "handler.budgetReportLine": {
+            "type": "object",
+            "properties": {
+                "category_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "group_name": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "kind": {
+                    "description": "income | expense",
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "projected": {
+                    "description": "always positive; kind gives the sign",
+                    "type": "string"
+                },
+                "real": {
+                    "description": "Real is the year's actual CZK amount for the line's categories, signed\nso it reads positive in the normal case (spend for an expense line,\nreceipts for an income line); a refund lowers it.",
+                    "type": "string"
+                },
+                "sort_order": {
+                    "type": "integer"
+                }
+            }
+        },
         "handler.budgetResponse": {
             "type": "object",
             "properties": {
+                "as_of": {
+                    "description": "YYYY-MM-DD the actual figures were computed on",
+                    "type": "string"
+                },
                 "created_at": {
                     "type": "string"
                 },
                 "lines": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/handler.budgetLineResponse"
+                        "$ref": "#/definitions/handler.budgetReportLine"
                     }
                 },
                 "note": {
                     "type": "string"
+                },
+                "other_currency_count": {
+                    "description": "OtherCurrencyCount is how many of the year's transactions weren't in\nCZK and so aren't in any figure here.",
+                    "type": "integer"
+                },
+                "unbudgeted": {
+                    "description": "Unbudgeted lists the year's transactions in categories no line maps\n(internal transfers excluded), so incomes − expenses reconcile.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handler.unbudgetedTotal"
+                    }
                 },
                 "year": {
                     "type": "integer"
@@ -3591,6 +3641,10 @@ const docTemplate = `{
         "handler.createBudgetRequest": {
             "type": "object",
             "properties": {
+                "copy_from_year": {
+                    "description": "CopyFromYear, if set, copies that year's lines — names, groups, order,\nprojected amounts and category mappings — into the new budget, so a\nnew year starts from last year's sheet.",
+                    "type": "integer"
+                },
                 "note": {
                     "type": "string"
                 },
@@ -3976,6 +4030,26 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/handler.transactionListItem"
                     }
+                }
+            }
+        },
+        "handler.unbudgetedTotal": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "description": "name, for display",
+                    "type": "string"
+                },
+                "category_id": {
+                    "type": "string"
+                },
+                "direction": {
+                    "description": "incoming | outgoing",
+                    "type": "string"
+                },
+                "real": {
+                    "description": "positive; direction gives the sign",
+                    "type": "string"
                 }
             }
         },

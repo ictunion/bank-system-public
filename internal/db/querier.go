@@ -22,6 +22,16 @@ type Querier interface {
 	AssignTransactionToMember(ctx context.Context, arg AssignTransactionToMemberParams) (int64, error)
 	CategoryExists(ctx context.Context, id pgtype.UUID) (bool, error)
 	CategoryHasChildren(ctx context.Context, id pgtype.UUID) (bool, error)
+	// After CopyBudgetLines: copies the category mappings, matching old and new
+	// lines by name (unique within a year).
+	CopyBudgetLineCategories(ctx context.Context, arg CopyBudgetLineCategoriesParams) error
+	// Copies every line (with its projected amount) of one year's budget into
+	// another, already created one. Runs with CopyBudgetLineCategories in the
+	// caller's transaction.
+	CopyBudgetLines(ctx context.Context, arg CopyBudgetLinesParams) error
+	// Budgets are always CZK, so the actuals skip any other currency; this count
+	// is reported alongside so the skip isn't silent.
+	CountOtherCurrencyTransactions(ctx context.Context, budgetYear int32) (int32, error)
 	// Written by the handler.AuditLog middleware once per authenticated
 	// POST/PUT/PATCH/DELETE request, after the handler has responded.
 	CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) error
@@ -102,6 +112,17 @@ type Querier interface {
 	// ListBankAccountsWithToken, same never-expose-over-HTTP caveat.
 	GetBankAccountWithToken(ctx context.Context, arg GetBankAccountWithTokenParams) (GetBankAccountWithTokenRow, error)
 	GetBudget(ctx context.Context, year int32) (Budget, error)
+	// "Real" per budget line: the year's CZK transactions in the line's mapped
+	// categories. A signed sum, not SUM(ABS(amount)) like
+	// GetTransactionCategorySummary: a refund (money coming back on an expense
+	// category, e.g. a cancelled venue deposit) reduces that line's spend rather
+	// than adding to it. Expense lines report -SUM(amount), income lines
+	// SUM(amount), so both read as positive in the normal case. Lines with no
+	// categories or no transactions come back as 0. The date/currency filters
+	// sit in the raw_transactions join so a line still gets a row when nothing
+	// matches. Formatted as text by Postgres so a zero reads "0.00" like every
+	// other amount (pgx renders a numeric zero as plain "0").
+	GetBudgetLineActuals(ctx context.Context, budgetYear int32) ([]GetBudgetLineActualsRow, error)
 	GetCategorizationRule(ctx context.Context, id int64) (CategorizationRule, error)
 	GetCategory(ctx context.Context, id pgtype.UUID) (TransactionCategory, error)
 	// Names are unique labels; used where a category is only known by name
@@ -290,6 +311,13 @@ type Querier interface {
 	// bank_account_id has no ON DELETE, but a soft-deleted account still exists as
 	// a row so this would be an inner join either way; LEFT is just defensive.
 	ListTransactions(ctx context.Context, arg ListTransactionsParams) ([]ListTransactionsRow, error)
+	// The year's CZK transactions in categories no line of that year's budget
+	// maps, per category and direction — what makes the budget table reconcile:
+	// without it, a payment in an unmapped category would silently drop out of
+	// both sums. internal_transfer and its sub-categories are left out, same as
+	// in GetTransactionCategorySummary (money between our own accounts isn't
+	// income or expense). total = SUM(ABS(amount)), the direction gives the sign.
+	ListUnbudgetedCategoryTotals(ctx context.Context, arg ListUnbudgetedCategoryTotalsParams) ([]ListUnbudgetedCategoryTotalsRow, error)
 	ListUnprocessedTransactions(ctx context.Context) ([]RawTransaction, error)
 	// Every payment_waivers row across all members — backs the dedicated
 	// Waivers admin tab (list + delete + create), gated the same as manual

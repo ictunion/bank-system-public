@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kubik/bank-system/internal/categoryid"
 	"github.com/kubik/bank-system/internal/db"
 )
 
@@ -63,11 +64,38 @@ func toBudgetLineResponse(line db.BudgetLine, categoryIDs []pgtype.UUID) budgetL
 	}
 }
 
+// budgetReportLine is a line as GET /budgets/{year} reports it: the line
+// plus its actual figure. Line create/update responses don't carry it — the
+// editor reloads the report after a save.
+type budgetReportLine struct {
+	budgetLineResponse
+	// Real is the year's actual CZK amount for the line's categories, signed
+	// so it reads positive in the normal case (spend for an expense line,
+	// receipts for an income line); a refund lowers it.
+	Real string `json:"real"`
+}
+
+// unbudgetedTotal is one category's actual amount in a year where no line of
+// the budget maps that category.
+type unbudgetedTotal struct {
+	CategoryID pgtype.UUID `json:"category_id"`
+	Category   string      `json:"category"`  // name, for display
+	Direction  string      `json:"direction"` // incoming | outgoing
+	Real       string      `json:"real"`      // positive; direction gives the sign
+}
+
 type budgetResponse struct {
-	Year      int32                `json:"year"`
-	Note      *string              `json:"note"`
-	CreatedAt time.Time            `json:"created_at"`
-	Lines     []budgetLineResponse `json:"lines"`
+	Year      int32              `json:"year"`
+	Note      *string            `json:"note"`
+	CreatedAt time.Time          `json:"created_at"`
+	AsOf      string             `json:"as_of"` // YYYY-MM-DD the actual figures were computed on
+	Lines     []budgetReportLine `json:"lines"`
+	// Unbudgeted lists the year's transactions in categories no line maps
+	// (internal transfers excluded), so incomes − expenses reconcile.
+	Unbudgeted []unbudgetedTotal `json:"unbudgeted"`
+	// OtherCurrencyCount is how many of the year's transactions weren't in
+	// CZK and so aren't in any figure here.
+	OtherCurrencyCount int32 `json:"other_currency_count"`
 }
 
 // parseBudgetYear reads the {year} path value.
@@ -141,12 +169,14 @@ func ListBudgets(queries *db.Queries) http.HandlerFunc {
 	}
 }
 
-// GetBudget handles GET /budgets/{year} — the budget with its lines (display
-// order) and each line's mapped categories. Same privacy level as
-// /transactions/summary: no per-transaction data, so view-budget.
+// GetBudget handles GET /budgets/{year} — the budget vs. actual report: the
+// budget's lines (display order), each with its mapped categories, projected
+// and real amount, plus the year's unbudgeted category totals. Same privacy
+// level as /transactions/summary: aggregates only, no per-transaction data,
+// so view-budget.
 //
-// @Summary      Get one year's budget
-// @Description  Requires the view-budget role. Lines in display order (sort_order, then id), each with its mapped categories. Amounts are decimal strings, always CZK.
+// @Summary      Get one year's budget vs. actual
+// @Description  Requires the view-budget role. Lines in display order (sort_order, then id), each with its mapped category_ids, projected and real (that year's CZK transactions in those categories; signed, a refund lowers it). unbudgeted: categories with transactions that year but no line (internal transfers excluded). other_currency_count: non-CZK transactions left out. Amounts are decimal strings, always CZK.
 // @Tags         budgets
 // @Security     BearerAuth
 // @Produce      json
@@ -182,14 +212,55 @@ func GetBudget(queries *db.Queries) http.HandlerFunc {
 			categoriesByLine[mapping.BudgetLineID] = append(categoriesByLine[mapping.BudgetLineID], mapping.CategoryID)
 		}
 
+		actuals, err := queries.GetBudgetLineActuals(r.Context(), year)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to compute budget actuals")
+			return
+		}
+		realByLine := make(map[int64]string, len(actuals))
+		for _, actual := range actuals {
+			realByLine[actual.BudgetLineID] = actual.RealTotal
+		}
+		unbudgetedRows, err := queries.ListUnbudgetedCategoryTotals(r.Context(), db.ListUnbudgetedCategoryTotalsParams{
+			BudgetYear:                 year,
+			InternalTransferCategoryID: categoryid.InternalTransfer,
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to compute unbudgeted totals")
+			return
+		}
+		otherCurrencyCount, err := queries.CountOtherCurrencyTransactions(r.Context(), year)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to count other-currency transactions")
+			return
+		}
+
 		response := budgetResponse{
-			Year:      budget.Year,
-			Note:      budget.Note,
-			CreatedAt: budget.CreatedAt,
-			Lines:     make([]budgetLineResponse, len(lines)),
+			Year:               budget.Year,
+			Note:               budget.Note,
+			CreatedAt:          budget.CreatedAt,
+			AsOf:               time.Now().Format("2006-01-02"),
+			Lines:              make([]budgetReportLine, len(lines)),
+			Unbudgeted:         make([]unbudgetedTotal, len(unbudgetedRows)),
+			OtherCurrencyCount: otherCurrencyCount,
 		}
 		for i, line := range lines {
-			response.Lines[i] = toBudgetLineResponse(line, categoriesByLine[line.ID])
+			realTotal, ok := realByLine[line.ID]
+			if !ok {
+				realTotal = "0.00"
+			}
+			response.Lines[i] = budgetReportLine{
+				budgetLineResponse: toBudgetLineResponse(line, categoriesByLine[line.ID]),
+				Real:               realTotal,
+			}
+		}
+		for i, row := range unbudgetedRows {
+			response.Unbudgeted[i] = unbudgetedTotal{
+				CategoryID: row.CategoryID,
+				Category:   row.Category,
+				Direction:  row.Direction,
+				Real:       row.Total,
+			}
 		}
 		writeJSON(w, http.StatusOK, response)
 	}
@@ -198,12 +269,17 @@ func GetBudget(queries *db.Queries) http.HandlerFunc {
 type createBudgetRequest struct {
 	Year int32   `json:"year"`
 	Note *string `json:"note"`
+	// CopyFromYear, if set, copies that year's lines — names, groups, order,
+	// projected amounts and category mappings — into the new budget, so a
+	// new year starts from last year's sheet.
+	CopyFromYear *int32 `json:"copy_from_year"`
 }
 
-// CreateBudget handles POST /budgets — creates an empty budget for a year.
+// CreateBudget handles POST /budgets — creates a budget for a year, empty or
+// as a copy of another year's lines (one DB transaction).
 //
 // @Summary      Create a budget
-// @Description  Requires the manage-budget role. Creates an empty budget; add lines with POST /budgets/{year}/lines. 409 if the year already has one.
+// @Description  Requires the manage-budget role. Creates an empty budget, or with copy_from_year a copy of that year's lines (projected amounts and category mappings included). 409 if the year already has one; 400 if copy_from_year has no budget.
 // @Tags         budgets
 // @Security     BearerAuth
 // @Accept       json
@@ -213,8 +289,10 @@ type createBudgetRequest struct {
 // @Failure      400,401,403  {object}  map[string]string
 // @Failure      409  {object}  map[string]string  "budget for this year already exists"
 // @Router       /budgets [post]
-func CreateBudget(queries *db.Queries) http.HandlerFunc {
+func CreateBudget(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		queries := db.New(pool)
+
 		var request createBudgetRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -230,11 +308,49 @@ func CreateBudget(queries *db.Queries) http.HandlerFunc {
 			return
 		}
 
-		budget, err := queries.CreateBudget(r.Context(), db.CreateBudgetParams{Year: request.Year, Note: note})
+		if request.CopyFromYear != nil {
+			if _, err := queries.GetBudget(r.Context(), *request.CopyFromYear); errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, http.StatusBadRequest, "copy_from_year has no budget")
+				return
+			} else if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load budget to copy")
+				return
+			}
+		}
+
+		tx, err := pool.Begin(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to create budget")
+			return
+		}
+		defer tx.Rollback(r.Context())
+		txQueries := db.New(tx)
+
+		budget, err := txQueries.CreateBudget(r.Context(), db.CreateBudgetParams{Year: request.Year, Note: note})
 		if isUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "a budget for this year already exists")
 			return
 		} else if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to create budget")
+			return
+		}
+		if request.CopyFromYear != nil {
+			if err := txQueries.CopyBudgetLines(r.Context(), db.CopyBudgetLinesParams{
+				FromYear: *request.CopyFromYear,
+				ToYear:   request.Year,
+			}); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to copy budget lines")
+				return
+			}
+			if err := txQueries.CopyBudgetLineCategories(r.Context(), db.CopyBudgetLineCategoriesParams{
+				FromYear: *request.CopyFromYear,
+				ToYear:   request.Year,
+			}); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to copy budget line categories")
+				return
+			}
+		}
+		if err := tx.Commit(r.Context()); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to create budget")
 			return
 		}
