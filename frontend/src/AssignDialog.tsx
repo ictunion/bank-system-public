@@ -1,8 +1,10 @@
 import { type CSSProperties, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { categoryOptionLabel, fetchCategories, withChildrenUnderParents } from './api/categories'
+import { categoryLabel, categoryOptionLabel, fetchCategories, withChildrenUnderParents } from './api/categories'
 import { errMessage } from './api/client'
+import { createRule } from './api/rules'
 import { Overlay } from './Overlay'
+import { useHasRole } from './roles'
 import {
   assignTransaction,
   type Category,
@@ -21,6 +23,10 @@ const MONTH_NAMES = [
 // name is hardcoded on the backend too (internal/handler/transactions.go),
 // not just here, so it's safe to check for literally.
 const MEMBERSHIP_FEE = 'membership_fee'
+
+// Priority of a rule created from this dialog: after member matching (300),
+// before the seeded "mzda" salary rule (500).
+const RULE_PRIORITY = 400
 
 function monthOf(isoDate: string): MonthRef {
   const [y, m] = isoDate.split('-')
@@ -72,6 +78,7 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
     detail.covered_months.length ? detail.covered_months : [prevMonthOf(detail.transaction_date)],
   )
   const [adminComment, setAdminComment] = useState(detail.admin_comment ?? '')
+  const [alsoCreateRule, setAlsoCreateRule] = useState(false)
 
   const done = () => {
     qc.invalidateQueries({ queryKey: ['transactions'] })
@@ -82,14 +89,44 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
   const hasMember = memberNumber.trim() !== ''
   const coverable = category === MEMBERSHIP_FEE && hasMember
 
+  // Shortcut for a recurring counterparty (e.g. the lawyer): also create a
+  // pattern rule so future payments to/from this account get this category
+  // automatically. Not offered for membership_fee — a pattern rule can't
+  // match a member, only the built-in member rule can.
+  const canManageRules = useHasRole('manage-rules')
+  const counterAccountNumber = detail.counter_account_number
+  const ruleOffered = canManageRules && counterAccountNumber !== null && category !== MEMBERSHIP_FEE
+  const createsRule = ruleOffered && alsoCreateRule
+
   const assign = useMutation({
-    mutationFn: () =>
-      assignTransaction(detail.id, {
+    mutationFn: async () => {
+      await assignTransaction(detail.id, {
         member_number: hasMember ? Number(memberNumber) : undefined,
         category,
         covers: coverable ? months : undefined,
         admin_comment: adminComment,
-      }),
+      })
+      if (!createsRule || counterAccountNumber === null) return
+      try {
+        await createRule({
+          priority: RULE_PRIORITY,
+          category,
+          enabled: true,
+          counter_account_number: counterAccountNumber,
+          variable_symbol: null,
+          constant_symbol: null,
+          text_contains: null,
+          transaction_type_contains: null,
+          direction: detail.direction,
+          note: detail.counter_account_name,
+        })
+      } catch (err) {
+        // The assignment itself already went through.
+        qc.invalidateQueries({ queryKey: ['transactions'] })
+        throw new Error(`Transaction saved, but creating the rule failed: ${errMessage(err)}`)
+      }
+      qc.invalidateQueries({ queryKey: ['categorization-rules'] })
+    },
     onSuccess: done,
   })
 
@@ -203,6 +240,20 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
             Add month
           </button>
         </fieldset>
+      )}
+
+      {ruleOffered && (
+        <label style={{ display: 'flex', gap: '0.4rem', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
+          <input type="checkbox" checked={alsoCreateRule} onChange={(e) => setAlsoCreateRule(e.target.checked)} />
+          <span>
+            Always categorize {detail.direction} payments {detail.direction === 'incoming' ? 'from' : 'to'} account{' '}
+            {counterAccountNumber} as {categoryLabel(category)}
+            <span style={{ display: 'block', color: '#666', fontSize: '0.8125rem' }}>
+              Creates a rule (priority {RULE_PRIORITY}) for new transactions. Existing ones aren't changed — use
+              "Re-apply" on the Rules page for that.
+            </span>
+          </span>
+        </label>
       )}
 
       {errorMessage && <p style={{ color: '#b00' }}>{errorMessage}</p>}
