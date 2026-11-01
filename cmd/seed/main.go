@@ -36,6 +36,25 @@ import (
 // duplicate.
 const seedFioAccountID = "SEED-FIXTURE-0001"
 
+// Lawyer fixture: a monthly outgoing payment to one fixed (made-up)
+// counterparty account since March 2026, with "mzda" in the comment — the
+// real-world case that motivated categorization rules: the seeded salary
+// rule tags it salary, until an admin adds a counter-account rule for it and
+// re-applies that rule. A fixed start date rather than a monthOffset so it
+// lines up with the budget year being tested; payments dated after today are
+// skipped, so each re-run adds the months that have since passed.
+const (
+	lawyerCounterAccountNumber = "2847193650"
+	lawyerCounterBankCode      = "0800"
+	lawyerCounterAccountName   = "Advokátní kancelář Novák s.r.o."
+	lawyerMonthlyAmount        = "-5000.00"
+	// Own range, separate from the member fixtures' counter below, so adding
+	// a member there never shifts these ids.
+	lawyerFioTransactionIDBase = int64(900_100_000)
+)
+
+var lawyerFirstPayment = time.Date(2026, time.March, 10, 0, 0, 0, 0, time.UTC)
+
 // fixtureMember describes one seeded member's payment history in terms of
 // "months ago" so the fixture stays meaningful regardless of when `make
 // seed` is run — feeStartMonthsAgo/feeStopMonthsAgo/paidMonthsAgo/
@@ -124,6 +143,11 @@ func main() {
 		log.Fatalf("seeding unmatched transaction: %v", err)
 	}
 
+	lawyerPayments, err := seedLawyerTransactions(requestContext, queries, bankAccountID)
+	if err != nil {
+		log.Fatalf("seeding lawyer transactions: %v", err)
+	}
+
 	result, err := processing.Run(requestContext, pool)
 	if err != nil {
 		log.Fatalf("running processing: %v", err)
@@ -133,6 +157,9 @@ func main() {
 	for _, m := range fixtureMembers {
 		fmt.Printf("  %d — %s\n", m.number, m.label)
 	}
+	fmt.Printf("seeded %d lawyer payments of %s CZK to %s/%s (%s), monthly since %s\n",
+		lawyerPayments, lawyerMonthlyAmount, lawyerCounterAccountNumber, lawyerCounterBankCode,
+		lawyerCounterAccountName, lawyerFirstPayment.Format("2006-01-02"))
 }
 
 // seedBankAccount creates the one fixture bank_accounts row this command
@@ -233,6 +260,38 @@ func seedSalaryTransaction(requestContext context.Context, queries *db.Queries, 
 		RawPayload:       []byte("{}"),
 	})
 	return err
+}
+
+// seedLawyerTransactions inserts one lawyer payment per month from
+// lawyerFirstPayment up to today. Returns how many months that covers —
+// already-existing rows are skipped by InsertRawTransaction's ON CONFLICT, so
+// the count includes them too.
+func seedLawyerTransactions(requestContext context.Context, queries *db.Queries, bankAccountID int32) (int, error) {
+	counterAccountNumber := lawyerCounterAccountNumber
+	counterBankCode := lawyerCounterBankCode
+	counterAccountName := lawyerCounterAccountName
+	comment := "mzda - pravni sluzby"
+	today := time.Now().UTC()
+
+	count := 0
+	for date := lawyerFirstPayment; !date.After(today); date = date.AddDate(0, 1, 0) {
+		if _, err := queries.InsertRawTransaction(requestContext, db.InsertRawTransactionParams{
+			BankAccountID:        bankAccountID,
+			FioTransactionID:     lawyerFioTransactionIDBase + int64(count),
+			TransactionDate:      date,
+			Amount:               lawyerMonthlyAmount,
+			Currency:             "CZK",
+			CounterAccountNumber: &counterAccountNumber,
+			CounterBankCode:      &counterBankCode,
+			CounterAccountName:   &counterAccountName,
+			Comment:              &comment,
+			RawPayload:           []byte("{}"),
+		}); err != nil {
+			return count, fmt.Errorf("inserting payment dated %s: %w", date.Format("2006-01-02"), err)
+		}
+		count++
+	}
+	return count, nil
 }
 
 // seedUnmatchedTransaction inserts one incoming transaction with no
