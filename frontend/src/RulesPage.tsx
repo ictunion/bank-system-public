@@ -1,6 +1,6 @@
 import { type CSSProperties, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { categoryLabel, categoryOptionLabel, fetchCategories, withChildrenUnderParents } from './api/categories'
+import { categoryLabelById, categoryOptionLabel, fetchCategories, withChildrenUnderParents } from './api/categories'
 import { errMessage } from './api/client'
 import {
   type CategorizationRule,
@@ -125,6 +125,8 @@ function RuleRow({
   onReapply: () => void
 }) {
   const qc = useQueryClient()
+  // Same cached query as the rest of the page; only for category labels.
+  const categories = useQuery({ queryKey: ['categories'], queryFn: fetchCategories })
   const [rowError, setRowError] = useState<string | null>(null)
   const isMemberRule = rule.kind === 'member_variable_symbol'
 
@@ -176,7 +178,7 @@ function RuleRow({
         {conditionsText(rule)}
         {rule.kind !== 'pattern' && <span style={{ color: '#999', fontWeight: 400 }}> (built-in)</span>}
       </td>
-      <td style={td}>{categoryLabel(rule.category)}</td>
+      <td style={td}>{categoryLabelById(categories.data, rule.category_id)}</td>
       <td style={{ ...td, whiteSpace: 'normal' }}>{rule.note}</td>
       <td style={{ ...td, whiteSpace: 'normal' }}>
         {canManage && (
@@ -221,6 +223,8 @@ function startOfCurrentYear(): string {
 
 function ReapplyDialog({ rule, onClose }: { rule: CategorizationRule; onClose: () => void }) {
   const qc = useQueryClient()
+  // Same cached query as the rest of the page; only for category labels.
+  const categories = useQuery({ queryKey: ['categories'], queryFn: fetchCategories })
   // override-rules (superadmins) may pick any date, closed years included.
   const canOverride = useHasRole('override-rules')
   const yearStart = startOfCurrentYear()
@@ -239,7 +243,7 @@ function ReapplyDialog({ rule, onClose }: { rule: CategorizationRule; onClose: (
     <Overlay onClose={onClose}>
       <h2 style={{ marginTop: 0 }}>Re-apply rule</h2>
       <p>
-        {conditionsText(rule)} → {categoryLabel(rule.category)}
+        {conditionsText(rule)} → {categoryLabelById(categories.data, rule.category_id)}
       </p>
       <p style={{ color: '#666', fontSize: '0.875rem' }}>
         Applies only this rule to already-processed transactions it matches. Other rules are not applied; manual
@@ -290,7 +294,7 @@ function ReapplyDialog({ rule, onClose }: { rule: CategorizationRule; onClose: (
 // Form state keeps every text field as a string; blanks are sent as null.
 interface RuleForm {
   priority: string
-  category: string
+  categoryId: string
   enabled: boolean
   counterAccountNumber: string
   variableSymbol: string
@@ -304,7 +308,7 @@ interface RuleForm {
 function formFromRule(rule: CategorizationRule | null): RuleForm {
   return {
     priority: String(rule?.priority ?? DEFAULT_NEW_PRIORITY),
-    category: rule?.category ?? '',
+    categoryId: rule?.category_id ?? '',
     enabled: rule?.enabled ?? true,
     counterAccountNumber: rule?.counter_account_number ?? '',
     variableSymbol: rule?.variable_symbol ?? '',
@@ -324,7 +328,7 @@ function blankToNull(value: string): string | null {
 function inputFromForm(form: RuleForm): CategorizationRuleInput {
   return {
     priority: Number(form.priority),
-    category: form.category,
+    category_id: form.categoryId,
     enabled: form.enabled,
     counter_account_number: blankToNull(form.counterAccountNumber),
     variable_symbol: blankToNull(form.variableSymbol),
@@ -372,7 +376,7 @@ function RuleDialog({
     form.textContains,
     form.transactionTypeContains,
   ].some((value) => value.trim() !== '')
-  const canSave = priorityValid && (builtIn || (form.category !== '' && hasCondition)) && !save.isPending
+  const canSave = priorityValid && (builtIn || (form.categoryId !== '' && hasCondition)) && !save.isPending
 
   const beforeMemberMatch =
     !builtIn && priorityValid && memberRulePriority !== undefined && priority < memberRulePriority
@@ -406,17 +410,17 @@ function RuleDialog({
 
         {builtIn && rule !== null ? (
           <p style={{ color: '#666' }}>
-            {conditionsText(rule)} → {categoryLabel(rule.category)}. Built-in: only priority, on/off and note can
+            {conditionsText(rule)} → {categoryLabelById(categories.data, rule.category_id)}. Built-in: only priority, on/off and note can
             change.
           </p>
         ) : (
           <>
             <label style={field}>
               Category
-              <select value={form.category} onChange={(e) => set({ category: e.target.value })}>
+              <select value={form.categoryId} onChange={(e) => set({ categoryId: e.target.value })}>
                 <option value="">— choose —</option>
                 {withChildrenUnderParents(categories.data ?? []).map((c) => (
-                  <option key={c.name} value={c.name}>
+                  <option key={c.id} value={c.id}>
                     {categoryOptionLabel(c)}
                   </option>
                 ))}

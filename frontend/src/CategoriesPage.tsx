@@ -45,7 +45,7 @@ export function CategoriesPage() {
             </thead>
             <tbody>
               {withChildrenUnderParents(data).map((c) => (
-                <CategoryRow key={c.name} category={c} />
+                <CategoryRow key={c.id} category={c} />
               ))}
             </tbody>
           </table>
@@ -62,15 +62,15 @@ function CategoryRow({ category }: { category: Category }) {
   const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const remove = useMutation({
-    mutationFn: () => deleteCategory(category.name),
+    mutationFn: () => deleteCategory(category.id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['categories'] }),
     onError: (err) => setDeleteError(errMessage(err)),
   })
 
   return (
     <tr>
-      <td style={category.parent_name === null ? td : { ...td, paddingLeft: '2rem' }}>
-        {category.parent_name !== null && <span style={{ color: '#999' }}>↳ </span>}
+      <td style={category.parent_id === null ? td : { ...td, paddingLeft: '2rem' }}>
+        {category.parent_id !== null && <span style={{ color: '#999' }}>↳ </span>}
         {category.name}
       </td>
       <td style={td}>{category.is_mandatory ? 'Mandatory' : 'Custom'}</td>
@@ -101,13 +101,13 @@ function CategoryRow({ category }: { category: Category }) {
 function AddCategoryDialog({ categories, onClose }: { categories: Category[]; onClose: () => void }) {
   const qc = useQueryClient()
   const [name, setName] = useState('')
-  const [parentName, setParentName] = useState('')
+  const [parentId, setParentId] = useState('')
 
   // Only one level of nesting — a sub-category can't be a parent.
-  const parentOptions = categories.filter((c) => c.parent_name === null)
+  const parentOptions = categories.filter((c) => c.parent_id === null)
 
   const create = useMutation({
-    mutationFn: () => createCategory(name.trim(), parentName === '' ? null : parentName),
+    mutationFn: () => createCategory(name.trim(), parentId === '' ? null : parentId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['categories'] })
       onClose()
@@ -132,10 +132,10 @@ function AddCategoryDialog({ categories, onClose }: { categories: Category[]; on
 
         <label style={field}>
           Parent category (optional)
-          <select value={parentName} onChange={(e) => setParentName(e.target.value)}>
+          <select value={parentId} onChange={(e) => setParentId(e.target.value)}>
             <option value="">— none (top-level) —</option>
             {parentOptions.map((c) => (
-              <option key={c.name} value={c.name}>
+              <option key={c.id} value={c.id}>
                 {c.name}
               </option>
             ))}

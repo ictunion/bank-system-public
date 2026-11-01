@@ -38,7 +38,7 @@ interface Filters {
   to: string
   assigned: '' | 'true' | 'false'
   direction: '' | 'incoming' | 'outgoing'
-  category: string
+  categoryId: string
   includeChildren: boolean
   matchedBy: '' | 'variable_symbol' | 'manual' | 'amount_heuristic'
   memberNumber: string
@@ -60,7 +60,7 @@ function defaultFilters(): Filters {
     to: ymd(to),
     assigned: '',
     direction: '',
-    category: '',
+    categoryId: '',
     includeChildren: false,
     matchedBy: '',
     memberNumber: '',
@@ -87,7 +87,7 @@ function filtersFromParams(params: URLSearchParams, defaults: Filters): Filters 
     to: params.get('to') ?? defaults.to,
     assigned: pick(params.get('assigned'), ASSIGNED_VALUES),
     direction: pick(params.get('direction'), DIRECTION_VALUES),
-    category: params.get('category') ?? '',
+    categoryId: params.get('category_id') ?? '',
     includeChildren: params.get('include_children') === 'true',
     matchedBy: pick(params.get('matched_by'), MATCHED_BY_VALUES),
     memberNumber: params.get('member_number') ?? '',
@@ -106,8 +106,8 @@ function paramsFromFilters(f: Filters, offset: number): URLSearchParams {
   if (f.to) params.set('to', f.to)
   if (f.assigned) params.set('assigned', f.assigned)
   if (f.direction) params.set('direction', f.direction)
-  if (f.category) params.set('category', f.category)
-  if (f.category && f.includeChildren) params.set('include_children', 'true')
+  if (f.categoryId) params.set('category_id', f.categoryId)
+  if (f.categoryId && f.includeChildren) params.set('include_children', 'true')
   if (f.matchedBy) params.set('matched_by', f.matchedBy)
   if (f.memberNumber.trim()) params.set('member_number', f.memberNumber.trim())
   if (f.search.trim()) params.set('search', f.search.trim())
@@ -124,8 +124,8 @@ function toQuery(f: Filters, offset: number): TransactionQuery {
     to: f.to || undefined,
     assigned: f.assigned ? f.assigned === 'true' : undefined,
     direction: f.direction || undefined,
-    category: f.category || undefined,
-    includeChildren: f.category !== '' && f.includeChildren ? true : undefined,
+    categoryId: f.categoryId || undefined,
+    includeChildren: f.categoryId !== '' && f.includeChildren ? true : undefined,
     matchedBy: f.matchedBy || undefined,
     memberNumber: f.memberNumber.trim() && Number.isInteger(mn) && mn > 0 ? mn : undefined,
     search: f.search.trim() || undefined,
@@ -175,7 +175,7 @@ export function TransactionsTable() {
   const categories = useQuery({ queryKey: ['categories'], queryFn: fetchCategories })
   // The checkbox only means something for a category that has sub-categories.
   const selectedHasChildren =
-    filters.category !== '' && (categories.data ?? []).some((c) => c.parent_name === filters.category)
+    filters.categoryId !== '' && (categories.data ?? []).some((c) => c.parent_id === filters.categoryId)
 
   const filterRowEl = (
     <div style={filterRow}>
@@ -208,9 +208,9 @@ export function TransactionsTable() {
       />
       <Select
         label="Category"
-        value={filters.category}
-        onChange={(v) => update({ category: v })}
-        options={withChildrenUnderParents(categories.data ?? []).map((c): [string, string] => [c.name, categoryOptionLabel(c)])}
+        value={filters.categoryId}
+        onChange={(v) => update({ categoryId: v })}
+        options={withChildrenUnderParents(categories.data ?? []).map((c): [string, string] => [c.id, categoryOptionLabel(c)])}
       />
       {selectedHasChildren && (
         <label>

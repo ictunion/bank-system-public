@@ -8,7 +8,7 @@ export interface CategorizationRule {
   id: number
   priority: number
   kind: RuleKind
-  category: string
+  category_id: string
   enabled: boolean
   counter_account_number: string | null
   variable_symbol: string | null
@@ -24,7 +24,7 @@ export interface CategorizationRule {
 // is always sent; null (or a blank string) clears it.
 export interface CategorizationRuleInput {
   priority: number
-  category: string
+  category_id: string
   enabled: boolean
   counter_account_number: string | null
   variable_symbol: string | null
@@ -38,7 +38,7 @@ export interface CategorizationRuleInput {
 export function ruleToInput(rule: CategorizationRule): CategorizationRuleInput {
   return {
     priority: rule.priority,
-    category: rule.category,
+    category_id: rule.category_id,
     enabled: rule.enabled,
     counter_account_number: rule.counter_account_number,
     variable_symbol: rule.variable_symbol,

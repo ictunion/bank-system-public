@@ -1,6 +1,8 @@
 import { apiGet } from './client'
 
 export interface CategoryTotal {
+  category_id: string
+  /** the category's name, for display */
   category: string
   currency: string
   total: string

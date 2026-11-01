@@ -1,9 +1,6 @@
 import { apiGet, apiSend } from './client'
 
 export type Direction = 'incoming' | 'outgoing'
-// Categories are DB-backed and admin-editable (see api/categories.ts) — no
-// longer a fixed set of literal values here.
-export type Category = string
 
 export interface TransactionListItem {
   id: number
@@ -11,7 +8,9 @@ export interface TransactionListItem {
   amount: string
   currency: string
   direction: Direction
-  category: Category
+  category_id: string
+  /** the category's name, for display; filter and edit by category_id */
+  category: string
   member_number: number | null
   matched_by: string | null
   /** true once an admin set the category by hand; rule re-applies skip it until "Reset to automatic" */
@@ -51,8 +50,8 @@ export interface TransactionQuery {
   /** true = has a member, false = unassigned */
   assigned?: boolean
   direction?: Direction
-  category?: Category
-  /** with category: also match that category's sub-categories */
+  categoryId?: string
+  /** with categoryId: also match that category's sub-categories */
   includeChildren?: boolean
   matchedBy?: MatchedBy
   memberNumber?: number
@@ -68,7 +67,7 @@ export function fetchTransactions(q: TransactionQuery = {}): Promise<Transaction
   if (q.to) params.set('to', q.to)
   if (q.assigned != null) params.set('assigned', String(q.assigned))
   if (q.direction) params.set('direction', q.direction)
-  if (q.category) params.set('category', q.category)
+  if (q.categoryId) params.set('category_id', q.categoryId)
   if (q.includeChildren) params.set('include_children', 'true')
   if (q.matchedBy) params.set('matched_by', q.matchedBy)
   if (q.memberNumber != null) params.set('member_number', String(q.memberNumber))
@@ -89,8 +88,9 @@ export interface TransactionDetail extends TransactionListItem {
 export interface AssignPayload {
   /** omit for a category-only edit — not every transaction has a member to match */
   member_number?: number
-  category?: Category
-  /** only for category === 'membership_fee' with a member_number; empty = the transaction's own month */
+  /** defaults to membership_fee */
+  category_id?: string
+  /** only for membership_fee with a member_number; empty = the transaction's own month */
   covers?: MonthRef[]
   /** staff note; full overwrite like member_number — omit or send '' to clear */
   admin_comment?: string

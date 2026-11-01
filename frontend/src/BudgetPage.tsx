@@ -188,7 +188,7 @@ function CategoryPie({ currency, totals }: { currency: string; totals: CategoryT
         <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '0.8rem', marginTop: '0.5rem' }}>
           <tbody>
             {sorted.map((t) => (
-              <tr key={t.category}>
+              <tr key={t.category_id}>
                 <td style={td}>{categoryLabel(t.category)}</td>
                 <td style={{ ...td, textAlign: 'right' }}>{formatAmount(t.total, t.currency)}</td>
                 <td style={{ ...td, textAlign: 'right', color: '#666' }}>

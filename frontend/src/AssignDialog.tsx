@@ -1,13 +1,18 @@
 import { type CSSProperties, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { categoryLabel, categoryOptionLabel, fetchCategories, withChildrenUnderParents } from './api/categories'
+import {
+  categoryLabelById,
+  categoryOptionLabel,
+  fetchCategories,
+  MEMBERSHIP_FEE_ID,
+  withChildrenUnderParents,
+} from './api/categories'
 import { errMessage } from './api/client'
 import { createRule } from './api/rules'
 import { Overlay } from './Overlay'
 import { useHasRole } from './roles'
 import {
   assignTransaction,
-  type Category,
   fetchTransaction,
   type MonthRef,
   type TransactionDetail,
@@ -18,11 +23,6 @@ const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ]
-
-// membership_fee is one of the four mandatory categories — this specific
-// name is hardcoded on the backend too (internal/handler/transactions.go),
-// not just here, so it's safe to check for literally.
-const MEMBERSHIP_FEE = 'membership_fee'
 
 // Priority of a rule created from this dialog: after member matching (300),
 // before the seeded "mzda" salary rule (500).
@@ -73,7 +73,7 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
   const categories = useQuery({ queryKey: ['categories'], queryFn: fetchCategories })
 
   const [memberNumber, setMemberNumber] = useState(detail.member_number?.toString() ?? '')
-  const [category, setCategory] = useState<Category>(detail.category)
+  const [categoryId, setCategoryId] = useState(detail.category_id)
   const [months, setMonths] = useState<MonthRef[]>(
     detail.covered_months.length ? detail.covered_months : [prevMonthOf(detail.transaction_date)],
   )
@@ -87,7 +87,7 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
   }
 
   const hasMember = memberNumber.trim() !== ''
-  const coverable = category === MEMBERSHIP_FEE && hasMember
+  const coverable = categoryId === MEMBERSHIP_FEE_ID && hasMember
 
   // Shortcut for a recurring counterparty (e.g. the lawyer): also create a
   // pattern rule so future payments to/from this account get this category
@@ -95,14 +95,14 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
   // match a member, only the built-in member rule can.
   const canManageRules = useHasRole('manage-rules')
   const counterAccountNumber = detail.counter_account_number
-  const ruleOffered = canManageRules && counterAccountNumber !== null && category !== MEMBERSHIP_FEE
+  const ruleOffered = canManageRules && counterAccountNumber !== null && categoryId !== MEMBERSHIP_FEE_ID
   const createsRule = ruleOffered && alsoCreateRule
 
   const assign = useMutation({
     mutationFn: async () => {
       await assignTransaction(detail.id, {
         member_number: hasMember ? Number(memberNumber) : undefined,
-        category,
+        category_id: categoryId,
         covers: coverable ? months : undefined,
         admin_comment: adminComment,
       })
@@ -110,7 +110,7 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
       try {
         await createRule({
           priority: RULE_PRIORITY,
-          category,
+          category_id: categoryId,
           enabled: true,
           counter_account_number: counterAccountNumber,
           variable_symbol: null,
@@ -194,9 +194,9 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
 
       <label style={field}>
         Category
-        <select value={category} onChange={(e) => setCategory(e.target.value)}>
+        <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
           {withChildrenUnderParents(categories.data ?? []).map((c) => (
-            <option key={c.name} value={c.name}>
+            <option key={c.id} value={c.id}>
               {categoryOptionLabel(c)}
             </option>
           ))}
@@ -249,7 +249,7 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
           <input type="checkbox" checked={alsoCreateRule} onChange={(e) => setAlsoCreateRule(e.target.checked)} />
           <span>
             Always categorize {detail.direction} payments {detail.direction === 'incoming' ? 'from' : 'to'} account{' '}
-            {counterAccountNumber} as {categoryLabel(category)}
+            {counterAccountNumber} as {categoryLabelById(categories.data, categoryId)}
             <span style={{ display: 'block', color: '#666', fontSize: '0.8125rem' }}>
               Creates a rule (priority {RULE_PRIORITY}) for new transactions. Existing ones aren't changed — use
               "Re-apply" on the Rules page for that.
