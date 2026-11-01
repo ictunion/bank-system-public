@@ -41,6 +41,7 @@ type transactionListItem struct {
 	Category             string  `json:"category"`
 	MemberNumber         *int32  `json:"member_number"`
 	MatchedBy            *string `json:"matched_by"`
+	CategorySetManually  bool    `json:"category_set_manually"`
 	IsPublicVisible      bool    `json:"is_public_visible"`
 	VariableSymbol       *string `json:"variable_symbol"`
 	SpecificSymbol       *string `json:"specific_symbol"`
@@ -51,9 +52,6 @@ type transactionListItem struct {
 	UserIdentification   *string `json:"user_identification"`
 	Comment              *string `json:"comment"`
 	AdminComment         *string `json:"admin_comment"`
-	// BankAccountColor is the transaction's bank_accounts.color (a #RRGGBB hex
-	// code), nil when that account has no color assigned — see
-	// bankAccountResponse.Color in account.go.
 	BankAccountColor *string `json:"bank_account_color"`
 }
 
@@ -188,6 +186,7 @@ func ListTransactions(queries *db.Queries) http.HandlerFunc {
 				Category:             row.Category,
 				MemberNumber:         row.MemberNumber,
 				MatchedBy:            row.MatchedBy,
+				CategorySetManually:  row.CategorySetManually,
 				IsPublicVisible:      row.IsPublicVisible,
 				VariableSymbol:       row.VariableSymbol,
 				SpecificSymbol:       row.SpecificSymbol,
@@ -285,6 +284,7 @@ func detailRowToItem(row db.GetTransactionDetailRow) transactionListItem {
 		Category:             row.Category,
 		MemberNumber:         row.MemberNumber,
 		MatchedBy:            row.MatchedBy,
+		CategorySetManually:  row.CategorySetManually,
 		IsPublicVisible:      row.IsPublicVisible,
 		VariableSymbol:       row.VariableSymbol,
 		SpecificSymbol:       row.SpecificSymbol,
@@ -525,11 +525,12 @@ func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 
 // UnassignTransaction handles DELETE /transactions/{id}/assignment — clears the
 // member match and matched_by, deletes the transaction's payment_coverage rows,
-// and resets category to the direction-based default (other_income /
-// other_expense). One DB transaction.
+// resets category to the direction-based default (other_income /
+// other_expense) and category_set_manually to false, so rule re-applies may
+// touch it again. Doesn't run the rules itself. One DB transaction.
 //
-// @Summary      Revert a transaction's match
-// @Description  Requires the manage-transactions role. Clears member/matched_by, deletes coverage rows, resets category to the direction default.
+// @Summary      Reset a transaction to automatic
+// @Description  Requires the manage-transactions role. Clears member/matched_by and category_set_manually, deletes coverage rows, resets category to the direction default. Rules are not re-run.
 // @Tags         transactions
 // @Security     BearerAuth
 // @Param        id  path  int  true  "processed_transactions ID"

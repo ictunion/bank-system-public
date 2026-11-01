@@ -14,6 +14,8 @@ export interface TransactionListItem {
   category: Category
   member_number: number | null
   matched_by: string | null
+  /** true once an admin set the category by hand; rule re-applies skip it until "Reset to automatic" */
+  category_set_manually: boolean
   is_public_visible: boolean
   variable_symbol: string | null
   specific_symbol: string | null

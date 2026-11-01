@@ -981,6 +981,7 @@ SELECT
     pt.category,
     pt.member_number,
     pt.matched_by,
+    pt.category_set_manually,
     pt.is_public_visible,
     rt.variable_symbol,
     rt.specific_symbol,
@@ -1007,6 +1008,7 @@ type GetTransactionDetailRow struct {
 	Category             string    `json:"category"`
 	MemberNumber         *int32    `json:"member_number"`
 	MatchedBy            *string   `json:"matched_by"`
+	CategorySetManually  bool      `json:"category_set_manually"`
 	IsPublicVisible      bool      `json:"is_public_visible"`
 	VariableSymbol       *string   `json:"variable_symbol"`
 	SpecificSymbol       *string   `json:"specific_symbol"`
@@ -1035,6 +1037,7 @@ func (q *Queries) GetTransactionDetail(ctx context.Context, id int64) (GetTransa
 		&i.Category,
 		&i.MemberNumber,
 		&i.MatchedBy,
+		&i.CategorySetManually,
 		&i.IsPublicVisible,
 		&i.VariableSymbol,
 		&i.SpecificSymbol,
@@ -2177,6 +2180,7 @@ SELECT
     pt.category,
     pt.member_number,
     pt.matched_by,
+    pt.category_set_manually,
     pt.is_public_visible,
     rt.variable_symbol,
     rt.specific_symbol,
@@ -2239,6 +2243,7 @@ type ListTransactionsRow struct {
 	Category             string    `json:"category"`
 	MemberNumber         *int32    `json:"member_number"`
 	MatchedBy            *string   `json:"matched_by"`
+	CategorySetManually  bool      `json:"category_set_manually"`
 	IsPublicVisible      bool      `json:"is_public_visible"`
 	VariableSymbol       *string   `json:"variable_symbol"`
 	SpecificSymbol       *string   `json:"specific_symbol"`
@@ -2290,6 +2295,7 @@ func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsPara
 			&i.Category,
 			&i.MemberNumber,
 			&i.MatchedBy,
+			&i.CategorySetManually,
 			&i.IsPublicVisible,
 			&i.VariableSymbol,
 			&i.SpecificSymbol,

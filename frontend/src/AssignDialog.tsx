@@ -166,6 +166,8 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
         <span>{detail.variable_symbol ?? '—'}</span>
         <span style={{ color: '#666' }}>Message</span>
         <span>{detail.message_for_recipient ?? detail.comment ?? '—'}</span>
+        <span style={{ color: '#666' }}>Categorized</span>
+        <span>{detail.category_set_manually ? 'Manually — rules leave it alone' : 'Automatically'}</span>
       </div>
 
       <label style={field}>
@@ -265,18 +267,23 @@ function AssignForm({ detail, onClose }: { detail: TransactionDetail; onClose: (
         <button type="button" onClick={onClose}>
           Cancel
         </button>
-        {detail.member_number != null && (
+        {(detail.member_number != null || detail.category_set_manually) && (
           <button
             type="button"
             style={{ marginLeft: 'auto', color: '#b00' }}
             disabled={assign.isPending || unassign.isPending}
+            title="Clears the member match and coverage, resets the category to other income/expense and lets rules change it again"
             onClick={() => {
-              if (window.confirm('Remove member match and coverage for this transaction?')) {
+              if (
+                window.confirm(
+                  'Reset this transaction to automatic? The member match and coverage are removed and the category goes back to other income / other expense. Rules are not re-run — re-apply a rule to categorize it again.',
+                )
+              ) {
                 unassign.mutate()
               }
             }}
           >
-            {unassign.isPending ? 'Unassigning…' : 'Unassign'}
+            {unassign.isPending ? 'Resetting…' : 'Reset to automatic'}
           </button>
         )}
       </div>

@@ -101,6 +101,9 @@ func TestAssignTransaction_CategoryOnlyNoMember(t *testing.T) {
 	if !categorySetManually(t, pool, pt.ID) {
 		t.Error("category_set_manually = false, want true after a category-only edit")
 	}
+	if !got.CategorySetManually {
+		t.Error("response category_set_manually = false, want true — the edit dialog reads it")
+	}
 }
 
 func TestAssignTransaction_WithMemberDefaultsCoverageToMonthBeforeTransaction(t *testing.T) {
