@@ -32,6 +32,10 @@ type Querier interface {
 	// color is optional (sqlc.narg) — NULL means no color assigned, purely
 	// presentational, see the migration's CHECK constraint for accepted shape.
 	CreateBankAccount(ctx context.Context, arg CreateBankAccountParams) (CreateBankAccountRow, error)
+	// A second budget for the same year fails on the primary key; the caller
+	// (handler.CreateBudget) reports it as 409.
+	CreateBudget(ctx context.Context, arg CreateBudgetParams) (Budget, error)
+	CreateBudgetLine(ctx context.Context, arg CreateBudgetLineParams) (int64, error)
 	// Only pattern rules are ever created; the two built-in kinds are seeded by
 	// migration and exist at most once each.
 	CreateCategorizationRule(ctx context.Context, arg CreateCategorizationRuleParams) (int64, error)
@@ -61,6 +65,11 @@ type Querier interface {
 	// :execrows lets handler.DeleteBankAccount tell "already gone" (0 rows) from
 	// "deleted just now" (1 row) and return 404 vs 204 accordingly.
 	DeleteBankAccount(ctx context.Context, id int32) (int64, error)
+	// Cascades to budget_lines and budget_line_categories.
+	DeleteBudget(ctx context.Context, year int32) (int64, error)
+	// Cascades to the line's budget_line_categories.
+	DeleteBudgetLine(ctx context.Context, arg DeleteBudgetLineParams) (int64, error)
+	DeleteBudgetLineCategories(ctx context.Context, budgetLineID int64) error
 	// Built-in rules can't be deleted (only disabled) — the kind guard makes a
 	// built-in and a missing id both 0 rows; the caller checks
 	// GetCategorizationRule first to tell them apart. processed_transactions
@@ -92,6 +101,7 @@ type Querier interface {
 	// syncjob.SyncOneAccount) — single-row counterpart of
 	// ListBankAccountsWithToken, same never-expose-over-HTTP caveat.
 	GetBankAccountWithToken(ctx context.Context, arg GetBankAccountWithTokenParams) (GetBankAccountWithTokenRow, error)
+	GetBudget(ctx context.Context, year int32) (Budget, error)
 	GetCategorizationRule(ctx context.Context, id int64) (CategorizationRule, error)
 	GetCategory(ctx context.Context, name string) (TransactionCategory, error)
 	GetMaxFioTransactionID(ctx context.Context, bankAccountID int32) (int64, error)
@@ -156,6 +166,7 @@ type Querier interface {
 	// ListTransactions minus the window count. Covered months come from
 	// ListCoverageForTransaction.
 	GetTransactionDetail(ctx context.Context, id int64) (GetTransactionDetailRow, error)
+	InsertBudgetLineCategory(ctx context.Context, arg InsertBudgetLineCategoryParams) error
 	// Another transaction already covering the same month is fine (split
 	// payments); ON CONFLICT only makes a month repeated within one request's
 	// `covers` a no-op.
@@ -191,6 +202,14 @@ type Querier interface {
 	// parameter via pgp_sym_decrypt, never interpolated into SQL text. fio_token
 	// is NULL for any account not yet backfilled with a token.
 	ListBankAccountsWithToken(ctx context.Context, encryptionKey string) ([]ListBankAccountsWithTokenRow, error)
+	// Every category mapping of one year, with its line's name — used both to
+	// attach categories to lines and to report which line already owns a
+	// category when a save would map it twice.
+	ListBudgetLineCategories(ctx context.Context, budgetYear int32) ([]ListBudgetLineCategoriesRow, error)
+	// In display order; ties (e.g. every line still at the default 0) by id, so
+	// lines without an explicit order show in the order they were added.
+	ListBudgetLines(ctx context.Context, budgetYear int32) ([]BudgetLine, error)
+	ListBudgets(ctx context.Context) ([]Budget, error)
 	ListCategories(ctx context.Context) ([]TransactionCategory, error)
 	// Every rule, disabled ones included, in evaluation order — backs the admin
 	// rules table.
@@ -313,6 +332,10 @@ type Querier interface {
 	// (now()), not passed in from Go — same convention as sync_fio_runs.started_at
 	// etc., avoids any app/DB clock skew.
 	UpdateBankAccountBalance(ctx context.Context, arg UpdateBankAccountBalanceParams) error
+	// Full overwrite. Scoped to budget_year too, so a line id from another year's
+	// budget is a 0-row miss (404), not a cross-year edit.
+	UpdateBudgetLine(ctx context.Context, arg UpdateBudgetLineParams) (int64, error)
+	UpdateBudgetNote(ctx context.Context, arg UpdateBudgetNoteParams) (Budget, error)
 	// Full overwrite of every editable field; kind never changes. For a built-in
 	// rule the caller passes its fixed category and NULL conditions (the table's
 	// CHECK rejects anything else anyway).

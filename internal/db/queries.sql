@@ -952,3 +952,70 @@ WHERE (sqlc.narg(category)::text IS NULL OR category = sqlc.narg(category)::text
   AND (sqlc.narg(date_to)::date IS NULL OR created_at < sqlc.narg(date_to)::date + 1)
 ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg(lim)::int OFFSET sqlc.arg(off)::int;
+
+-- name: ListBudgets :many
+SELECT * FROM budgets ORDER BY year DESC;
+
+-- name: GetBudget :one
+SELECT * FROM budgets WHERE year = sqlc.arg(year);
+
+-- name: CreateBudget :one
+-- A second budget for the same year fails on the primary key; the caller
+-- (handler.CreateBudget) reports it as 409.
+INSERT INTO budgets (year, note) VALUES (sqlc.arg(year), sqlc.narg(note))
+RETURNING *;
+
+-- name: UpdateBudgetNote :one
+UPDATE budgets SET note = sqlc.narg(note) WHERE year = sqlc.arg(year)
+RETURNING *;
+
+-- name: DeleteBudget :execrows
+-- Cascades to budget_lines and budget_line_categories.
+DELETE FROM budgets WHERE year = sqlc.arg(year);
+
+-- name: ListBudgetLines :many
+-- In display order; ties (e.g. every line still at the default 0) by id, so
+-- lines without an explicit order show in the order they were added.
+SELECT * FROM budget_lines
+WHERE budget_year = sqlc.arg(budget_year)
+ORDER BY sort_order, id;
+
+-- name: ListBudgetLineCategories :many
+-- Every category mapping of one year, with its line's name — used both to
+-- attach categories to lines and to report which line already owns a
+-- category when a save would map it twice.
+SELECT blc.budget_line_id, blc.category, bl.name AS line_name
+FROM budget_line_categories blc
+JOIN budget_lines bl ON bl.id = blc.budget_line_id
+WHERE blc.budget_year = sqlc.arg(budget_year)
+ORDER BY blc.budget_line_id, blc.category;
+
+-- name: CreateBudgetLine :one
+INSERT INTO budget_lines (budget_year, kind, group_name, name, projected_amount, sort_order)
+VALUES (
+    sqlc.arg(budget_year), sqlc.arg(kind), sqlc.narg(group_name), sqlc.arg(name),
+    sqlc.arg(projected_amount)::numeric, sqlc.arg(sort_order)
+)
+RETURNING id;
+
+-- name: UpdateBudgetLine :execrows
+-- Full overwrite. Scoped to budget_year too, so a line id from another year's
+-- budget is a 0-row miss (404), not a cross-year edit.
+UPDATE budget_lines
+SET kind = sqlc.arg(kind),
+    group_name = sqlc.narg(group_name),
+    name = sqlc.arg(name),
+    projected_amount = sqlc.arg(projected_amount)::numeric,
+    sort_order = sqlc.arg(sort_order)
+WHERE id = sqlc.arg(id) AND budget_year = sqlc.arg(budget_year);
+
+-- name: DeleteBudgetLineCategories :exec
+DELETE FROM budget_line_categories WHERE budget_line_id = sqlc.arg(budget_line_id);
+
+-- name: InsertBudgetLineCategory :exec
+INSERT INTO budget_line_categories (budget_line_id, budget_year, category)
+VALUES (sqlc.arg(budget_line_id), sqlc.arg(budget_year), sqlc.arg(category));
+
+-- name: DeleteBudgetLine :execrows
+-- Cascades to the line's budget_line_categories.
+DELETE FROM budget_lines WHERE id = sqlc.arg(id) AND budget_year = sqlc.arg(budget_year);

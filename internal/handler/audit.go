@@ -22,6 +22,7 @@ const (
 	AuditCategoryCategory    AuditCategory = "category"
 	AuditCategoryRule        AuditCategory = "categorization_rule"
 	AuditCategoryWaiver      AuditCategory = "waiver"
+	AuditCategoryBudget      AuditCategory = "budget"
 	// AuditCategoryOther is the fallback for a mutating route missing from
 	// auditRoutes — the request is still recorded, just uncategorized.
 	AuditCategoryOther AuditCategory = "other"
@@ -35,6 +36,7 @@ var AuditCategories = []AuditCategory{
 	AuditCategoryCategory,
 	AuditCategoryRule,
 	AuditCategoryWaiver,
+	AuditCategoryBudget,
 	AuditCategoryOther,
 }
 
@@ -64,6 +66,12 @@ var auditRoutes = map[string]auditAction{
 	"POST /categorization-rules/{id}/reapply":               {AuditCategoryRule, "reapply_categorization_rule"},
 	"POST /payments/{member_number}/waive":                  {AuditCategoryWaiver, "create_waiver"},
 	"DELETE /payments/{member_number}/waive/{year}/{month}": {AuditCategoryWaiver, "delete_waiver"},
+	"POST /budgets":                                         {AuditCategoryBudget, "create_budget"},
+	"PATCH /budgets/{year}":                                 {AuditCategoryBudget, "update_budget"},
+	"DELETE /budgets/{year}":                                {AuditCategoryBudget, "delete_budget"},
+	"POST /budgets/{year}/lines":                            {AuditCategoryBudget, "create_budget_line"},
+	"PUT /budgets/{year}/lines/{id}":                        {AuditCategoryBudget, "update_budget_line"},
+	"DELETE /budgets/{year}/lines/{id}":                     {AuditCategoryBudget, "delete_budget_line"},
 }
 
 // auditRecord is placed on the request context by AuditLog and filled in by

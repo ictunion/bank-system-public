@@ -92,6 +92,68 @@ definitions:
       is_active:
         type: boolean
     type: object
+  handler.budgetLineRequest:
+    properties:
+      categories:
+        items:
+          type: string
+        type: array
+      group_name:
+        type: string
+      kind:
+        description: income | expense
+        type: string
+      name:
+        type: string
+      projected:
+        description: decimal string, >= 0, e.g. "60000.00"
+        type: string
+      sort_order:
+        type: integer
+    type: object
+  handler.budgetLineResponse:
+    properties:
+      categories:
+        items:
+          type: string
+        type: array
+      group_name:
+        type: string
+      id:
+        type: integer
+      kind:
+        description: income | expense
+        type: string
+      name:
+        type: string
+      projected:
+        description: Projected is always positive; kind gives the sign.
+        type: string
+      sort_order:
+        type: integer
+    type: object
+  handler.budgetResponse:
+    properties:
+      created_at:
+        type: string
+      lines:
+        items:
+          $ref: '#/definitions/handler.budgetLineResponse'
+        type: array
+      note:
+        type: string
+      year:
+        type: integer
+    type: object
+  handler.budgetSummaryResponse:
+    properties:
+      created_at:
+        type: string
+      note:
+        type: string
+      year:
+        type: integer
+    type: object
   handler.categorizationRuleRequest:
     properties:
       category:
@@ -144,6 +206,15 @@ definitions:
       transaction_type_contains:
         type: string
       variable_symbol:
+        type: string
+    type: object
+  handler.categoryConflictResponse:
+    properties:
+      category:
+        type: string
+      error:
+        type: string
+      line:
         type: string
     type: object
   handler.categoryResponse:
@@ -222,6 +293,13 @@ definitions:
         type: string
       iban:
         type: string
+    type: object
+  handler.createBudgetRequest:
+    properties:
+      note:
+        type: string
+      year:
+        type: integer
     type: object
   handler.createCategoryRequest:
     properties:
@@ -384,13 +462,11 @@ definitions:
       amount:
         type: string
       bank_account_color:
-        description: |-
-          BankAccountColor is the transaction's bank_accounts.color (a #RRGGBB hex
-          code), nil when that account has no color assigned — see
-          bankAccountResponse.Color in account.go.
         type: string
       category:
         type: string
+      category_set_manually:
+        type: boolean
       comment:
         type: string
       constant_symbol:
@@ -433,13 +509,11 @@ definitions:
       amount:
         type: string
       bank_account_color:
-        description: |-
-          BankAccountColor is the transaction's bank_accounts.color (a #RRGGBB hex
-          code), nil when that account has no color assigned — see
-          bankAccountResponse.Color in account.go.
         type: string
       category:
         type: string
+      category_set_manually:
+        type: boolean
       comment:
         type: string
       constant_symbol:
@@ -497,6 +571,12 @@ definitions:
       display_name:
         type: string
       fio_token:
+        type: string
+    type: object
+  handler.updateBudgetRequest:
+    properties:
+      note:
+        description: omit or "" to clear
         type: string
     type: object
   handler.waiveRequest:
@@ -900,6 +980,392 @@ paths:
       summary: List audit log
       tags:
       - audit-logs
+  /budgets:
+    get:
+      description: Requires the view-budget role. Newest year first.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/handler.budgetSummaryResponse'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List budgets
+      tags:
+      - budgets
+    post:
+      consumes:
+      - application/json
+      description: Requires the manage-budget role. Creates an empty budget; add lines
+        with POST /budgets/{year}/lines. 409 if the year already has one.
+      parameters:
+      - description: Year and optional note
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.createBudgetRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/handler.budgetSummaryResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: budget for this year already exists
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a budget
+      tags:
+      - budgets
+  /budgets/{year}:
+    delete:
+      description: Requires the manage-budget role. Deletes the budget and all its
+        lines. Transactions are not affected.
+      parameters:
+      - description: Budget year
+        in: path
+        name: year
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: no content
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a budget
+      tags:
+      - budgets
+    get:
+      description: Requires the view-budget role. Lines in display order (sort_order,
+        then id), each with its mapped categories. Amounts are decimal strings, always
+        CZK.
+      parameters:
+      - description: Budget year
+        in: path
+        name: year
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.budgetResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get one year's budget
+      tags:
+      - budgets
+    patch:
+      consumes:
+      - application/json
+      description: Requires the manage-budget role. Omit note or send "" to clear
+        it.
+      parameters:
+      - description: Budget year
+        in: path
+        name: year
+        required: true
+        type: integer
+      - description: Note
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.updateBudgetRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.budgetSummaryResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a budget's note
+      tags:
+      - budgets
+  /budgets/{year}/lines:
+    post:
+      consumes:
+      - application/json
+      description: Requires the manage-budget role. projected is a non-negative decimal
+        string; kind gives the sign. Each category may feed only one line per year
+        (409 names the line that has it). Unknown category → 400.
+      parameters:
+      - description: Budget year
+        in: path
+        name: year
+        required: true
+        type: integer
+      - description: New line
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.budgetLineRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/handler.budgetLineResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: budget not found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: category already used by another line, or duplicate line name
+          schema:
+            $ref: '#/definitions/handler.categoryConflictResponse'
+      security:
+      - BearerAuth: []
+      summary: Add a budget line
+      tags:
+      - budgets
+  /budgets/{year}/lines/{id}:
+    delete:
+      description: Requires the manage-budget role. Its categories become unbudgeted
+        for that year.
+      parameters:
+      - description: Budget year
+        in: path
+        name: year
+        required: true
+        type: integer
+      - description: Budget line ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: no content
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a budget line
+      tags:
+      - budgets
+    put:
+      consumes:
+      - application/json
+      description: Requires the manage-budget role. Full overwrite of the line, including
+        its categories. Same validation as creating one.
+      parameters:
+      - description: Budget year
+        in: path
+        name: year
+        required: true
+        type: integer
+      - description: Budget line ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Line
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.budgetLineRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.budgetLineResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/handler.categoryConflictResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a budget line
+      tags:
+      - budgets
   /categories:
     get:
       description: Requires the list-transactions or manage-rules role. Mandatory
@@ -2097,8 +2563,9 @@ paths:
       - transactions
   /transactions/{id}/assignment:
     delete:
-      description: Requires the manage-transactions role. Clears member/matched_by,
-        deletes coverage rows, resets category to the direction default.
+      description: Requires the manage-transactions role. Clears member/matched_by
+        and category_set_manually, deletes coverage rows, resets category to the direction
+        default. Rules are not re-run.
       parameters:
       - description: processed_transactions ID
         in: path
@@ -2134,7 +2601,7 @@ paths:
             type: object
       security:
       - BearerAuth: []
-      summary: Revert a transaction's match
+      summary: Reset a transaction to automatic
       tags:
       - transactions
     put:

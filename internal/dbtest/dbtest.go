@@ -59,6 +59,9 @@ var truncateTables = []string{
 	"sync_fio_runs",
 	"sync_orca_runs",
 	"audit_logs",
+	"budgets",
+	"budget_lines",
+	"budget_line_categories",
 }
 
 // Pool returns the shared *pgxpool.Pool for code that requires the concrete

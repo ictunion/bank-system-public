@@ -15,6 +15,7 @@ const CATEGORY_LABELS: Record<AuditCategory, string> = {
   category: 'Category',
   categorization_rule: 'Categorization rule',
   waiver: 'Waiver',
+  budget: 'Budget',
   other: 'Other',
 }
 

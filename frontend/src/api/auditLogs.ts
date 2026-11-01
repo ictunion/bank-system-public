@@ -1,6 +1,6 @@
 import { apiGet } from './client'
 
-export const AUDIT_CATEGORIES = ['bank_account', 'processing', 'transaction', 'category', 'categorization_rule', 'waiver', 'other'] as const
+export const AUDIT_CATEGORIES = ['bank_account', 'processing', 'transaction', 'category', 'categorization_rule', 'waiver', 'budget', 'other'] as const
 export type AuditCategory = (typeof AUDIT_CATEGORIES)[number]
 
 export interface AuditLogItem {

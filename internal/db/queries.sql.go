@@ -172,6 +172,57 @@ func (q *Queries) CreateBankAccount(ctx context.Context, arg CreateBankAccountPa
 	return i, err
 }
 
+const createBudget = `-- name: CreateBudget :one
+INSERT INTO budgets (year, note) VALUES ($1, $2)
+RETURNING year, note, created_at
+`
+
+type CreateBudgetParams struct {
+	Year int32   `json:"year"`
+	Note *string `json:"note"`
+}
+
+// A second budget for the same year fails on the primary key; the caller
+// (handler.CreateBudget) reports it as 409.
+func (q *Queries) CreateBudget(ctx context.Context, arg CreateBudgetParams) (Budget, error) {
+	row := q.db.QueryRow(ctx, createBudget, arg.Year, arg.Note)
+	var i Budget
+	err := row.Scan(&i.Year, &i.Note, &i.CreatedAt)
+	return i, err
+}
+
+const createBudgetLine = `-- name: CreateBudgetLine :one
+INSERT INTO budget_lines (budget_year, kind, group_name, name, projected_amount, sort_order)
+VALUES (
+    $1, $2, $3, $4,
+    $5::numeric, $6
+)
+RETURNING id
+`
+
+type CreateBudgetLineParams struct {
+	BudgetYear      int32   `json:"budget_year"`
+	Kind            string  `json:"kind"`
+	GroupName       *string `json:"group_name"`
+	Name            string  `json:"name"`
+	ProjectedAmount string  `json:"projected_amount"`
+	SortOrder       int32   `json:"sort_order"`
+}
+
+func (q *Queries) CreateBudgetLine(ctx context.Context, arg CreateBudgetLineParams) (int64, error) {
+	row := q.db.QueryRow(ctx, createBudgetLine,
+		arg.BudgetYear,
+		arg.Kind,
+		arg.GroupName,
+		arg.Name,
+		arg.ProjectedAmount,
+		arg.SortOrder,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const createCategorizationRule = `-- name: CreateCategorizationRule :one
 INSERT INTO categorization_rules (
     priority, kind, category, enabled,
@@ -406,6 +457,46 @@ func (q *Queries) DeleteBankAccount(ctx context.Context, id int32) (int64, error
 	return result.RowsAffected(), nil
 }
 
+const deleteBudget = `-- name: DeleteBudget :execrows
+DELETE FROM budgets WHERE year = $1
+`
+
+// Cascades to budget_lines and budget_line_categories.
+func (q *Queries) DeleteBudget(ctx context.Context, year int32) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteBudget, year)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteBudgetLine = `-- name: DeleteBudgetLine :execrows
+DELETE FROM budget_lines WHERE id = $1 AND budget_year = $2
+`
+
+type DeleteBudgetLineParams struct {
+	ID         int64 `json:"id"`
+	BudgetYear int32 `json:"budget_year"`
+}
+
+// Cascades to the line's budget_line_categories.
+func (q *Queries) DeleteBudgetLine(ctx context.Context, arg DeleteBudgetLineParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteBudgetLine, arg.ID, arg.BudgetYear)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteBudgetLineCategories = `-- name: DeleteBudgetLineCategories :exec
+DELETE FROM budget_line_categories WHERE budget_line_id = $1
+`
+
+func (q *Queries) DeleteBudgetLineCategories(ctx context.Context, budgetLineID int64) error {
+	_, err := q.db.Exec(ctx, deleteBudgetLineCategories, budgetLineID)
+	return err
+}
+
 const deleteCategorizationRule = `-- name: DeleteCategorizationRule :execrows
 DELETE FROM categorization_rules WHERE id = $1 AND kind = 'pattern'
 `
@@ -628,6 +719,17 @@ func (q *Queries) GetBankAccountWithToken(ctx context.Context, arg GetBankAccoun
 		&i.FioToken,
 		&i.IsActive,
 	)
+	return i, err
+}
+
+const getBudget = `-- name: GetBudget :one
+SELECT year, note, created_at FROM budgets WHERE year = $1
+`
+
+func (q *Queries) GetBudget(ctx context.Context, year int32) (Budget, error) {
+	row := q.db.QueryRow(ctx, getBudget, year)
+	var i Budget
+	err := row.Scan(&i.Year, &i.Note, &i.CreatedAt)
 	return i, err
 }
 
@@ -1053,6 +1155,22 @@ func (q *Queries) GetTransactionDetail(ctx context.Context, id int64) (GetTransa
 	return i, err
 }
 
+const insertBudgetLineCategory = `-- name: InsertBudgetLineCategory :exec
+INSERT INTO budget_line_categories (budget_line_id, budget_year, category)
+VALUES ($1, $2, $3)
+`
+
+type InsertBudgetLineCategoryParams struct {
+	BudgetLineID int64  `json:"budget_line_id"`
+	BudgetYear   int32  `json:"budget_year"`
+	Category     string `json:"category"`
+}
+
+func (q *Queries) InsertBudgetLineCategory(ctx context.Context, arg InsertBudgetLineCategoryParams) error {
+	_, err := q.db.Exec(ctx, insertBudgetLineCategory, arg.BudgetLineID, arg.BudgetYear, arg.Category)
+	return err
+}
+
 const insertCoverageRow = `-- name: InsertCoverageRow :exec
 INSERT INTO payment_coverage (processed_transaction_id, member_number, covers_year, covers_month)
 VALUES ($1, $2, $3, $4)
@@ -1391,6 +1509,103 @@ func (q *Queries) ListBankAccountsWithToken(ctx context.Context, encryptionKey s
 			&i.FioToken,
 			&i.IsActive,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBudgetLineCategories = `-- name: ListBudgetLineCategories :many
+SELECT blc.budget_line_id, blc.category, bl.name AS line_name
+FROM budget_line_categories blc
+JOIN budget_lines bl ON bl.id = blc.budget_line_id
+WHERE blc.budget_year = $1
+ORDER BY blc.budget_line_id, blc.category
+`
+
+type ListBudgetLineCategoriesRow struct {
+	BudgetLineID int64  `json:"budget_line_id"`
+	Category     string `json:"category"`
+	LineName     string `json:"line_name"`
+}
+
+// Every category mapping of one year, with its line's name — used both to
+// attach categories to lines and to report which line already owns a
+// category when a save would map it twice.
+func (q *Queries) ListBudgetLineCategories(ctx context.Context, budgetYear int32) ([]ListBudgetLineCategoriesRow, error) {
+	rows, err := q.db.Query(ctx, listBudgetLineCategories, budgetYear)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListBudgetLineCategoriesRow
+	for rows.Next() {
+		var i ListBudgetLineCategoriesRow
+		if err := rows.Scan(&i.BudgetLineID, &i.Category, &i.LineName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBudgetLines = `-- name: ListBudgetLines :many
+SELECT id, budget_year, kind, group_name, name, projected_amount, sort_order FROM budget_lines
+WHERE budget_year = $1
+ORDER BY sort_order, id
+`
+
+// In display order; ties (e.g. every line still at the default 0) by id, so
+// lines without an explicit order show in the order they were added.
+func (q *Queries) ListBudgetLines(ctx context.Context, budgetYear int32) ([]BudgetLine, error) {
+	rows, err := q.db.Query(ctx, listBudgetLines, budgetYear)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BudgetLine
+	for rows.Next() {
+		var i BudgetLine
+		if err := rows.Scan(
+			&i.ID,
+			&i.BudgetYear,
+			&i.Kind,
+			&i.GroupName,
+			&i.Name,
+			&i.ProjectedAmount,
+			&i.SortOrder,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBudgets = `-- name: ListBudgets :many
+SELECT year, note, created_at FROM budgets ORDER BY year DESC
+`
+
+func (q *Queries) ListBudgets(ctx context.Context) ([]Budget, error) {
+	rows, err := q.db.Query(ctx, listBudgets)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Budget
+	for rows.Next() {
+		var i Budget
+		if err := rows.Scan(&i.Year, &i.Note, &i.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -2660,6 +2875,61 @@ type UpdateBankAccountBalanceParams struct {
 func (q *Queries) UpdateBankAccountBalance(ctx context.Context, arg UpdateBankAccountBalanceParams) error {
 	_, err := q.db.Exec(ctx, updateBankAccountBalance, arg.Balance, arg.ID)
 	return err
+}
+
+const updateBudgetLine = `-- name: UpdateBudgetLine :execrows
+UPDATE budget_lines
+SET kind = $1,
+    group_name = $2,
+    name = $3,
+    projected_amount = $4::numeric,
+    sort_order = $5
+WHERE id = $6 AND budget_year = $7
+`
+
+type UpdateBudgetLineParams struct {
+	Kind            string  `json:"kind"`
+	GroupName       *string `json:"group_name"`
+	Name            string  `json:"name"`
+	ProjectedAmount string  `json:"projected_amount"`
+	SortOrder       int32   `json:"sort_order"`
+	ID              int64   `json:"id"`
+	BudgetYear      int32   `json:"budget_year"`
+}
+
+// Full overwrite. Scoped to budget_year too, so a line id from another year's
+// budget is a 0-row miss (404), not a cross-year edit.
+func (q *Queries) UpdateBudgetLine(ctx context.Context, arg UpdateBudgetLineParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateBudgetLine,
+		arg.Kind,
+		arg.GroupName,
+		arg.Name,
+		arg.ProjectedAmount,
+		arg.SortOrder,
+		arg.ID,
+		arg.BudgetYear,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateBudgetNote = `-- name: UpdateBudgetNote :one
+UPDATE budgets SET note = $1 WHERE year = $2
+RETURNING year, note, created_at
+`
+
+type UpdateBudgetNoteParams struct {
+	Note *string `json:"note"`
+	Year int32   `json:"year"`
+}
+
+func (q *Queries) UpdateBudgetNote(ctx context.Context, arg UpdateBudgetNoteParams) (Budget, error) {
+	row := q.db.QueryRow(ctx, updateBudgetNote, arg.Note, arg.Year)
+	var i Budget
+	err := row.Scan(&i.Year, &i.Note, &i.CreatedAt)
+	return i, err
 }
 
 const updateCategorizationRule = `-- name: UpdateCategorizationRule :one

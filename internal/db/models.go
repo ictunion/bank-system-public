@@ -37,6 +37,28 @@ type BankAccount struct {
 	Color             *string            `json:"color"`
 }
 
+type Budget struct {
+	Year      int32     `json:"year"`
+	Note      *string   `json:"note"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type BudgetLine struct {
+	ID              int64   `json:"id"`
+	BudgetYear      int32   `json:"budget_year"`
+	Kind            string  `json:"kind"`
+	GroupName       *string `json:"group_name"`
+	Name            string  `json:"name"`
+	ProjectedAmount string  `json:"projected_amount"`
+	SortOrder       int32   `json:"sort_order"`
+}
+
+type BudgetLineCategory struct {
+	BudgetLineID int64  `json:"budget_line_id"`
+	BudgetYear   int32  `json:"budget_year"`
+	Category     string `json:"category"`
+}
+
 type CategorizationRule struct {
 	ID                      int64     `json:"id"`
 	Priority                int32     `json:"priority"`

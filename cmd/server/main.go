@@ -153,6 +153,16 @@ func main() {
 	api.HandleFunc("PUT /categorization-rules/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageRules, handler.UpdateCategorizationRule(db.New(pool))))
 	api.HandleFunc("DELETE /categorization-rules/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageRules, handler.DeleteCategorizationRule(db.New(pool))))
 	api.HandleFunc("POST /categorization-rules/{id}/reapply", handler.RequireRole(keycloakProvider, keycloak.RoleManageRules, handler.ReapplyCategorizationRule(pool, keycloakProvider)))
+	
+	api.HandleFunc("GET /budgets", handler.RequireRole(keycloakProvider, keycloak.RoleViewBudget, handler.ListBudgets(db.New(pool))))
+	api.HandleFunc("GET /budgets/{year}", handler.RequireRole(keycloakProvider, keycloak.RoleViewBudget, handler.GetBudget(db.New(pool))))
+	api.HandleFunc("POST /budgets", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.CreateBudget(db.New(pool))))
+	api.HandleFunc("PATCH /budgets/{year}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.UpdateBudget(db.New(pool))))
+	api.HandleFunc("DELETE /budgets/{year}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.DeleteBudget(db.New(pool))))
+	api.HandleFunc("POST /budgets/{year}/lines", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.CreateBudgetLine(pool)))
+	api.HandleFunc("PUT /budgets/{year}/lines/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.UpdateBudgetLine(pool)))
+	api.HandleFunc("DELETE /budgets/{year}/lines/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.DeleteBudgetLine(db.New(pool))))
+	
 	api.HandleFunc("GET /payments/{member_number}/history", handler.RequireAnyRole(keycloakProvider, []keycloak.Role{keycloak.RolePaymentHistory, keycloak.RoleViewWorkplacePaymentHistory}, handler.PaymentHistory(keycloakProvider, db.New(pool))))
 	api.HandleFunc("GET /payments/me/history", handler.RequireAuth(keycloakProvider, handler.MyPaymentHistory(db.New(pool))))
 	api.HandleFunc("GET /payments/{year}/{month}/missing", handler.RequireRole(keycloakProvider, keycloak.RolePaymentHistory, handler.MissingPayments(db.New(pool))))

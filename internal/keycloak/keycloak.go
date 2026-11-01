@@ -79,7 +79,19 @@ const (
 
 	// RoleViewBudget protects:
 	//   GET /transactions/summary
+	//   GET /budgets
+	//   GET /budgets/{year}
 	RoleViewBudget Role = "view-budget"
+
+	// RoleManageBudget protects (granted to admins — Board + Treasurer decide
+	// the budget, entering it here is a technical task):
+	//   POST /budgets
+	//   PATCH /budgets/{year}
+	//   DELETE /budgets/{year}
+	//   POST /budgets/{year}/lines
+	//   PUT /budgets/{year}/lines/{id}
+	//   DELETE /budgets/{year}/lines/{id}
+	RoleManageBudget Role = "manage-budget"
 
 	// RoleViewRules protects (read-only):
 	//   GET /categorization-rules  (also accepts RoleManageRules)
