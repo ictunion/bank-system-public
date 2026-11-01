@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kubik/bank-system/internal/db"
@@ -38,28 +39,27 @@ func toBudgetSummary(budget db.Budget) budgetSummaryResponse {
 }
 
 type budgetLineResponse struct {
-	ID        int64   `json:"id"`
-	Kind      string  `json:"kind"` // income | expense
-	GroupName *string `json:"group_name"`
-	Name      string  `json:"name"`
-	// Projected is always positive; kind gives the sign.
-	Projected  string   `json:"projected"`
-	Categories []string `json:"categories"`
-	SortOrder  int32    `json:"sort_order"`
+	ID          int64         `json:"id"`
+	Kind        string        `json:"kind"` // income | expense
+	GroupName   *string       `json:"group_name"`
+	Name        string        `json:"name"`
+	Projected   string        `json:"projected"` // always positive; kind gives the sign
+	CategoryIDs []pgtype.UUID `json:"category_ids"`
+	SortOrder   int32         `json:"sort_order"`
 }
 
-func toBudgetLineResponse(line db.BudgetLine, categories []string) budgetLineResponse {
-	if categories == nil {
-		categories = []string{}
+func toBudgetLineResponse(line db.BudgetLine, categoryIDs []pgtype.UUID) budgetLineResponse {
+	if categoryIDs == nil {
+		categoryIDs = []pgtype.UUID{}
 	}
 	return budgetLineResponse{
-		ID:         line.ID,
-		Kind:       line.Kind,
-		GroupName:  line.GroupName,
-		Name:       line.Name,
-		Projected:  line.ProjectedAmount,
-		Categories: categories,
-		SortOrder:  line.SortOrder,
+		ID:          line.ID,
+		Kind:        line.Kind,
+		GroupName:   line.GroupName,
+		Name:        line.Name,
+		Projected:   line.ProjectedAmount,
+		CategoryIDs: categoryIDs,
+		SortOrder:   line.SortOrder,
 	}
 }
 
@@ -177,9 +177,9 @@ func GetBudget(queries *db.Queries) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "failed to list budget line categories")
 			return
 		}
-		categoriesByLine := make(map[int64][]string)
+		categoriesByLine := make(map[int64][]pgtype.UUID)
 		for _, mapping := range mappings {
-			categoriesByLine[mapping.BudgetLineID] = append(categoriesByLine[mapping.BudgetLineID], mapping.Category)
+			categoriesByLine[mapping.BudgetLineID] = append(categoriesByLine[mapping.BudgetLineID], mapping.CategoryID)
 		}
 
 		response := budgetResponse{
@@ -326,21 +326,21 @@ func DeleteBudget(queries *db.Queries) http.HandlerFunc {
 // budgetLineRequest is the body of both POST and PUT — PUT is a full
 // overwrite, including the category list.
 type budgetLineRequest struct {
-	Kind       string   `json:"kind"` // income | expense
-	GroupName  *string  `json:"group_name"`
-	Name       string   `json:"name"`
-	Projected  string   `json:"projected"` // decimal string, >= 0, e.g. "60000.00"
-	Categories []string `json:"categories"`
-	SortOrder  int32    `json:"sort_order"`
+	Kind        string        `json:"kind"` // income | expense
+	GroupName   *string       `json:"group_name"`
+	Name        string        `json:"name"`
+	Projected   string        `json:"projected"` // decimal string, >= 0, e.g. "60000.00"
+	CategoryIDs []pgtype.UUID `json:"category_ids"`
+	SortOrder   int32         `json:"sort_order"`
 }
 
 type normalizedBudgetLine struct {
-	kind       string
-	groupName  *string
-	name       string
-	projected  string
-	categories []string
-	sortOrder  int32
+	kind        string
+	groupName   *string
+	name        string
+	projected   string
+	categoryIDs []pgtype.UUID
+	sortOrder   int32
 }
 
 // normalizeBudgetLine validates a line request. Returns a client-facing
@@ -368,16 +368,18 @@ func normalizeBudgetLine(request budgetLineRequest) (normalizedBudgetLine, strin
 		return normalizedBudgetLine{}, "projected must be a non-negative amount like 60000 or 60000.50"
 	}
 
-	// Deduplicated, blanks dropped, order kept.
-	seen := make(map[string]bool, len(request.Categories))
-	categories := make([]string, 0, len(request.Categories))
-	for _, category := range request.Categories {
-		category = strings.TrimSpace(category)
-		if category == "" || seen[category] {
+	// Deduplicated, order kept.
+	seen := make(map[pgtype.UUID]bool, len(request.CategoryIDs))
+	categoryIDs := make([]pgtype.UUID, 0, len(request.CategoryIDs))
+	for _, categoryID := range request.CategoryIDs {
+		if !categoryID.Valid {
+			return normalizedBudgetLine{}, "category_ids must not contain null"
+		}
+		if seen[categoryID] {
 			continue
 		}
-		seen[category] = true
-		categories = append(categories, category)
+		seen[categoryID] = true
+		categoryIDs = append(categoryIDs, categoryID)
 	}
 
 	return normalizedBudgetLine{
@@ -385,8 +387,8 @@ func normalizeBudgetLine(request budgetLineRequest) (normalizedBudgetLine, strin
 		groupName:  groupName,
 		name:       name,
 		projected:  projected,
-		categories: categories,
-		sortOrder:  request.SortOrder,
+		categoryIDs: categoryIDs,
+		sortOrder:   request.SortOrder,
 	}, ""
 }
 
@@ -394,27 +396,28 @@ func normalizeBudgetLine(request budgetLineRequest) (normalizedBudgetLine, strin
 // mapped to another line of the same year — names the owning line so the
 // editor can show it.
 type categoryConflictResponse struct {
-	Error    string `json:"error"`
-	Category string `json:"category"`
-	Line     string `json:"line"`
+	Error      string      `json:"error"`
+	CategoryID pgtype.UUID `json:"category_id"`
+	Line       string      `json:"line"`
 }
 
 // checkLineCategories verifies every category exists and isn't already
 // mapped to a different line of the same year (lineID 0 = a new line).
 // Writes the 400/409/500 itself and returns false when the save must stop.
-// The UNIQUE (budget_year, category) constraint is the backstop for a
+// The UNIQUE (budget_year, category_id) constraint is the backstop for a
 // concurrent save.
-func checkLineCategories(w http.ResponseWriter, r *http.Request, queries *db.Queries, year int32, lineID int64, categories []string) bool {
-	for _, category := range categories {
-		exists, err := queries.CategoryExists(r.Context(), category)
-		if err != nil {
+func checkLineCategories(w http.ResponseWriter, r *http.Request, queries *db.Queries, year int32, lineID int64, categoryIDs []pgtype.UUID) bool {
+	names := make(map[pgtype.UUID]string, len(categoryIDs))
+	for _, categoryID := range categoryIDs {
+		category, err := queries.GetCategory(r.Context(), categoryID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusBadRequest, "unknown category in category_ids")
+			return false
+		} else if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to check category")
 			return false
 		}
-		if !exists {
-			writeError(w, http.StatusBadRequest, "unknown category: "+category)
-			return false
-		}
+		names[categoryID] = category.Name
 	}
 
 	mappings, err := queries.ListBudgetLineCategories(r.Context(), year)
@@ -422,18 +425,18 @@ func checkLineCategories(w http.ResponseWriter, r *http.Request, queries *db.Que
 		writeError(w, http.StatusInternalServerError, "failed to list budget line categories")
 		return false
 	}
-	owner := make(map[string]string, len(mappings))
+	owner := make(map[pgtype.UUID]string, len(mappings))
 	for _, mapping := range mappings {
 		if mapping.BudgetLineID != lineID {
-			owner[mapping.Category] = mapping.LineName
+			owner[mapping.CategoryID] = mapping.LineName
 		}
 	}
-	for _, category := range categories {
-		if line, taken := owner[category]; taken {
+	for _, categoryID := range categoryIDs {
+		if line, taken := owner[categoryID]; taken {
 			writeJSON(w, http.StatusConflict, categoryConflictResponse{
-				Error:    "category " + category + " is already used by budget line " + line,
-				Category: category,
-				Line:     line,
+				Error:      "category " + names[categoryID] + " is already used by budget line " + line,
+				CategoryID: categoryID,
+				Line:       line,
 			})
 			return false
 		}
@@ -485,11 +488,11 @@ func saveBudgetLine(r *http.Request, pool *pgxpool.Pool, year int32, lineID int6
 		}
 	}
 
-	for _, category := range line.categories {
+	for _, categoryID := range line.categoryIDs {
 		if err := txQueries.InsertBudgetLineCategory(r.Context(), db.InsertBudgetLineCategoryParams{
 			BudgetLineID: lineID,
 			BudgetYear:   year,
-			Category:     category,
+			CategoryID:   categoryID,
 		}); err != nil {
 			return 0, false, err
 		}
@@ -513,13 +516,13 @@ func writeBudgetLine(w http.ResponseWriter, r *http.Request, queries *db.Queries
 		if line.ID != lineID {
 			continue
 		}
-		var categories []string
+		var categoryIDs []pgtype.UUID
 		for _, mapping := range mappings {
 			if mapping.BudgetLineID == lineID {
-				categories = append(categories, mapping.Category)
+				categoryIDs = append(categoryIDs, mapping.CategoryID)
 			}
 		}
-		writeJSON(w, status, toBudgetLineResponse(line, categories))
+		writeJSON(w, status, toBudgetLineResponse(line, categoryIDs))
 		return
 	}
 	writeError(w, http.StatusInternalServerError, "saved budget line not found")
@@ -543,7 +546,7 @@ func handleBudgetLineSave(w http.ResponseWriter, r *http.Request, pool *pgxpool.
 	if _, ok := loadBudget(w, r, queries, year); !ok {
 		return
 	}
-	if !checkLineCategories(w, r, queries, year, lineID, line.categories) {
+	if !checkLineCategories(w, r, queries, year, lineID, line.categoryIDs) {
 		return
 	}
 
@@ -572,7 +575,7 @@ func handleBudgetLineSave(w http.ResponseWriter, r *http.Request, pool *pgxpool.
 // CreateBudgetLine handles POST /budgets/{year}/lines.
 //
 // @Summary      Add a budget line
-// @Description  Requires the manage-budget role. projected is a non-negative decimal string; kind gives the sign. Each category may feed only one line per year (409 names the line that has it). Unknown category → 400.
+// @Description  Requires the manage-budget role. projected is a non-negative decimal string; kind gives the sign. Each category (by id in category_ids) may feed only one line per year (409 names the line that has it). Unknown category → 400.
 // @Tags         budgets
 // @Security     BearerAuth
 // @Accept       json

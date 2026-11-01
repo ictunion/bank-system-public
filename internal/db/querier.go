@@ -20,8 +20,8 @@ type Querier interface {
 	// intended value, NULL clears it. Always marks category_set_manually, so
 	// automatic re-categorization leaves this row alone from now on.
 	AssignTransactionToMember(ctx context.Context, arg AssignTransactionToMemberParams) (int64, error)
-	CategoryExists(ctx context.Context, name string) (bool, error)
-	CategoryHasChildren(ctx context.Context, name string) (bool, error)
+	CategoryExists(ctx context.Context, id pgtype.UUID) (bool, error)
+	CategoryHasChildren(ctx context.Context, id pgtype.UUID) (bool, error)
 	// Written by the handler.AuditLog middleware once per authenticated
 	// POST/PUT/PATCH/DELETE request, after the handler has responded.
 	CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) error
@@ -39,9 +39,9 @@ type Querier interface {
 	// Only pattern rules are ever created; the two built-in kinds are seeded by
 	// migration and exist at most once each.
 	CreateCategorizationRule(ctx context.Context, arg CreateCategorizationRuleParams) (int64, error)
-	// is_mandatory is never set true here — only the four seeded in
-	// migrations/20260910000001_add_transaction_categories.sql are mandatory.
-	// parent_name's one-level rule is checked by the caller (handler.CreateCategory).
+	// is_mandatory is never set true here — only the six with fixed ids (see
+	// internal/categoryid) are mandatory. The id is generated. parent_id's
+	// one-level rule is checked by the caller (handler.CreateCategory).
 	CreateCategory(ctx context.Context, arg CreateCategoryParams) (TransactionCategory, error)
 	// Several transactions may cover the same member/month (dues split across
 	// payments), so a second payment landing on an already-covered month just
@@ -79,9 +79,9 @@ type Querier interface {
 	// The is_mandatory=false guard means a mandatory category and a missing one
 	// both come back as 0 rows affected — the caller (handler.DeleteCategory)
 	// checks GetCategory first to tell those two cases apart. A category still
-	// referenced by processed_transactions.category fails this with a foreign
-	// key violation instead (see processed_transactions_category_fkey).
-	DeleteCategory(ctx context.Context, name string) (int64, error)
+	// referenced by processed_transactions, categorization_rules or
+	// budget_line_categories fails this with a foreign key violation instead.
+	DeleteCategory(ctx context.Context, id pgtype.UUID) (int64, error)
 	DeleteCoverageForTransaction(ctx context.Context, processedTransactionID int64) error
 	// Undoes a waiver (the admin changed their mind, or waived the wrong
 	// month) — the month reappears in missing-payment lists on the next read,
@@ -103,7 +103,10 @@ type Querier interface {
 	GetBankAccountWithToken(ctx context.Context, arg GetBankAccountWithTokenParams) (GetBankAccountWithTokenRow, error)
 	GetBudget(ctx context.Context, year int32) (Budget, error)
 	GetCategorizationRule(ctx context.Context, id int64) (CategorizationRule, error)
-	GetCategory(ctx context.Context, name string) (TransactionCategory, error)
+	GetCategory(ctx context.Context, id pgtype.UUID) (TransactionCategory, error)
+	// Names are unique labels; used where a category is only known by name
+	// (fixtures).
+	GetCategoryByName(ctx context.Context, name string) (TransactionCategory, error)
 	GetMaxFioTransactionID(ctx context.Context, bankAccountID int32) (int64, error)
 	GetMemberNumberBySub(ctx context.Context, sub pgtype.UUID) (int32, error)
 	// Backs the workplace-rep access path on GET /payments/{member_number}/history:
@@ -133,8 +136,10 @@ type Querier interface {
 	// a WHERE filter would instead make the whole FROM produce zero rows, and
 	// :one would then error on no rows. count(m.member_number), not count(*), so
 	// the LEFT JOIN's placeholder all-NULL row (no member matched the join
-	// condition) doesn't itself count as a liable member.
-	GetPaymentStats(ctx context.Context) (GetPaymentStatsRow, error)
+	// condition) doesn't itself count as a liable member. The membership_fee
+	// category id is passed in (categoryid.MembershipFee) rather than written
+	// here, so the fixed id lives in one place.
+	GetPaymentStats(ctx context.Context, membershipFeeCategoryID pgtype.UUID) (GetPaymentStatsRow, error)
 	GetPaymentWaiver(ctx context.Context, arg GetPaymentWaiverParams) (GetPaymentWaiverRow, error)
 	// Backs the Budget page's "Current Balance" figure (GET
 	// /transactions/summary) — summed across every non-soft-deleted account,
@@ -156,11 +161,10 @@ type Querier interface {
 	// signed value raw_transactions stores it as. internal_transfer excluded
 	// entirely — money moving between our own bank_accounts isn't real income or
 	// expense and would otherwise inflate both totals for the same transfer.
-	// A sub-category of internal_transfer is excluded the same way.
-	// rollup=true reports each sub-category under its parent's name instead
-	// (one level only, so COALESCE(parent_name, name) is the top-level name).
-	// GROUP BY by position: a bare "category" there would resolve to
-	// pt.category, not the rolled-up output column.
+	// A sub-category of internal_transfer is excluded the same way (its id is
+	// passed in: categoryid.InternalTransfer).
+	// rollup=true reports each sub-category under its parent instead (one level
+	// only, so COALESCE(parent_id, id) is the top-level category).
 	GetTransactionCategorySummary(ctx context.Context, arg GetTransactionCategorySummaryParams) ([]GetTransactionCategorySummaryRow, error)
 	// One row for the transaction browser's detail / edit view — same columns as
 	// ListTransactions minus the window count. Covered months come from

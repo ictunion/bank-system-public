@@ -72,8 +72,8 @@ func insertPatternRule(t *testing.T, pool *pgxpool.Pool, priority int32, categor
 	t.Helper()
 	var id int64
 	if err := pool.QueryRow(context.Background(), `
-		INSERT INTO categorization_rules (priority, kind, category, counter_account_number, variable_symbol)
-		VALUES ($1, 'pattern', $2, $3, $4)
+		INSERT INTO categorization_rules (priority, kind, category_id, counter_account_number, variable_symbol)
+		VALUES ($1, 'pattern', (SELECT id FROM transaction_categories WHERE name = $2), $3, $4)
 		RETURNING id
 	`, priority, category, counterAccountNumber, variableSymbol).Scan(&id); err != nil {
 		t.Fatalf("inserting pattern rule: %v", err)
@@ -97,7 +97,7 @@ func insertTestCategory(t *testing.T, pool *pgxpool.Pool, name string) {
 	t.Cleanup(func() {
 		// processed_transactions referencing it are truncated by dbtest.Pool's
 		// own cleanup only after this runs, so clear them first.
-		if _, err := pool.Exec(context.Background(), `DELETE FROM processed_transactions WHERE category = $1`, name); err != nil {
+		if _, err := pool.Exec(context.Background(), `DELETE FROM processed_transactions WHERE category_id = (SELECT id FROM transaction_categories WHERE name = $1)`, name); err != nil {
 			t.Errorf("clearing transactions of category %q: %v", name, err)
 		}
 		if _, err := pool.Exec(context.Background(), `DELETE FROM transaction_categories WHERE name = $1`, name); err != nil {
@@ -110,11 +110,11 @@ func insertTestCategory(t *testing.T, pool *pgxpool.Pool, name string) {
 // test and turns it back on in t.Cleanup.
 func disableSeededRule(t *testing.T, pool *pgxpool.Pool, category string) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), `UPDATE categorization_rules SET enabled = false WHERE category = $1`, category); err != nil {
+	if _, err := pool.Exec(context.Background(), `UPDATE categorization_rules SET enabled = false WHERE category_id = (SELECT id FROM transaction_categories WHERE name = $1)`, category); err != nil {
 		t.Fatalf("disabling %q rule: %v", category, err)
 	}
 	t.Cleanup(func() {
-		if _, err := pool.Exec(context.Background(), `UPDATE categorization_rules SET enabled = true WHERE category = $1`, category); err != nil {
+		if _, err := pool.Exec(context.Background(), `UPDATE categorization_rules SET enabled = true WHERE category_id = (SELECT id FROM transaction_categories WHERE name = $1)`, category); err != nil {
 			t.Errorf("re-enabling %q rule: %v", category, err)
 		}
 	})
@@ -140,7 +140,8 @@ func seededRuleID(t *testing.T, pool *pgxpool.Pool, category string) int64 {
 	t.Helper()
 	var id int64
 	if err := pool.QueryRow(context.Background(),
-		`SELECT id FROM categorization_rules WHERE category = $1 AND priority IN (100, 200, 300, 500)`, category,
+		`SELECT cr.id FROM categorization_rules cr JOIN transaction_categories tc ON tc.id = cr.category_id
+		 WHERE tc.name = $1 AND cr.priority IN (100, 200, 300, 500)`, category,
 	).Scan(&id); err != nil {
 		t.Fatalf("looking up seeded %q rule: %v", category, err)
 	}

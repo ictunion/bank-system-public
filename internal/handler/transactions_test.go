@@ -87,7 +87,7 @@ func seedTransactionWithRule(t *testing.T, queries *db.Queries, bankAccountID in
 	pt, err := queries.CreateProcessedTransaction(ctx, db.CreateProcessedTransactionParams{
 		RawTransactionID:     rawTransactionID,
 		MemberNumber:         memberNumber,
-		Category:             category,
+		CategoryID:           categoryIDByName(t, queries, category),
 		Direction:            direction,
 		MatchedBy:            matchedBy,
 		CategorizationRuleID: ruleID,
@@ -131,6 +131,7 @@ func TestListTransactions_Validation(t *testing.T) {
 		{"malformed from date", "from=not-a-date"},
 		{"malformed to date", "to=2026-13-40"},
 		{"invalid include_children", "include_children=yes"},
+		{"invalid category_id", "category_id=salary"},
 		{"zero limit", "limit=0"},
 		{"negative offset", "offset=-1"},
 	}
@@ -172,9 +173,9 @@ func TestListTransactions_FiltersByDirectionAndCategory(t *testing.T) {
 		t.Errorf("direction=incoming: got %+v, want exactly the membership_fee row", byDirection.Transactions)
 	}
 
-	byCategory := listWith("category=salary")
+	byCategory := listWith("category_id=" + uuidText(t, categoryIDByName(t, queries, "salary")))
 	if len(byCategory.Transactions) != 1 || byCategory.Transactions[0].Direction != "outgoing" {
-		t.Errorf("category=salary: got %+v, want exactly the salary row", byCategory.Transactions)
+		t.Errorf("category_id=salary: got %+v, want exactly the salary row", byCategory.Transactions)
 	}
 }
 
@@ -183,11 +184,32 @@ func TestListTransactions_FiltersByDirectionAndCategory(t *testing.T) {
 func seedSubCategory(t *testing.T, queries *db.Queries, name, parentName string) {
 	t.Helper()
 	if _, err := queries.CreateCategory(context.Background(), db.CreateCategoryParams{
-		Name:       name,
-		ParentName: &parentName,
+		Name:     name,
+		ParentID: categoryIDByName(t, queries, parentName),
 	}); err != nil {
 		t.Fatalf("CreateCategory(%q, parent %q): %v", name, parentName, err)
 	}
+}
+
+// categoryIDByName looks up a category's id — fixtures name categories,
+// the API takes ids.
+func categoryIDByName(t *testing.T, queries *db.Queries, name string) pgtype.UUID {
+	t.Helper()
+	category, err := queries.GetCategoryByName(context.Background(), name)
+	if err != nil {
+		t.Fatalf("GetCategoryByName(%q): %v", name, err)
+	}
+	return category.ID
+}
+
+// uuidText formats a category id for a query string or JSON body.
+func uuidText(t *testing.T, id pgtype.UUID) string {
+	t.Helper()
+	text, err := id.Value()
+	if err != nil || text == nil {
+		t.Fatalf("formatting uuid %v: %v", id, err)
+	}
+	return text.(string)
 }
 
 func TestListTransactions_IncludeChildren(t *testing.T) {
@@ -199,15 +221,17 @@ func TestListTransactions_IncludeChildren(t *testing.T) {
 	seedTransaction(t, queries, account.ID, 1102, "-300.00", "test_legal", "outgoing", nil)
 	seedTransaction(t, queries, account.ID, 1103, "-100.00", "other_expense", "outgoing", nil)
 
+	salary := "category_id=" + uuidText(t, categoryIDByName(t, queries, "salary"))
+	legal := "category_id=" + uuidText(t, categoryIDByName(t, queries, "test_legal"))
 	tests := []struct {
 		name  string
 		query string
 		want  map[string]bool
 	}{
-		{"parent only by default", "category=salary", map[string]bool{"salary": true}},
-		{"parent only when false", "category=salary&include_children=false", map[string]bool{"salary": true}},
-		{"parent and children", "category=salary&include_children=true", map[string]bool{"salary": true, "test_legal": true}},
-		{"child alone", "category=test_legal&include_children=true", map[string]bool{"test_legal": true}},
+		{"parent only by default", salary, map[string]bool{"salary": true}},
+		{"parent only when false", salary + "&include_children=false", map[string]bool{"salary": true}},
+		{"parent and children", salary + "&include_children=true", map[string]bool{"salary": true, "test_legal": true}},
+		{"child alone", legal + "&include_children=true", map[string]bool{"test_legal": true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

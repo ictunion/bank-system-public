@@ -23,7 +23,7 @@ import (
 func TestAssignTransaction_NotFound(t *testing.T) {
 	pool := dbtest.Pool(t)
 
-	body := strings.NewReader(`{"category":"other_income"}`)
+	body := strings.NewReader(`{"category_id":"00000000-0000-4000-8000-000000000003"}`)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPut, "/transactions/999999/assignment", body)
 	request.SetPathValue("id", "999999")
@@ -40,7 +40,7 @@ func TestAssignTransaction_InvalidCategory(t *testing.T) {
 	account := seedBankAccount(t, queries, "9300000001")
 	pt := seedTransaction(t, queries, account.ID, 5001, "100.00", "other_income", "incoming", nil)
 
-	body := strings.NewReader(`{"category":"not-a-real-category"}`)
+	body := strings.NewReader(`{"category_id":"11111111-1111-4111-8111-111111111111"}`)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPut, "/transactions/"+itoa64(pt.ID)+"/assignment", body)
 	request.SetPathValue("id", itoa64(pt.ID))
@@ -57,7 +57,7 @@ func TestAssignTransaction_MemberDoesNotExist(t *testing.T) {
 	account := seedBankAccount(t, queries, "9300000002")
 	pt := seedTransaction(t, queries, account.ID, 5002, "100.00", "other_income", "incoming", nil)
 
-	body := strings.NewReader(`{"member_number":900501,"category":"membership_fee"}`)
+	body := strings.NewReader(`{"member_number":900501,"category_id":"00000000-0000-4000-8000-000000000001"}`)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPut, "/transactions/"+itoa64(pt.ID)+"/assignment", body)
 	request.SetPathValue("id", itoa64(pt.ID))
@@ -74,7 +74,7 @@ func TestAssignTransaction_CategoryOnlyNoMember(t *testing.T) {
 	account := seedBankAccount(t, queries, "9300000003")
 	pt := seedTransaction(t, queries, account.ID, 5003, "-40.00", "other_expense", "outgoing", nil)
 
-	body := strings.NewReader(`{"category":"other_expense"}`)
+	body := strings.NewReader(`{"category_id":"00000000-0000-4000-8000-000000000004"}`)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPut, "/transactions/"+itoa64(pt.ID)+"/assignment", body)
 	request.SetPathValue("id", itoa64(pt.ID))
@@ -113,7 +113,7 @@ func TestAssignTransaction_WithMemberDefaultsCoverageToMonthBeforeTransaction(t 
 	pt := seedTransaction(t, queries, account.ID, 5004, "500.00", "other_income", "incoming", nil)
 	seedMember(t, queries, 900502, nil)
 
-	body := strings.NewReader(`{"member_number":900502,"category":"membership_fee"}`)
+	body := strings.NewReader(`{"member_number":900502,"category_id":"00000000-0000-4000-8000-000000000001"}`)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPut, "/transactions/"+itoa64(pt.ID)+"/assignment", body)
 	request.SetPathValue("id", itoa64(pt.ID))
@@ -150,7 +150,7 @@ func TestAssignTransaction_TwoTransactionsCoverSameMonth(t *testing.T) {
 	second := seedTransaction(t, queries, account.ID, 5006, "240.00", "other_income", "incoming", nil)
 
 	assign := func(pt db.ProcessedTransaction, covers string) *httptest.ResponseRecorder {
-		body := strings.NewReader(`{"member_number":900503,"category":"membership_fee","covers":[` + covers + `]}`)
+		body := strings.NewReader(`{"member_number":900503,"category_id":"00000000-0000-4000-8000-000000000001","covers":[` + covers + `]}`)
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodPut, "/transactions/"+itoa64(pt.ID)+"/assignment", body)
 		request.SetPathValue("id", itoa64(pt.ID))
@@ -181,7 +181,7 @@ func TestAssignTransaction_RepeatedCoversMonthIsDeduplicated(t *testing.T) {
 	seedMember(t, queries, 900599, nil)
 	pt := seedTransaction(t, queries, account.ID, 5099, "500.00", "other_income", "incoming", nil)
 
-	body := strings.NewReader(`{"member_number":900599,"category":"membership_fee","covers":[{"year":2026,"month":6},{"year":2026,"month":6}]}`)
+	body := strings.NewReader(`{"member_number":900599,"category_id":"00000000-0000-4000-8000-000000000001","covers":[{"year":2026,"month":6},{"year":2026,"month":6}]}`)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPut, "/transactions/"+itoa64(pt.ID)+"/assignment", body)
 	request.SetPathValue("id", itoa64(pt.ID))
@@ -219,7 +219,7 @@ func TestUnassignTransaction_ClearsMemberAndCoverageResetsCategory(t *testing.T)
 	seedMember(t, queries, 900504, nil)
 	pt := seedTransaction(t, queries, account.ID, 5007, "500.00", "membership_fee", "incoming", nil)
 
-	assignBody := strings.NewReader(`{"member_number":900504,"category":"membership_fee"}`)
+	assignBody := strings.NewReader(`{"member_number":900504,"category_id":"00000000-0000-4000-8000-000000000001"}`)
 	assignRecorder := httptest.NewRecorder()
 	assignRequest := httptest.NewRequest(http.MethodPut, "/transactions/"+itoa64(pt.ID)+"/assignment", assignBody)
 	assignRequest.SetPathValue("id", itoa64(pt.ID))

@@ -894,7 +894,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the manage-budget role. projected is a non-negative decimal string; kind gives the sign. Each category may feed only one line per year (409 names the line that has it). Unknown category → 400.",
+                "description": "Requires the manage-budget role. projected is a non-negative decimal string; kind gives the sign. Each category (by id in category_ids) may feed only one line per year (409 names the line that has it). Unknown category → 400.",
                 "consumes": [
                     "application/json"
                 ],
@@ -1146,7 +1146,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the list-transactions or manage-rules role. Mandatory categories first. parent_name is null for top-level categories.",
+                "description": "Requires the list-transactions or manage-rules role. Mandatory categories first. parent_id is null for top-level categories.",
                 "produces": [
                     "application/json"
                 ],
@@ -1190,7 +1190,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the manage-transactions role. Always created with is_mandatory=false. Optional parent_name must name an existing top-level category.",
+                "description": "Requires the manage-transactions role. Always created with is_mandatory=false. Optional parent_id must be an existing top-level category.",
                 "consumes": [
                     "application/json"
                 ],
@@ -1258,7 +1258,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/categories/{name}": {
+        "/categories/{id}": {
             "delete": {
                 "security": [
                     {
@@ -1273,8 +1273,8 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Category name",
-                        "name": "name",
+                        "description": "Category UUID",
+                        "name": "id",
                         "in": "path",
                         "required": true
                     }
@@ -1320,7 +1320,7 @@ const docTemplate = `{
                         }
                     },
                     "409": {
-                        "description": "category still has sub-categories or is referenced by existing transactions",
+                        "description": "category still has sub-categories or is referenced by transactions, rules or budget lines",
                         "schema": {
                             "type": "object",
                             "additionalProperties": {
@@ -2772,13 +2772,13 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "e.g. membership_fee, salary, other_income, other_expense",
-                        "name": "category",
+                        "description": "Category UUID",
+                        "name": "category_id",
                         "in": "query"
                     },
                     {
                         "type": "boolean",
-                        "description": "With category: also match that category's sub-categories. Default false",
+                        "description": "With category_id: also match that category's sub-categories. Default false",
                         "name": "include_children",
                         "in": "query"
                     },
@@ -3157,8 +3157,8 @@ const docTemplate = `{
                     "description": "optional staff note; omit or empty string to clear, full overwrite like member_number",
                     "type": "string"
                 },
-                "category": {
-                    "description": "optional, defaults to \"membership_fee\"",
+                "category_id": {
+                    "description": "optional, defaults to membership_fee",
                     "type": "string"
                 },
                 "covers": {
@@ -3285,7 +3285,7 @@ const docTemplate = `{
         "handler.budgetLineRequest": {
             "type": "object",
             "properties": {
-                "categories": {
+                "category_ids": {
                     "type": "array",
                     "items": {
                         "type": "string"
@@ -3313,7 +3313,7 @@ const docTemplate = `{
         "handler.budgetLineResponse": {
             "type": "object",
             "properties": {
-                "categories": {
+                "category_ids": {
                     "type": "array",
                     "items": {
                         "type": "string"
@@ -3333,7 +3333,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "projected": {
-                    "description": "Projected is always positive; kind gives the sign.",
+                    "description": "always positive; kind gives the sign",
                     "type": "string"
                 },
                 "sort_order": {
@@ -3378,7 +3378,7 @@ const docTemplate = `{
         "handler.categorizationRuleRequest": {
             "type": "object",
             "properties": {
-                "category": {
+                "category_id": {
                     "type": "string"
                 },
                 "constant_symbol": {
@@ -3415,7 +3415,7 @@ const docTemplate = `{
         "handler.categorizationRuleResponse": {
             "type": "object",
             "properties": {
-                "category": {
+                "category_id": {
                     "type": "string"
                 },
                 "constant_symbol": {
@@ -3459,7 +3459,7 @@ const docTemplate = `{
         "handler.categoryConflictResponse": {
             "type": "object",
             "properties": {
-                "category": {
+                "category_id": {
                     "type": "string"
                 },
                 "error": {
@@ -3473,13 +3473,17 @@ const docTemplate = `{
         "handler.categoryResponse": {
             "type": "object",
             "properties": {
+                "id": {
+                    "type": "string"
+                },
                 "is_mandatory": {
                     "type": "boolean"
                 },
                 "name": {
                     "type": "string"
                 },
-                "parent_name": {
+                "parent_id": {
+                    "description": "null for a top-level category",
                     "type": "string"
                 }
             }
@@ -3512,6 +3516,10 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "category": {
+                    "description": "name, for display",
+                    "type": "string"
+                },
+                "category_id": {
                     "type": "string"
                 },
                 "currency": {
@@ -3597,7 +3605,8 @@ const docTemplate = `{
                 "name": {
                     "type": "string"
                 },
-                "parent_name": {
+                "parent_id": {
+                    "description": "optional",
                     "type": "string"
                 }
             }
@@ -3819,6 +3828,10 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "category": {
+                    "description": "the category's name, for display",
+                    "type": "string"
+                },
+                "category_id": {
                     "type": "string"
                 },
                 "category_set_manually": {
@@ -3890,6 +3903,10 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "category": {
+                    "description": "the category's name, for display",
+                    "type": "string"
+                },
+                "category_id": {
                     "type": "string"
                 },
                 "category_set_manually": {

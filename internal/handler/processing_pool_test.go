@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kubik/bank-system/internal/categoryid"
 	"github.com/kubik/bank-system/internal/db"
 	"github.com/kubik/bank-system/internal/dbtest"
 	"github.com/kubik/bank-system/internal/keycloak"
@@ -136,7 +137,7 @@ func TestReapplyCategorizationRule(t *testing.T) {
 		t.Fatalf("ListCategorizationRules: %v", err)
 	}
 	for _, rule := range rules {
-		if rule.Category == "salary" {
+		if rule.CategoryID == categoryid.Salary {
 			salaryRuleID = rule.ID
 		}
 	}

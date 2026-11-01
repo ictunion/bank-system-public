@@ -38,7 +38,7 @@ func auditTestMux() *http.ServeMux {
 	mux.HandleFunc("PUT /transactions/{id}/assignment", authenticated(http.StatusBadRequest))
 	mux.HandleFunc("GET /transactions", authenticated(http.StatusOK))
 	mux.HandleFunc("POST /unmapped", authenticated(http.StatusNoContent))
-	mux.HandleFunc("DELETE /categories/{name}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("DELETE /categories/{id}", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "missing bearer token")
 	})
 	return mux

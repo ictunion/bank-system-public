@@ -54,7 +54,7 @@ func seedTransactionDated(t *testing.T, queries *db.Queries, bankAccountID int32
 	pt, err := queries.CreateProcessedTransaction(ctx, db.CreateProcessedTransactionParams{
 		RawTransactionID: rawTransactionID,
 		MemberNumber:     memberNumber,
-		Category:         category,
+		CategoryID:       categoryIDByName(t, queries, category),
 		Direction:        "incoming",
 		MatchedBy:        matchedBy,
 	})
@@ -74,7 +74,7 @@ func setAdminComment(t *testing.T, queries *db.Queries, pt db.ProcessedTransacti
 	if _, err := queries.AssignTransactionToMember(context.Background(), db.AssignTransactionToMemberParams{
 		ID:           pt.ID,
 		MemberNumber: pt.MemberNumber,
-		Category:     pt.Category,
+		CategoryID:   pt.CategoryID,
 		MatchedBy:    &matchedBy,
 		AdminComment: &comment,
 	}); err != nil {

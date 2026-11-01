@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kubik/bank-system/internal/categoryid"
 	"github.com/kubik/bank-system/internal/db"
 	"github.com/kubik/bank-system/internal/processing"
 )
@@ -33,31 +34,32 @@ type transactionsResponse struct {
 }
 
 type transactionListItem struct {
-	ID                   int64   `json:"id"`
-	TransactionDate      string  `json:"transaction_date"`
-	Amount               string  `json:"amount"`
-	Currency             string  `json:"currency"`
-	Direction            string  `json:"direction"`
-	Category             string  `json:"category"`
-	MemberNumber         *int32  `json:"member_number"`
-	MatchedBy            *string `json:"matched_by"`
-	CategorySetManually  bool    `json:"category_set_manually"`
-	IsPublicVisible      bool    `json:"is_public_visible"`
-	VariableSymbol       *string `json:"variable_symbol"`
-	SpecificSymbol       *string `json:"specific_symbol"`
-	ConstantSymbol       *string `json:"constant_symbol"`
-	CounterAccountNumber *string `json:"counter_account_number"`
-	CounterAccountName   *string `json:"counter_account_name"`
-	MessageForRecipient  *string `json:"message_for_recipient"`
-	UserIdentification   *string `json:"user_identification"`
-	Comment              *string `json:"comment"`
-	AdminComment         *string `json:"admin_comment"`
-	BankAccountColor *string `json:"bank_account_color"`
+	ID                   int64       `json:"id"`
+	TransactionDate      string      `json:"transaction_date"`
+	Amount               string      `json:"amount"`
+	Currency             string      `json:"currency"`
+	Direction            string      `json:"direction"`
+	CategoryID           pgtype.UUID `json:"category_id"`
+	Category             string      `json:"category"` // the category's name, for display
+	MemberNumber         *int32      `json:"member_number"`
+	MatchedBy            *string     `json:"matched_by"`
+	CategorySetManually  bool        `json:"category_set_manually"`
+	IsPublicVisible      bool        `json:"is_public_visible"`
+	VariableSymbol       *string     `json:"variable_symbol"`
+	SpecificSymbol       *string     `json:"specific_symbol"`
+	ConstantSymbol       *string     `json:"constant_symbol"`
+	CounterAccountNumber *string     `json:"counter_account_number"`
+	CounterAccountName   *string     `json:"counter_account_name"`
+	MessageForRecipient  *string     `json:"message_for_recipient"`
+	UserIdentification   *string     `json:"user_identification"`
+	Comment              *string     `json:"comment"`
+	AdminComment         *string     `json:"admin_comment"`
+	BankAccountColor     *string     `json:"bank_account_color"`
 }
 
 // ListTransactions handles GET /transactions — the admin transaction browser.
-// All filters are optional query params: assigned (true|false), direction, category,
-// include_children (true|false, widens category to its sub-categories), matched_by,
+// All filters are optional query params: assigned (true|false), direction, category_id,
+// include_children (true|false, widens category_id to its sub-categories), matched_by,
 // member_number, from, to (YYYY-MM-DD), search (substring, counterparty/message/comment),
 // limit (<=500, default 100), offset.
 //
@@ -68,8 +70,8 @@ type transactionListItem struct {
 // @Produce      json
 // @Param        assigned       query  bool    false  "true = has a member match, false = the unassigned worklist"
 // @Param        direction      query  string  false  "incoming or outgoing"
-// @Param        category       query  string  false  "e.g. membership_fee, salary, other_income, other_expense"
-// @Param        include_children  query  bool  false  "With category: also match that category's sub-categories. Default false"
+// @Param        category_id    query  string  false  "Category UUID"
+// @Param        include_children  query  bool  false  "With category_id: also match that category's sub-categories. Default false"
 // @Param        matched_by     query  string  false  "variable_symbol, manual, or amount_heuristic"
 // @Param        member_number  query  int     false  "One member's transactions"
 // @Param        from           query  string  false  "YYYY-MM-DD, inclusive"
@@ -107,8 +109,13 @@ func ListTransactions(queries *db.Queries) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid direction")
 			return
 		}
-		if s := queryParams.Get("category"); s != "" {
-			params.Category = &s
+		if s := queryParams.Get("category_id"); s != "" {
+			categoryID, ok := categoryid.Parse(s)
+			if !ok {
+				writeError(w, http.StatusBadRequest, "invalid category_id")
+				return
+			}
+			params.CategoryID = categoryID
 		}
 		if params.IncludeChildren, ok = boolParam(queryParams.Get("include_children")); !ok {
 			writeError(w, http.StatusBadRequest, "include_children must be true or false")
@@ -183,6 +190,7 @@ func ListTransactions(queries *db.Queries) http.HandlerFunc {
 				Amount:               row.Amount,
 				Currency:             row.Currency,
 				Direction:            row.Direction,
+				CategoryID:           row.CategoryID,
 				Category:             row.Category,
 				MemberNumber:         row.MemberNumber,
 				MatchedBy:            row.MatchedBy,
@@ -260,10 +268,10 @@ type transactionDetail struct {
 }
 
 type assignTransactionRequest struct {
-	MemberNumber *int32     `json:"member_number"`  // optional; omit for a category-only edit, no member match
-	Category     *string    `json:"category"`       // optional, defaults to "membership_fee"
-	Covers       []monthRef `json:"covers"`         // optional; empty = the transaction's own month
-	AdminComment *string    `json:"admin_comment"`  // optional staff note; omit or empty string to clear, full overwrite like member_number
+	MemberNumber *int32      `json:"member_number"` // optional; omit for a category-only edit, no member match
+	CategoryID   pgtype.UUID `json:"category_id"`   // optional, defaults to membership_fee
+	Covers       []monthRef  `json:"covers"`        // optional; empty = the transaction's own month
+	AdminComment *string     `json:"admin_comment"` // optional staff note; omit or empty string to clear, full overwrite like member_number
 }
 
 func parseTransactionID(r *http.Request) (int64, bool) {
@@ -281,6 +289,7 @@ func detailRowToItem(row db.GetTransactionDetailRow) transactionListItem {
 		Amount:               row.Amount,
 		Currency:             row.Currency,
 		Direction:            row.Direction,
+		CategoryID:           row.CategoryID,
 		Category:             row.Category,
 		MemberNumber:         row.MemberNumber,
 		MatchedBy:            row.MatchedBy,
@@ -394,13 +403,13 @@ func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		category := "membership_fee"
-		if request.Category != nil {
-			category = *request.Category
+		categoryID := categoryid.MembershipFee
+		if request.CategoryID.Valid {
+			categoryID = request.CategoryID
 		}
-		coverable := category == "membership_fee" && request.MemberNumber != nil
+		coverable := categoryID == categoryid.MembershipFee && request.MemberNumber != nil
 		if len(request.Covers) > 0 {
-			if category != "membership_fee" {
+			if categoryID != categoryid.MembershipFee {
 				writeError(w, http.StatusBadRequest, "covers is only valid for category membership_fee")
 				return
 			}
@@ -431,7 +440,7 @@ func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 			}
 		}
 
-		categoryExists, err := queries.CategoryExists(r.Context(), category)
+		categoryExists, err := queries.CategoryExists(r.Context(), categoryID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to check category")
 			return
@@ -486,7 +495,7 @@ func AssignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 		if _, err := txQueries.AssignTransactionToMember(r.Context(), db.AssignTransactionToMemberParams{
 			ID:           id,
 			MemberNumber: request.MemberNumber,
-			Category:     category,
+			CategoryID:   categoryID,
 			MatchedBy:    matchedBy,
 			AdminComment: adminComment,
 		}); errors.Is(err, pgx.ErrNoRows) {
@@ -556,7 +565,7 @@ func UnassignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		category := processing.FallbackCategory(detail.Direction)
+		categoryID := processing.FallbackCategory(detail.Direction)
 
 		tx, err := pool.Begin(r.Context())
 		if err != nil {
@@ -571,8 +580,8 @@ func UnassignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 		if _, err := txQueries.UnassignTransaction(r.Context(), db.UnassignTransactionParams{
-			ID:       id,
-			Category: category,
+			ID:         id,
+			CategoryID: categoryID,
 		}); errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "transaction not found")
 			return
@@ -591,9 +600,10 @@ func UnassignTransaction(pool *pgxpool.Pool) http.HandlerFunc {
 }
 
 type categoryTotal struct {
-	Category string `json:"category"`
-	Currency string `json:"currency"`
-	Total    string `json:"total"`
+	CategoryID pgtype.UUID `json:"category_id"`
+	Category   string      `json:"category"` // name, for display
+	Currency   string      `json:"currency"`
+	Total      string      `json:"total"`
 }
 
 type currencyTotal struct {
@@ -656,7 +666,8 @@ func CategorySummary(queries *db.Queries) http.HandlerFunc {
 		rows, err := queries.GetTransactionCategorySummary(r.Context(), db.GetTransactionCategorySummaryParams{
 			DateFrom: dateFrom,
 			DateTo:   dateTo,
-			Rollup:   rollup,
+			Rollup:                     rollup,
+			InternalTransferCategoryID: categoryid.InternalTransfer,
 		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to summarize transactions")
@@ -675,7 +686,7 @@ func CategorySummary(queries *db.Queries) http.HandlerFunc {
 			CurrentBalance: make([]currencyTotal, 0),
 		}
 		for _, row := range rows {
-			total := categoryTotal{Category: row.Category, Currency: row.Currency, Total: row.Total}
+			total := categoryTotal{CategoryID: row.CategoryID, Category: row.Category, Currency: row.Currency, Total: row.Total}
 			if row.Direction == "incoming" {
 				response.Incoming = append(response.Incoming, total)
 			} else {

@@ -17,8 +17,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kubik/bank-system/internal/categoryid"
 	"github.com/kubik/bank-system/internal/db"
 )
 
@@ -80,7 +82,7 @@ func loadRules(requestContext context.Context, queries *db.Queries) ([]db.Catego
 // when no rule matched and the direction fallback applied; memberNumber and
 // matchedBy are only set by the member_variable_symbol rule.
 type outcome struct {
-	category     string
+	categoryID   pgtype.UUID
 	ruleID       *int64
 	memberNumber *int32
 	matchedBy    *string
@@ -93,14 +95,14 @@ func transactionDirection(amount string) string {
 	return "incoming"
 }
 
-// FallbackCategory is the category for a transaction no rule matched —
+// FallbackCategory is the category id for a transaction no rule matched —
 // direction alone. Also what handler.UnassignTransaction resets a row to, so
 // the two can't drift.
-func FallbackCategory(direction string) string {
+func FallbackCategory(direction string) pgtype.UUID {
 	if direction == "incoming" {
-		return "other_income"
+		return categoryid.OtherIncome
 	}
-	return "other_expense"
+	return categoryid.OtherExpense
 }
 
 // categorize walks rules (already in evaluation order, enabled only) and
@@ -115,7 +117,7 @@ func categorize(requestContext context.Context, queries *db.Queries, rt db.RawTr
 			return result, nil
 		}
 	}
-	return outcome{category: FallbackCategory(direction)}, nil
+	return outcome{categoryID: FallbackCategory(direction)}, nil
 }
 
 // applyRule checks one rule against rt. Only the member_variable_symbol rule
@@ -127,7 +129,7 @@ func applyRule(requestContext context.Context, queries *db.Queries, rule db.Cate
 		// Matched on counter_account_number alone (no bank-code check —
 		// this app only syncs Fio accounts, so a collision is unlikely).
 		if rt.CounterAccountNumber != nil && ourAccounts[*rt.CounterAccountNumber] {
-			return outcome{category: rule.Category, ruleID: &rule.ID}, true, nil
+			return outcome{categoryID: rule.CategoryID, ruleID: &rule.ID}, true, nil
 		}
 	case "member_variable_symbol":
 		if rt.VariableSymbol == nil || *rt.VariableSymbol == "" {
@@ -140,7 +142,7 @@ func applyRule(requestContext context.Context, queries *db.Queries, rule db.Cate
 		switch {
 		case err == nil:
 			matchedBy := "variable_symbol"
-			return outcome{category: rule.Category, ruleID: &rule.ID, memberNumber: &member, matchedBy: &matchedBy}, true, nil
+			return outcome{categoryID: rule.CategoryID, ruleID: &rule.ID, memberNumber: &member, matchedBy: &matchedBy}, true, nil
 		case errors.Is(err, pgx.ErrNoRows):
 			// no member currently claims this variable symbol — next rule.
 		default:
@@ -148,7 +150,7 @@ func applyRule(requestContext context.Context, queries *db.Queries, rule db.Cate
 		}
 	case "pattern":
 		if matchesPattern(rule, rt, direction) {
-			return outcome{category: rule.Category, ruleID: &rule.ID}, true, nil
+			return outcome{categoryID: rule.CategoryID, ruleID: &rule.ID}, true, nil
 		}
 	default:
 		// The kind CHECK constraint makes this unreachable; skip rather
@@ -221,7 +223,7 @@ func processOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.
 	pt, err := txQueries.CreateProcessedTransaction(requestContext, db.CreateProcessedTransactionParams{
 		RawTransactionID:     rt.ID,
 		MemberNumber:         result.memberNumber,
-		Category:             result.category,
+		CategoryID:           result.categoryID,
 		Direction:            direction,
 		MatchedBy:            result.matchedBy,
 		CategorizationRuleID: result.ruleID,
@@ -378,7 +380,7 @@ func candidateTransaction(candidate db.ListReapplyCandidatesRow) db.RawTransacti
 // when the member changed. Reports whether anything was written.
 func writeOutcome(requestContext context.Context, pool *pgxpool.Pool, candidate db.ListReapplyCandidatesRow, result outcome) (changed bool, err error) {
 	memberChanged := !equalPointer(result.memberNumber, candidate.MemberNumber)
-	if result.category == candidate.Category && !memberChanged &&
+	if result.categoryID == candidate.CategoryID && !memberChanged &&
 		equalPointer(result.matchedBy, candidate.MatchedBy) && equalPointer(result.ruleID, candidate.CategorizationRuleID) {
 		return false, nil
 	}
@@ -392,7 +394,7 @@ func writeOutcome(requestContext context.Context, pool *pgxpool.Pool, candidate 
 
 	rows, err := txQueries.ReapplyCategorization(requestContext, db.ReapplyCategorizationParams{
 		ID:                   candidate.ID,
-		Category:             result.category,
+		CategoryID:           result.categoryID,
 		MemberNumber:         result.memberNumber,
 		MatchedBy:            result.matchedBy,
 		CategorizationRuleID: result.ruleID,

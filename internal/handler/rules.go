@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kubik/bank-system/internal/db"
@@ -26,19 +27,19 @@ const (
 )
 
 type categorizationRuleResponse struct {
-	ID                      int64     `json:"id"`
-	Priority                int32     `json:"priority"`
-	Kind                    string    `json:"kind"`
-	Category                string    `json:"category"`
-	Enabled                 bool      `json:"enabled"`
-	CounterAccountNumber    *string   `json:"counter_account_number"`
-	VariableSymbol          *string   `json:"variable_symbol"`
-	ConstantSymbol          *string   `json:"constant_symbol"`
-	TextContains            *string   `json:"text_contains"`
-	TransactionTypeContains *string   `json:"transaction_type_contains"`
-	Direction               *string   `json:"direction"`
-	Note                    *string   `json:"note"`
-	CreatedAt               time.Time `json:"created_at"`
+	ID                      int64       `json:"id"`
+	Priority                int32       `json:"priority"`
+	Kind                    string      `json:"kind"`
+	CategoryID              pgtype.UUID `json:"category_id"`
+	Enabled                 bool        `json:"enabled"`
+	CounterAccountNumber    *string     `json:"counter_account_number"`
+	VariableSymbol          *string     `json:"variable_symbol"`
+	ConstantSymbol          *string     `json:"constant_symbol"`
+	TextContains            *string     `json:"text_contains"`
+	TransactionTypeContains *string     `json:"transaction_type_contains"`
+	Direction               *string     `json:"direction"`
+	Note                    *string     `json:"note"`
+	CreatedAt               time.Time   `json:"created_at"`
 }
 
 func toCategorizationRuleResponse(rule db.CategorizationRule) categorizationRuleResponse {
@@ -46,7 +47,7 @@ func toCategorizationRuleResponse(rule db.CategorizationRule) categorizationRule
 		ID:                      rule.ID,
 		Priority:                rule.Priority,
 		Kind:                    rule.Kind,
-		Category:                rule.Category,
+		CategoryID:              rule.CategoryID,
 		Enabled:                 rule.Enabled,
 		CounterAccountNumber:    rule.CounterAccountNumber,
 		VariableSymbol:          rule.VariableSymbol,
@@ -62,29 +63,29 @@ func toCategorizationRuleResponse(rule db.CategorizationRule) categorizationRule
 // categorizationRuleRequest is the body of both POST and PUT — PUT is a full
 // overwrite, so every omitted optional field is cleared. For a built-in rule
 // (own_account, member_variable_symbol) only priority, enabled and note can
-// change; category must be omitted or equal its fixed category, and no
+// change; category_id must be omitted or equal its fixed category, and no
 // condition may be set.
 type categorizationRuleRequest struct {
-	Priority *int32  `json:"priority"`
-	Category string  `json:"category"`
-	Enabled  *bool   `json:"enabled"` // optional, defaults to true
-	Note     *string `json:"note"`
+	Priority   *int32      `json:"priority"`
+	CategoryID pgtype.UUID `json:"category_id"`
+	Enabled    *bool       `json:"enabled"`     // optional, defaults to true
+	Note       *string     `json:"note"`
 
 	CounterAccountNumber    *string `json:"counter_account_number"`
 	VariableSymbol          *string `json:"variable_symbol"`
 	ConstantSymbol          *string `json:"constant_symbol"`
 	TextContains            *string `json:"text_contains"`
 	TransactionTypeContains *string `json:"transaction_type_contains"`
-	Direction               *string `json:"direction"` // incoming | outgoing
+	Direction               *string `json:"direction"`                 // incoming | outgoing
 }
 
 // normalizedRule is a validated categorizationRuleRequest: optional strings
 // trimmed, blank ones turned into nil.
 type normalizedRule struct {
-	priority int32
-	category string
-	enabled  bool
-	note     *string
+	priority   int32
+	categoryID pgtype.UUID
+	enabled    bool
+	note       *string
 
 	counterAccountNumber    *string
 	variableSymbol          *string
@@ -123,7 +124,7 @@ func normalizeRuleRequest(request categorizationRuleRequest) (normalizedRule, st
 	}
 	rule := normalizedRule{
 		priority: *request.Priority,
-		category: strings.TrimSpace(request.Category),
+		categoryID: request.CategoryID,
 		enabled:  request.Enabled == nil || *request.Enabled,
 	}
 
@@ -158,13 +159,13 @@ func normalizeRuleRequest(request categorizationRuleRequest) (normalizedRule, st
 // category and at least one real condition (direction alone would match half
 // of all traffic). Returns status 0 when valid.
 func validatePatternRule(r *http.Request, queries *db.Queries, rule normalizedRule) (int, string) {
-	if rule.category == "" {
-		return http.StatusBadRequest, "category is required"
+	if !rule.categoryID.Valid {
+		return http.StatusBadRequest, "category_id is required"
 	}
 	if !rule.hasCondition() {
 		return http.StatusBadRequest, "at least one condition besides direction is required"
 	}
-	exists, err := queries.CategoryExists(r.Context(), rule.category)
+	exists, err := queries.CategoryExists(r.Context(), rule.categoryID)
 	if err != nil {
 		return http.StatusInternalServerError, "failed to check category"
 	}
@@ -251,7 +252,7 @@ func CreateCategorizationRule(queries *db.Queries) http.HandlerFunc {
 
 		id, err := queries.CreateCategorizationRule(r.Context(), db.CreateCategorizationRuleParams{
 			Priority:                rule.priority,
-			Category:                rule.category,
+			CategoryID:              rule.categoryID,
 			Enabled:                 rule.enabled,
 			CounterAccountNumber:    rule.counterAccountNumber,
 			VariableSymbol:          rule.variableSymbol,
@@ -320,7 +321,7 @@ func UpdateCategorizationRule(queries *db.Queries) http.HandlerFunc {
 				return
 			}
 		} else {
-			if rule.category != "" && rule.category != existing.Category {
+			if rule.categoryID.Valid && rule.categoryID != existing.CategoryID {
 				writeError(w, http.StatusBadRequest, "the category of a built-in rule cannot be changed")
 				return
 			}
@@ -328,13 +329,13 @@ func UpdateCategorizationRule(queries *db.Queries) http.HandlerFunc {
 				writeError(w, http.StatusBadRequest, "a built-in rule takes no conditions")
 				return
 			}
-			rule.category = existing.Category
+			rule.categoryID = existing.CategoryID
 		}
 
 		if _, err := queries.UpdateCategorizationRule(r.Context(), db.UpdateCategorizationRuleParams{
 			ID:                      id,
 			Priority:                rule.priority,
-			Category:                rule.category,
+			CategoryID:              rule.categoryID,
 			Enabled:                 rule.enabled,
 			CounterAccountNumber:    rule.counterAccountNumber,
 			VariableSymbol:          rule.variableSymbol,

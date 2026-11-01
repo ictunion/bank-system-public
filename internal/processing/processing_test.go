@@ -102,9 +102,10 @@ func queryProcessed(t *testing.T, pool *pgxpool.Pool, fioTransactionID int64) pr
 	t.Helper()
 	var row processedRow
 	err := pool.QueryRow(context.Background(), `
-		SELECT pt.category, pt.direction, pt.member_number, pt.matched_by
+		SELECT tc.name, pt.direction, pt.member_number, pt.matched_by
 		FROM processed_transactions pt
 		JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+		JOIN transaction_categories tc ON tc.id = pt.category_id
 		WHERE rt.fio_transaction_id = $1
 	`, fioTransactionID).Scan(&row.category, &row.direction, &row.memberNumber, &row.matchedBy)
 	if err != nil {
@@ -793,7 +794,7 @@ func TestReapplyRule_SkipsCategoryOnlyManualEdits(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	if _, err := pool.Exec(context.Background(), `
-		UPDATE processed_transactions SET category = 'other_income'
+		UPDATE processed_transactions SET category_id = (SELECT id FROM transaction_categories WHERE name = 'other_income')
 		FROM raw_transactions rt
 		WHERE processed_transactions.raw_transaction_id = rt.id AND rt.fio_transaction_id = 6032
 	`); err != nil {

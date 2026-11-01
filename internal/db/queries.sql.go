@@ -15,7 +15,7 @@ import (
 const assignTransactionToMember = `-- name: AssignTransactionToMember :one
 UPDATE processed_transactions
 SET member_number = $1,
-    category = $2,
+    category_id = $2,
     matched_by = $3,
     admin_comment = $4,
     category_set_manually = true
@@ -24,11 +24,11 @@ RETURNING id
 `
 
 type AssignTransactionToMemberParams struct {
-	MemberNumber *int32  `json:"member_number"`
-	Category     string  `json:"category"`
-	MatchedBy    *string `json:"matched_by"`
-	AdminComment *string `json:"admin_comment"`
-	ID           int64   `json:"id"`
+	MemberNumber *int32      `json:"member_number"`
+	CategoryID   pgtype.UUID `json:"category_id"`
+	MatchedBy    *string     `json:"matched_by"`
+	AdminComment *string     `json:"admin_comment"`
+	ID           int64       `json:"id"`
 }
 
 // Manual categorization, with or without a member match — member_number and
@@ -41,7 +41,7 @@ type AssignTransactionToMemberParams struct {
 func (q *Queries) AssignTransactionToMember(ctx context.Context, arg AssignTransactionToMemberParams) (int64, error) {
 	row := q.db.QueryRow(ctx, assignTransactionToMember,
 		arg.MemberNumber,
-		arg.Category,
+		arg.CategoryID,
 		arg.MatchedBy,
 		arg.AdminComment,
 		arg.ID,
@@ -52,22 +52,22 @@ func (q *Queries) AssignTransactionToMember(ctx context.Context, arg AssignTrans
 }
 
 const categoryExists = `-- name: CategoryExists :one
-SELECT EXISTS (SELECT 1 FROM transaction_categories WHERE name = $1) AS exists
+SELECT EXISTS (SELECT 1 FROM transaction_categories WHERE id = $1) AS exists
 `
 
-func (q *Queries) CategoryExists(ctx context.Context, name string) (bool, error) {
-	row := q.db.QueryRow(ctx, categoryExists, name)
+func (q *Queries) CategoryExists(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, categoryExists, id)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
 }
 
 const categoryHasChildren = `-- name: CategoryHasChildren :one
-SELECT EXISTS (SELECT 1 FROM transaction_categories WHERE parent_name = $1::text) AS exists
+SELECT EXISTS (SELECT 1 FROM transaction_categories WHERE parent_id = $1::uuid) AS exists
 `
 
-func (q *Queries) CategoryHasChildren(ctx context.Context, name string) (bool, error) {
-	row := q.db.QueryRow(ctx, categoryHasChildren, name)
+func (q *Queries) CategoryHasChildren(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, categoryHasChildren, id)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -225,7 +225,7 @@ func (q *Queries) CreateBudgetLine(ctx context.Context, arg CreateBudgetLinePara
 
 const createCategorizationRule = `-- name: CreateCategorizationRule :one
 INSERT INTO categorization_rules (
-    priority, kind, category, enabled,
+    priority, kind, category_id, enabled,
     counter_account_number, variable_symbol, constant_symbol,
     text_contains, transaction_type_contains, direction, note
 ) VALUES (
@@ -237,16 +237,16 @@ RETURNING id
 `
 
 type CreateCategorizationRuleParams struct {
-	Priority                int32   `json:"priority"`
-	Category                string  `json:"category"`
-	Enabled                 bool    `json:"enabled"`
-	CounterAccountNumber    *string `json:"counter_account_number"`
-	VariableSymbol          *string `json:"variable_symbol"`
-	ConstantSymbol          *string `json:"constant_symbol"`
-	TextContains            *string `json:"text_contains"`
-	TransactionTypeContains *string `json:"transaction_type_contains"`
-	Direction               *string `json:"direction"`
-	Note                    *string `json:"note"`
+	Priority                int32       `json:"priority"`
+	CategoryID              pgtype.UUID `json:"category_id"`
+	Enabled                 bool        `json:"enabled"`
+	CounterAccountNumber    *string     `json:"counter_account_number"`
+	VariableSymbol          *string     `json:"variable_symbol"`
+	ConstantSymbol          *string     `json:"constant_symbol"`
+	TextContains            *string     `json:"text_contains"`
+	TransactionTypeContains *string     `json:"transaction_type_contains"`
+	Direction               *string     `json:"direction"`
+	Note                    *string     `json:"note"`
 }
 
 // Only pattern rules are ever created; the two built-in kinds are seeded by
@@ -254,7 +254,7 @@ type CreateCategorizationRuleParams struct {
 func (q *Queries) CreateCategorizationRule(ctx context.Context, arg CreateCategorizationRuleParams) (int64, error) {
 	row := q.db.QueryRow(ctx, createCategorizationRule,
 		arg.Priority,
-		arg.Category,
+		arg.CategoryID,
 		arg.Enabled,
 		arg.CounterAccountNumber,
 		arg.VariableSymbol,
@@ -270,27 +270,28 @@ func (q *Queries) CreateCategorizationRule(ctx context.Context, arg CreateCatego
 }
 
 const createCategory = `-- name: CreateCategory :one
-INSERT INTO transaction_categories (name, is_mandatory, parent_name)
+INSERT INTO transaction_categories (name, is_mandatory, parent_id)
 VALUES ($1, false, $2)
-RETURNING name, is_mandatory, created_at, parent_name
+RETURNING name, is_mandatory, created_at, id, parent_id
 `
 
 type CreateCategoryParams struct {
-	Name       string  `json:"name"`
-	ParentName *string `json:"parent_name"`
+	Name     string      `json:"name"`
+	ParentID pgtype.UUID `json:"parent_id"`
 }
 
-// is_mandatory is never set true here — only the four seeded in
-// migrations/20260910000001_add_transaction_categories.sql are mandatory.
-// parent_name's one-level rule is checked by the caller (handler.CreateCategory).
+// is_mandatory is never set true here — only the six with fixed ids (see
+// internal/categoryid) are mandatory. The id is generated. parent_id's
+// one-level rule is checked by the caller (handler.CreateCategory).
 func (q *Queries) CreateCategory(ctx context.Context, arg CreateCategoryParams) (TransactionCategory, error) {
-	row := q.db.QueryRow(ctx, createCategory, arg.Name, arg.ParentName)
+	row := q.db.QueryRow(ctx, createCategory, arg.Name, arg.ParentID)
 	var i TransactionCategory
 	err := row.Scan(
 		&i.Name,
 		&i.IsMandatory,
 		&i.CreatedAt,
-		&i.ParentName,
+		&i.ID,
+		&i.ParentID,
 	)
 	return i, err
 }
@@ -353,18 +354,18 @@ func (q *Queries) CreatePaymentWaiver(ctx context.Context, arg CreatePaymentWaiv
 }
 
 const createProcessedTransaction = `-- name: CreateProcessedTransaction :one
-INSERT INTO processed_transactions (raw_transaction_id, member_number, category, direction, matched_by, categorization_rule_id)
+INSERT INTO processed_transactions (raw_transaction_id, member_number, category_id, direction, matched_by, categorization_rule_id)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, raw_transaction_id, member_number, category, direction, matched_by, is_public_visible, processed_at, admin_comment, category_set_manually, categorization_rule_id
+RETURNING id, raw_transaction_id, member_number, direction, matched_by, is_public_visible, processed_at, admin_comment, category_set_manually, categorization_rule_id, category_id
 `
 
 type CreateProcessedTransactionParams struct {
-	RawTransactionID     int64   `json:"raw_transaction_id"`
-	MemberNumber         *int32  `json:"member_number"`
-	Category             string  `json:"category"`
-	Direction            string  `json:"direction"`
-	MatchedBy            *string `json:"matched_by"`
-	CategorizationRuleID *int64  `json:"categorization_rule_id"`
+	RawTransactionID     int64       `json:"raw_transaction_id"`
+	MemberNumber         *int32      `json:"member_number"`
+	CategoryID           pgtype.UUID `json:"category_id"`
+	Direction            string      `json:"direction"`
+	MatchedBy            *string     `json:"matched_by"`
+	CategorizationRuleID *int64      `json:"categorization_rule_id"`
 }
 
 // categorization_rule_id is NULL when no rule matched (direction fallback).
@@ -372,7 +373,7 @@ func (q *Queries) CreateProcessedTransaction(ctx context.Context, arg CreateProc
 	row := q.db.QueryRow(ctx, createProcessedTransaction,
 		arg.RawTransactionID,
 		arg.MemberNumber,
-		arg.Category,
+		arg.CategoryID,
 		arg.Direction,
 		arg.MatchedBy,
 		arg.CategorizationRuleID,
@@ -382,7 +383,6 @@ func (q *Queries) CreateProcessedTransaction(ctx context.Context, arg CreateProc
 		&i.ID,
 		&i.RawTransactionID,
 		&i.MemberNumber,
-		&i.Category,
 		&i.Direction,
 		&i.MatchedBy,
 		&i.IsPublicVisible,
@@ -390,6 +390,7 @@ func (q *Queries) CreateProcessedTransaction(ctx context.Context, arg CreateProc
 		&i.AdminComment,
 		&i.CategorySetManually,
 		&i.CategorizationRuleID,
+		&i.CategoryID,
 	)
 	return i, err
 }
@@ -515,16 +516,16 @@ func (q *Queries) DeleteCategorizationRule(ctx context.Context, id int64) (int64
 }
 
 const deleteCategory = `-- name: DeleteCategory :execrows
-DELETE FROM transaction_categories WHERE name = $1 AND is_mandatory = false
+DELETE FROM transaction_categories WHERE id = $1 AND is_mandatory = false
 `
 
 // The is_mandatory=false guard means a mandatory category and a missing one
 // both come back as 0 rows affected — the caller (handler.DeleteCategory)
 // checks GetCategory first to tell those two cases apart. A category still
-// referenced by processed_transactions.category fails this with a foreign
-// key violation instead (see processed_transactions_category_fkey).
-func (q *Queries) DeleteCategory(ctx context.Context, name string) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteCategory, name)
+// referenced by processed_transactions, categorization_rules or
+// budget_line_categories fails this with a foreign key violation instead.
+func (q *Queries) DeleteCategory(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteCategory, id)
 	if err != nil {
 		return 0, err
 	}
@@ -734,7 +735,7 @@ func (q *Queries) GetBudget(ctx context.Context, year int32) (Budget, error) {
 }
 
 const getCategorizationRule = `-- name: GetCategorizationRule :one
-SELECT id, priority, kind, category, enabled, counter_account_number, variable_symbol, constant_symbol, text_contains, transaction_type_contains, direction, note, created_at FROM categorization_rules WHERE id = $1
+SELECT id, priority, kind, enabled, counter_account_number, variable_symbol, constant_symbol, text_contains, transaction_type_contains, direction, note, created_at, category_id FROM categorization_rules WHERE id = $1
 `
 
 func (q *Queries) GetCategorizationRule(ctx context.Context, id int64) (CategorizationRule, error) {
@@ -744,7 +745,6 @@ func (q *Queries) GetCategorizationRule(ctx context.Context, id int64) (Categori
 		&i.ID,
 		&i.Priority,
 		&i.Kind,
-		&i.Category,
 		&i.Enabled,
 		&i.CounterAccountNumber,
 		&i.VariableSymbol,
@@ -754,22 +754,43 @@ func (q *Queries) GetCategorizationRule(ctx context.Context, id int64) (Categori
 		&i.Direction,
 		&i.Note,
 		&i.CreatedAt,
+		&i.CategoryID,
 	)
 	return i, err
 }
 
 const getCategory = `-- name: GetCategory :one
-SELECT name, is_mandatory, created_at, parent_name FROM transaction_categories WHERE name = $1
+SELECT name, is_mandatory, created_at, id, parent_id FROM transaction_categories WHERE id = $1
 `
 
-func (q *Queries) GetCategory(ctx context.Context, name string) (TransactionCategory, error) {
-	row := q.db.QueryRow(ctx, getCategory, name)
+func (q *Queries) GetCategory(ctx context.Context, id pgtype.UUID) (TransactionCategory, error) {
+	row := q.db.QueryRow(ctx, getCategory, id)
 	var i TransactionCategory
 	err := row.Scan(
 		&i.Name,
 		&i.IsMandatory,
 		&i.CreatedAt,
-		&i.ParentName,
+		&i.ID,
+		&i.ParentID,
+	)
+	return i, err
+}
+
+const getCategoryByName = `-- name: GetCategoryByName :one
+SELECT name, is_mandatory, created_at, id, parent_id FROM transaction_categories WHERE name = $1
+`
+
+// Names are unique labels; used where a category is only known by name
+// (fixtures).
+func (q *Queries) GetCategoryByName(ctx context.Context, name string) (TransactionCategory, error) {
+	row := q.db.QueryRow(ctx, getCategoryByName, name)
+	var i TransactionCategory
+	err := row.Scan(
+		&i.Name,
+		&i.IsMandatory,
+		&i.CreatedAt,
+		&i.ID,
+		&i.ParentID,
 	)
 	return i, err
 }
@@ -874,7 +895,7 @@ SELECT
             FROM processed_transactions pt
             JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
             WHERE pt.member_number = m.member_number
-              AND pt.category = 'membership_fee'
+              AND pt.category_id = $1::uuid
               AND rt.transaction_date BETWEEN wb.window_from AND wb.window_to
         )
     )::int AS paid_members
@@ -913,9 +934,11 @@ type GetPaymentStatsRow struct {
 // a WHERE filter would instead make the whole FROM produce zero rows, and
 // :one would then error on no rows. count(m.member_number), not count(*), so
 // the LEFT JOIN's placeholder all-NULL row (no member matched the join
-// condition) doesn't itself count as a liable member.
-func (q *Queries) GetPaymentStats(ctx context.Context) (GetPaymentStatsRow, error) {
-	row := q.db.QueryRow(ctx, getPaymentStats)
+// condition) doesn't itself count as a liable member. The membership_fee
+// category id is passed in (categoryid.MembershipFee) rather than written
+// here, so the fixed id lives in one place.
+func (q *Queries) GetPaymentStats(ctx context.Context, membershipFeeCategoryID pgtype.UUID) (GetPaymentStatsRow, error) {
+	row := q.db.QueryRow(ctx, getPaymentStats, membershipFeeCategoryID)
 	var i GetPaymentStatsRow
 	err := row.Scan(
 		&i.WindowFrom,
@@ -1006,33 +1029,37 @@ func (q *Queries) GetTotalBalance(ctx context.Context) ([]GetTotalBalanceRow, er
 const getTransactionCategorySummary = `-- name: GetTransactionCategorySummary :many
 SELECT
     pt.direction,
-    (CASE WHEN $1::boolean
-          THEN COALESCE(tc.parent_name, pt.category)
-          ELSE pt.category END)::text AS category,
+    shown.id AS category_id,
+    shown.name AS category,
     rt.currency,
     COALESCE(SUM(ABS(rt.amount)), 0)::numeric AS total
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
-JOIN transaction_categories tc ON tc.name = pt.category
-WHERE pt.category != 'internal_transfer'
-  AND tc.parent_name IS DISTINCT FROM 'internal_transfer'
-  AND ($2::date IS NULL OR rt.transaction_date >= $2::date)
-  AND ($3::date IS NULL OR rt.transaction_date <= $3::date)
-GROUP BY 1, 2, 3
+JOIN transaction_categories tc ON tc.id = pt.category_id
+JOIN transaction_categories shown ON shown.id = CASE WHEN $1::boolean
+                                                     THEN COALESCE(tc.parent_id, tc.id)
+                                                     ELSE tc.id END
+WHERE pt.category_id != $2::uuid
+  AND tc.parent_id IS DISTINCT FROM $2::uuid
+  AND ($3::date IS NULL OR rt.transaction_date >= $3::date)
+  AND ($4::date IS NULL OR rt.transaction_date <= $4::date)
+GROUP BY pt.direction, shown.id, shown.name, rt.currency
 ORDER BY pt.direction, total DESC
 `
 
 type GetTransactionCategorySummaryParams struct {
-	Rollup   bool        `json:"rollup"`
-	DateFrom pgtype.Date `json:"date_from"`
-	DateTo   pgtype.Date `json:"date_to"`
+	Rollup                     bool        `json:"rollup"`
+	InternalTransferCategoryID pgtype.UUID `json:"internal_transfer_category_id"`
+	DateFrom                   pgtype.Date `json:"date_from"`
+	DateTo                     pgtype.Date `json:"date_to"`
 }
 
 type GetTransactionCategorySummaryRow struct {
-	Direction string `json:"direction"`
-	Category  string `json:"category"`
-	Currency  string `json:"currency"`
-	Total     string `json:"total"`
+	Direction  string      `json:"direction"`
+	CategoryID pgtype.UUID `json:"category_id"`
+	Category   string      `json:"category"`
+	Currency   string      `json:"currency"`
+	Total      string      `json:"total"`
 }
 
 // Budgeting view:
@@ -1043,13 +1070,17 @@ type GetTransactionCategorySummaryRow struct {
 // signed value raw_transactions stores it as. internal_transfer excluded
 // entirely — money moving between our own bank_accounts isn't real income or
 // expense and would otherwise inflate both totals for the same transfer.
-// A sub-category of internal_transfer is excluded the same way.
-// rollup=true reports each sub-category under its parent's name instead
-// (one level only, so COALESCE(parent_name, name) is the top-level name).
-// GROUP BY by position: a bare "category" there would resolve to
-// pt.category, not the rolled-up output column.
+// A sub-category of internal_transfer is excluded the same way (its id is
+// passed in: categoryid.InternalTransfer).
+// rollup=true reports each sub-category under its parent instead (one level
+// only, so COALESCE(parent_id, id) is the top-level category).
 func (q *Queries) GetTransactionCategorySummary(ctx context.Context, arg GetTransactionCategorySummaryParams) ([]GetTransactionCategorySummaryRow, error) {
-	rows, err := q.db.Query(ctx, getTransactionCategorySummary, arg.Rollup, arg.DateFrom, arg.DateTo)
+	rows, err := q.db.Query(ctx, getTransactionCategorySummary,
+		arg.Rollup,
+		arg.InternalTransferCategoryID,
+		arg.DateFrom,
+		arg.DateTo,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -1059,6 +1090,7 @@ func (q *Queries) GetTransactionCategorySummary(ctx context.Context, arg GetTran
 		var i GetTransactionCategorySummaryRow
 		if err := rows.Scan(
 			&i.Direction,
+			&i.CategoryID,
 			&i.Category,
 			&i.Currency,
 			&i.Total,
@@ -1080,7 +1112,8 @@ SELECT
     rt.amount,
     rt.currency,
     pt.direction,
-    pt.category,
+    pt.category_id,
+    tc.name AS category,
     pt.member_number,
     pt.matched_by,
     pt.category_set_manually,
@@ -1097,31 +1130,33 @@ SELECT
     ba.color AS bank_account_color
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+JOIN transaction_categories tc ON tc.id = pt.category_id
 LEFT JOIN bank_accounts ba ON ba.id = rt.bank_account_id
 WHERE pt.id = $1
 `
 
 type GetTransactionDetailRow struct {
-	ID                   int64     `json:"id"`
-	TransactionDate      time.Time `json:"transaction_date"`
-	Amount               string    `json:"amount"`
-	Currency             string    `json:"currency"`
-	Direction            string    `json:"direction"`
-	Category             string    `json:"category"`
-	MemberNumber         *int32    `json:"member_number"`
-	MatchedBy            *string   `json:"matched_by"`
-	CategorySetManually  bool      `json:"category_set_manually"`
-	IsPublicVisible      bool      `json:"is_public_visible"`
-	VariableSymbol       *string   `json:"variable_symbol"`
-	SpecificSymbol       *string   `json:"specific_symbol"`
-	ConstantSymbol       *string   `json:"constant_symbol"`
-	CounterAccountNumber *string   `json:"counter_account_number"`
-	CounterAccountName   *string   `json:"counter_account_name"`
-	MessageForRecipient  *string   `json:"message_for_recipient"`
-	UserIdentification   *string   `json:"user_identification"`
-	Comment              *string   `json:"comment"`
-	AdminComment         *string   `json:"admin_comment"`
-	BankAccountColor     *string   `json:"bank_account_color"`
+	ID                   int64       `json:"id"`
+	TransactionDate      time.Time   `json:"transaction_date"`
+	Amount               string      `json:"amount"`
+	Currency             string      `json:"currency"`
+	Direction            string      `json:"direction"`
+	CategoryID           pgtype.UUID `json:"category_id"`
+	Category             string      `json:"category"`
+	MemberNumber         *int32      `json:"member_number"`
+	MatchedBy            *string     `json:"matched_by"`
+	CategorySetManually  bool        `json:"category_set_manually"`
+	IsPublicVisible      bool        `json:"is_public_visible"`
+	VariableSymbol       *string     `json:"variable_symbol"`
+	SpecificSymbol       *string     `json:"specific_symbol"`
+	ConstantSymbol       *string     `json:"constant_symbol"`
+	CounterAccountNumber *string     `json:"counter_account_number"`
+	CounterAccountName   *string     `json:"counter_account_name"`
+	MessageForRecipient  *string     `json:"message_for_recipient"`
+	UserIdentification   *string     `json:"user_identification"`
+	Comment              *string     `json:"comment"`
+	AdminComment         *string     `json:"admin_comment"`
+	BankAccountColor     *string     `json:"bank_account_color"`
 }
 
 // One row for the transaction browser's detail / edit view — same columns as
@@ -1136,6 +1171,7 @@ func (q *Queries) GetTransactionDetail(ctx context.Context, id int64) (GetTransa
 		&i.Amount,
 		&i.Currency,
 		&i.Direction,
+		&i.CategoryID,
 		&i.Category,
 		&i.MemberNumber,
 		&i.MatchedBy,
@@ -1156,18 +1192,18 @@ func (q *Queries) GetTransactionDetail(ctx context.Context, id int64) (GetTransa
 }
 
 const insertBudgetLineCategory = `-- name: InsertBudgetLineCategory :exec
-INSERT INTO budget_line_categories (budget_line_id, budget_year, category)
+INSERT INTO budget_line_categories (budget_line_id, budget_year, category_id)
 VALUES ($1, $2, $3)
 `
 
 type InsertBudgetLineCategoryParams struct {
-	BudgetLineID int64  `json:"budget_line_id"`
-	BudgetYear   int32  `json:"budget_year"`
-	Category     string `json:"category"`
+	BudgetLineID int64       `json:"budget_line_id"`
+	BudgetYear   int32       `json:"budget_year"`
+	CategoryID   pgtype.UUID `json:"category_id"`
 }
 
 func (q *Queries) InsertBudgetLineCategory(ctx context.Context, arg InsertBudgetLineCategoryParams) error {
-	_, err := q.db.Exec(ctx, insertBudgetLineCategory, arg.BudgetLineID, arg.BudgetYear, arg.Category)
+	_, err := q.db.Exec(ctx, insertBudgetLineCategory, arg.BudgetLineID, arg.BudgetYear, arg.CategoryID)
 	return err
 }
 
@@ -1520,17 +1556,18 @@ func (q *Queries) ListBankAccountsWithToken(ctx context.Context, encryptionKey s
 }
 
 const listBudgetLineCategories = `-- name: ListBudgetLineCategories :many
-SELECT blc.budget_line_id, blc.category, bl.name AS line_name
+SELECT blc.budget_line_id, blc.category_id, bl.name AS line_name
 FROM budget_line_categories blc
 JOIN budget_lines bl ON bl.id = blc.budget_line_id
+JOIN transaction_categories tc ON tc.id = blc.category_id
 WHERE blc.budget_year = $1
-ORDER BY blc.budget_line_id, blc.category
+ORDER BY blc.budget_line_id, tc.name
 `
 
 type ListBudgetLineCategoriesRow struct {
-	BudgetLineID int64  `json:"budget_line_id"`
-	Category     string `json:"category"`
-	LineName     string `json:"line_name"`
+	BudgetLineID int64       `json:"budget_line_id"`
+	CategoryID   pgtype.UUID `json:"category_id"`
+	LineName     string      `json:"line_name"`
 }
 
 // Every category mapping of one year, with its line's name — used both to
@@ -1545,7 +1582,7 @@ func (q *Queries) ListBudgetLineCategories(ctx context.Context, budgetYear int32
 	var items []ListBudgetLineCategoriesRow
 	for rows.Next() {
 		var i ListBudgetLineCategoriesRow
-		if err := rows.Scan(&i.BudgetLineID, &i.Category, &i.LineName); err != nil {
+		if err := rows.Scan(&i.BudgetLineID, &i.CategoryID, &i.LineName); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1617,7 +1654,7 @@ func (q *Queries) ListBudgets(ctx context.Context) ([]Budget, error) {
 }
 
 const listCategories = `-- name: ListCategories :many
-SELECT name, is_mandatory, created_at, parent_name FROM transaction_categories ORDER BY is_mandatory DESC, name
+SELECT name, is_mandatory, created_at, id, parent_id FROM transaction_categories ORDER BY is_mandatory DESC, name
 `
 
 func (q *Queries) ListCategories(ctx context.Context) ([]TransactionCategory, error) {
@@ -1633,7 +1670,8 @@ func (q *Queries) ListCategories(ctx context.Context) ([]TransactionCategory, er
 			&i.Name,
 			&i.IsMandatory,
 			&i.CreatedAt,
-			&i.ParentName,
+			&i.ID,
+			&i.ParentID,
 		); err != nil {
 			return nil, err
 		}
@@ -1646,7 +1684,7 @@ func (q *Queries) ListCategories(ctx context.Context) ([]TransactionCategory, er
 }
 
 const listCategorizationRules = `-- name: ListCategorizationRules :many
-SELECT id, priority, kind, category, enabled, counter_account_number, variable_symbol, constant_symbol, text_contains, transaction_type_contains, direction, note, created_at FROM categorization_rules
+SELECT id, priority, kind, enabled, counter_account_number, variable_symbol, constant_symbol, text_contains, transaction_type_contains, direction, note, created_at, category_id FROM categorization_rules
 ORDER BY priority, id
 `
 
@@ -1665,7 +1703,6 @@ func (q *Queries) ListCategorizationRules(ctx context.Context) ([]Categorization
 			&i.ID,
 			&i.Priority,
 			&i.Kind,
-			&i.Category,
 			&i.Enabled,
 			&i.CounterAccountNumber,
 			&i.VariableSymbol,
@@ -1675,6 +1712,7 @@ func (q *Queries) ListCategorizationRules(ctx context.Context) ([]Categorization
 			&i.Direction,
 			&i.Note,
 			&i.CreatedAt,
+			&i.CategoryID,
 		); err != nil {
 			return nil, err
 		}
@@ -1942,7 +1980,7 @@ func (q *Queries) ListCoverageForTransaction(ctx context.Context, processedTrans
 }
 
 const listEnabledCategorizationRules = `-- name: ListEnabledCategorizationRules :many
-SELECT id, priority, kind, category, enabled, counter_account_number, variable_symbol, constant_symbol, text_contains, transaction_type_contains, direction, note, created_at FROM categorization_rules
+SELECT id, priority, kind, enabled, counter_account_number, variable_symbol, constant_symbol, text_contains, transaction_type_contains, direction, note, created_at, category_id FROM categorization_rules
 WHERE enabled
 ORDER BY priority, id
 `
@@ -1962,7 +2000,6 @@ func (q *Queries) ListEnabledCategorizationRules(ctx context.Context) ([]Categor
 			&i.ID,
 			&i.Priority,
 			&i.Kind,
-			&i.Category,
 			&i.Enabled,
 			&i.CounterAccountNumber,
 			&i.VariableSymbol,
@@ -1972,6 +2009,7 @@ func (q *Queries) ListEnabledCategorizationRules(ctx context.Context) ([]Categor
 			&i.Direction,
 			&i.Note,
 			&i.CreatedAt,
+			&i.CategoryID,
 		); err != nil {
 			return nil, err
 		}
@@ -2316,7 +2354,7 @@ func (q *Queries) ListMembersMissingPaymentInYearForWorkplace(ctx context.Contex
 
 const listReapplyCandidates = `-- name: ListReapplyCandidates :many
 SELECT
-    pt.id, pt.direction, pt.category, pt.member_number, pt.matched_by, pt.categorization_rule_id,
+    pt.id, pt.direction, pt.category_id, pt.member_number, pt.matched_by, pt.categorization_rule_id,
     rt.transaction_date, rt.amount, rt.counter_account_number, rt.variable_symbol,
     rt.constant_symbol, rt.comment, rt.user_identification, rt.message_for_recipient,
     rt.transaction_type
@@ -2329,21 +2367,21 @@ ORDER BY pt.id
 `
 
 type ListReapplyCandidatesRow struct {
-	ID                   int64     `json:"id"`
-	Direction            string    `json:"direction"`
-	Category             string    `json:"category"`
-	MemberNumber         *int32    `json:"member_number"`
-	MatchedBy            *string   `json:"matched_by"`
-	CategorizationRuleID *int64    `json:"categorization_rule_id"`
-	TransactionDate      time.Time `json:"transaction_date"`
-	Amount               string    `json:"amount"`
-	CounterAccountNumber *string   `json:"counter_account_number"`
-	VariableSymbol       *string   `json:"variable_symbol"`
-	ConstantSymbol       *string   `json:"constant_symbol"`
-	Comment              *string   `json:"comment"`
-	UserIdentification   *string   `json:"user_identification"`
-	MessageForRecipient  *string   `json:"message_for_recipient"`
-	TransactionType      *string   `json:"transaction_type"`
+	ID                   int64       `json:"id"`
+	Direction            string      `json:"direction"`
+	CategoryID           pgtype.UUID `json:"category_id"`
+	MemberNumber         *int32      `json:"member_number"`
+	MatchedBy            *string     `json:"matched_by"`
+	CategorizationRuleID *int64      `json:"categorization_rule_id"`
+	TransactionDate      time.Time   `json:"transaction_date"`
+	Amount               string      `json:"amount"`
+	CounterAccountNumber *string     `json:"counter_account_number"`
+	VariableSymbol       *string     `json:"variable_symbol"`
+	ConstantSymbol       *string     `json:"constant_symbol"`
+	Comment              *string     `json:"comment"`
+	UserIdentification   *string     `json:"user_identification"`
+	MessageForRecipient  *string     `json:"message_for_recipient"`
+	TransactionType      *string     `json:"transaction_type"`
 }
 
 // Backs POST /categorization-rules/{id}/reapply: every processed
@@ -2361,7 +2399,7 @@ func (q *Queries) ListReapplyCandidates(ctx context.Context, dateFrom time.Time)
 		if err := rows.Scan(
 			&i.ID,
 			&i.Direction,
-			&i.Category,
+			&i.CategoryID,
 			&i.MemberNumber,
 			&i.MatchedBy,
 			&i.CategorizationRuleID,
@@ -2392,7 +2430,8 @@ SELECT
     rt.amount,
     rt.currency,
     pt.direction,
-    pt.category,
+    pt.category_id,
+    tc.name AS category,
     pt.member_number,
     pt.matched_by,
     pt.category_set_manually,
@@ -2410,17 +2449,16 @@ SELECT
     count(*) OVER () AS total_count
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+JOIN transaction_categories tc ON tc.id = pt.category_id
 LEFT JOIN bank_accounts ba ON ba.id = rt.bank_account_id
 WHERE ($1::boolean IS NULL
         OR (pt.member_number IS NOT NULL) = $1::boolean)
   AND ($2::text IS NULL OR pt.direction = $2::text)
   -- include_children widens a category filter to that category's
   -- sub-categories too (one level only, so no recursion needed).
-  AND ($3::text IS NULL
-        OR pt.category = $3::text
-        OR ($4::boolean AND pt.category IN (
-              SELECT child.name FROM transaction_categories child
-              WHERE child.parent_name = $3::text)))
+  AND ($3::uuid IS NULL
+        OR pt.category_id = $3::uuid
+        OR ($4::boolean AND tc.parent_id = $3::uuid))
   AND ($5::text IS NULL OR pt.matched_by = $5::text)
   AND ($6::int IS NULL OR pt.member_number = $6::int)
   AND ($7::date IS NULL OR rt.transaction_date >= $7::date)
@@ -2438,7 +2476,7 @@ LIMIT $11::int OFFSET $10::int
 type ListTransactionsParams struct {
 	Assigned        *bool       `json:"assigned"`
 	Direction       *string     `json:"direction"`
-	Category        *string     `json:"category"`
+	CategoryID      pgtype.UUID `json:"category_id"`
 	IncludeChildren bool        `json:"include_children"`
 	MatchedBy       *string     `json:"matched_by"`
 	MemberNumber    *int32      `json:"member_number"`
@@ -2450,27 +2488,28 @@ type ListTransactionsParams struct {
 }
 
 type ListTransactionsRow struct {
-	ID                   int64     `json:"id"`
-	TransactionDate      time.Time `json:"transaction_date"`
-	Amount               string    `json:"amount"`
-	Currency             string    `json:"currency"`
-	Direction            string    `json:"direction"`
-	Category             string    `json:"category"`
-	MemberNumber         *int32    `json:"member_number"`
-	MatchedBy            *string   `json:"matched_by"`
-	CategorySetManually  bool      `json:"category_set_manually"`
-	IsPublicVisible      bool      `json:"is_public_visible"`
-	VariableSymbol       *string   `json:"variable_symbol"`
-	SpecificSymbol       *string   `json:"specific_symbol"`
-	ConstantSymbol       *string   `json:"constant_symbol"`
-	CounterAccountNumber *string   `json:"counter_account_number"`
-	CounterAccountName   *string   `json:"counter_account_name"`
-	MessageForRecipient  *string   `json:"message_for_recipient"`
-	UserIdentification   *string   `json:"user_identification"`
-	Comment              *string   `json:"comment"`
-	AdminComment         *string   `json:"admin_comment"`
-	BankAccountColor     *string   `json:"bank_account_color"`
-	TotalCount           int64     `json:"total_count"`
+	ID                   int64       `json:"id"`
+	TransactionDate      time.Time   `json:"transaction_date"`
+	Amount               string      `json:"amount"`
+	Currency             string      `json:"currency"`
+	Direction            string      `json:"direction"`
+	CategoryID           pgtype.UUID `json:"category_id"`
+	Category             string      `json:"category"`
+	MemberNumber         *int32      `json:"member_number"`
+	MatchedBy            *string     `json:"matched_by"`
+	CategorySetManually  bool        `json:"category_set_manually"`
+	IsPublicVisible      bool        `json:"is_public_visible"`
+	VariableSymbol       *string     `json:"variable_symbol"`
+	SpecificSymbol       *string     `json:"specific_symbol"`
+	ConstantSymbol       *string     `json:"constant_symbol"`
+	CounterAccountNumber *string     `json:"counter_account_number"`
+	CounterAccountName   *string     `json:"counter_account_name"`
+	MessageForRecipient  *string     `json:"message_for_recipient"`
+	UserIdentification   *string     `json:"user_identification"`
+	Comment              *string     `json:"comment"`
+	AdminComment         *string     `json:"admin_comment"`
+	BankAccountColor     *string     `json:"bank_account_color"`
+	TotalCount           int64       `json:"total_count"`
 }
 
 // Admin transaction browser: processed_transactions enriched with their
@@ -2484,7 +2523,7 @@ func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsPara
 	rows, err := q.db.Query(ctx, listTransactions,
 		arg.Assigned,
 		arg.Direction,
-		arg.Category,
+		arg.CategoryID,
 		arg.IncludeChildren,
 		arg.MatchedBy,
 		arg.MemberNumber,
@@ -2507,6 +2546,7 @@ func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsPara
 			&i.Amount,
 			&i.Currency,
 			&i.Direction,
+			&i.CategoryID,
 			&i.Category,
 			&i.MemberNumber,
 			&i.MatchedBy,
@@ -2707,7 +2747,7 @@ func (q *Queries) PaymentCoverageExists(ctx context.Context, arg PaymentCoverage
 
 const reapplyCategorization = `-- name: ReapplyCategorization :execrows
 UPDATE processed_transactions
-SET category = $1,
+SET category_id = $1,
     member_number = $2,
     matched_by = $3,
     categorization_rule_id = $4
@@ -2717,11 +2757,11 @@ WHERE id = $5
 `
 
 type ReapplyCategorizationParams struct {
-	Category             string  `json:"category"`
-	MemberNumber         *int32  `json:"member_number"`
-	MatchedBy            *string `json:"matched_by"`
-	CategorizationRuleID *int64  `json:"categorization_rule_id"`
-	ID                   int64   `json:"id"`
+	CategoryID           pgtype.UUID `json:"category_id"`
+	MemberNumber         *int32      `json:"member_number"`
+	MatchedBy            *string     `json:"matched_by"`
+	CategorizationRuleID *int64      `json:"categorization_rule_id"`
+	ID                   int64       `json:"id"`
 }
 
 // Rewrites one row's automatic outcome. The manual guards are repeated so an
@@ -2729,7 +2769,7 @@ type ReapplyCategorizationParams struct {
 // rows). Leaves admin_comment alone — not part of categorization.
 func (q *Queries) ReapplyCategorization(ctx context.Context, arg ReapplyCategorizationParams) (int64, error) {
 	result, err := q.db.Exec(ctx, reapplyCategorization,
-		arg.Category,
+		arg.CategoryID,
 		arg.MemberNumber,
 		arg.MatchedBy,
 		arg.CategorizationRuleID,
@@ -2768,22 +2808,22 @@ const unassignTransaction = `-- name: UnassignTransaction :one
 UPDATE processed_transactions
 SET member_number = NULL,
     matched_by = NULL,
-    category = $1,
+    category_id = $1,
     category_set_manually = false
 WHERE id = $2
 RETURNING id
 `
 
 type UnassignTransactionParams struct {
-	Category string `json:"category"`
-	ID       int64  `json:"id"`
+	CategoryID pgtype.UUID `json:"category_id"`
+	ID         int64       `json:"id"`
 }
 
 // Reverts a manual (or automatic) match: clears the member and matched_by, and
 // resets category to the direction-based default the caller passes in.
 // Clears category_set_manually: the row is back to automatic categorization.
 func (q *Queries) UnassignTransaction(ctx context.Context, arg UnassignTransactionParams) (int64, error) {
-	row := q.db.QueryRow(ctx, unassignTransaction, arg.Category, arg.ID)
+	row := q.db.QueryRow(ctx, unassignTransaction, arg.CategoryID, arg.ID)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
@@ -2935,7 +2975,7 @@ func (q *Queries) UpdateBudgetNote(ctx context.Context, arg UpdateBudgetNotePara
 const updateCategorizationRule = `-- name: UpdateCategorizationRule :one
 UPDATE categorization_rules
 SET priority = $1,
-    category = $2,
+    category_id = $2,
     enabled = $3,
     counter_account_number = $4,
     variable_symbol = $5,
@@ -2949,17 +2989,17 @@ RETURNING id
 `
 
 type UpdateCategorizationRuleParams struct {
-	Priority                int32   `json:"priority"`
-	Category                string  `json:"category"`
-	Enabled                 bool    `json:"enabled"`
-	CounterAccountNumber    *string `json:"counter_account_number"`
-	VariableSymbol          *string `json:"variable_symbol"`
-	ConstantSymbol          *string `json:"constant_symbol"`
-	TextContains            *string `json:"text_contains"`
-	TransactionTypeContains *string `json:"transaction_type_contains"`
-	Direction               *string `json:"direction"`
-	Note                    *string `json:"note"`
-	ID                      int64   `json:"id"`
+	Priority                int32       `json:"priority"`
+	CategoryID              pgtype.UUID `json:"category_id"`
+	Enabled                 bool        `json:"enabled"`
+	CounterAccountNumber    *string     `json:"counter_account_number"`
+	VariableSymbol          *string     `json:"variable_symbol"`
+	ConstantSymbol          *string     `json:"constant_symbol"`
+	TextContains            *string     `json:"text_contains"`
+	TransactionTypeContains *string     `json:"transaction_type_contains"`
+	Direction               *string     `json:"direction"`
+	Note                    *string     `json:"note"`
+	ID                      int64       `json:"id"`
 }
 
 // Full overwrite of every editable field; kind never changes. For a built-in
@@ -2968,7 +3008,7 @@ type UpdateCategorizationRuleParams struct {
 func (q *Queries) UpdateCategorizationRule(ctx context.Context, arg UpdateCategorizationRuleParams) (int64, error) {
 	row := q.db.QueryRow(ctx, updateCategorizationRule,
 		arg.Priority,
-		arg.Category,
+		arg.CategoryID,
 		arg.Enabled,
 		arg.CounterAccountNumber,
 		arg.VariableSymbol,

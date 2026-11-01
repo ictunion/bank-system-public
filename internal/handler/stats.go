@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 
+	"github.com/kubik/bank-system/internal/categoryid"
 	"github.com/kubik/bank-system/internal/db"
 )
 
@@ -40,7 +41,7 @@ type paymentStats struct {
 // @Router       /payments/stats [get]
 func PaymentStats(queries *db.Queries) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		row, err := queries.GetPaymentStats(r.Context())
+		row, err := queries.GetPaymentStats(r.Context(), categoryid.MembershipFee)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to compute payment stats")
 			return

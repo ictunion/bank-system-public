@@ -54,7 +54,7 @@ const (
 	//   PUT /transactions/{id}/assignment
 	//   DELETE /transactions/{id}/assignment
 	//   POST /categories
-	//   DELETE /categories/{name}
+	//   DELETE /categories/{id}
 	//   GET /payments/waivers
 	//   POST /payments/{member_number}/waive
 	//   DELETE /payments/{member_number}/waive/{year}/{month}

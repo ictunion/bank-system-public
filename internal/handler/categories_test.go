@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/kubik/bank-system/internal/categoryid"
 	"github.com/kubik/bank-system/internal/db"
 	"github.com/kubik/bank-system/internal/dbtest"
 )
@@ -27,18 +30,24 @@ func TestListCategories_SeededMandatory(t *testing.T) {
 		t.Fatalf("decoding response: %v", err)
 	}
 
-	want := map[string]bool{
-		"membership_fee": true,
-		"salary":         true,
-		"other_income":   true,
-		"other_expense":  true,
+	// The mandatory categories carry the fixed ids Go code refers to.
+	want := map[string]pgtype.UUID{
+		"membership_fee":    categoryid.MembershipFee,
+		"salary":            categoryid.Salary,
+		"other_income":      categoryid.OtherIncome,
+		"other_expense":     categoryid.OtherExpense,
+		"internal_transfer": categoryid.InternalTransfer,
+		"credited_interest": categoryid.CreditedInterest,
 	}
 	found := make(map[string]bool, len(want))
 	for _, c := range got {
-		if mandatory, ok := want[c.Name]; ok {
+		if id, ok := want[c.Name]; ok {
 			found[c.Name] = true
-			if c.IsMandatory != mandatory {
-				t.Errorf("category %q: is_mandatory = %v, want %v", c.Name, c.IsMandatory, mandatory)
+			if !c.IsMandatory {
+				t.Errorf("category %q: is_mandatory = false, want true", c.Name)
+			}
+			if c.ID != id {
+				t.Errorf("category %q: id = %v, want the fixed %v", c.Name, c.ID, id)
 			}
 		}
 	}
@@ -68,12 +77,8 @@ func TestCreateCategory_ThenListThenDelete(t *testing.T) {
 	}
 
 	// Delete.
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodDelete, "/categories/"+name, nil)
-	request.SetPathValue("name", name)
-	DeleteCategory(queries)(recorder, request)
-	if recorder.Code != http.StatusNoContent {
-		t.Fatalf("delete status = %d, body = %s", recorder.Code, recorder.Body)
+	if status := deleteCategory(t, queries, uuidText(t, created.ID)); status != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want %d", status, http.StatusNoContent)
 	}
 
 	// No longer in the list.
@@ -82,12 +87,8 @@ func TestCreateCategory_ThenListThenDelete(t *testing.T) {
 	}
 
 	// Deleting again is a 404, not a silent success.
-	recorder = httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodDelete, "/categories/"+name, nil)
-	request.SetPathValue("name", name)
-	DeleteCategory(queries)(recorder, request)
-	if recorder.Code != http.StatusNotFound {
-		t.Errorf("second delete status = %d, want %d", recorder.Code, http.StatusNotFound)
+	if status := deleteCategory(t, queries, uuidText(t, created.ID)); status != http.StatusNotFound {
+		t.Errorf("second delete status = %d, want %d", status, http.StatusNotFound)
 	}
 }
 
@@ -126,13 +127,8 @@ func TestCreateCategory_Validation(t *testing.T) {
 func TestDeleteCategory_Mandatory(t *testing.T) {
 	queries := dbtest.Tx(t)
 
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodDelete, "/categories/membership_fee", nil)
-	request.SetPathValue("name", "membership_fee")
-	DeleteCategory(queries)(recorder, request)
-
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d, body = %s", recorder.Code, http.StatusBadRequest, recorder.Body)
+	if status := deleteCategory(t, queries, uuidText(t, categoryid.MembershipFee)); status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", status, http.StatusBadRequest)
 	}
 	if categoryListMissing(t, queries, "membership_fee") {
 		t.Error("mandatory category membership_fee was deleted")
@@ -142,13 +138,11 @@ func TestDeleteCategory_Mandatory(t *testing.T) {
 func TestDeleteCategory_NotFound(t *testing.T) {
 	queries := dbtest.Tx(t)
 
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodDelete, "/categories/does_not_exist_xyz", nil)
-	request.SetPathValue("name", "does_not_exist_xyz")
-	DeleteCategory(queries)(recorder, request)
-
-	if recorder.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d, body = %s", recorder.Code, http.StatusNotFound, recorder.Body)
+	if status := deleteCategory(t, queries, "11111111-1111-4111-8111-111111111111"); status != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", status, http.StatusNotFound)
+	}
+	if status := deleteCategory(t, queries, "not-a-uuid"); status != http.StatusBadRequest {
+		t.Errorf("invalid id status = %d, want %d", status, http.StatusBadRequest)
 	}
 }
 
@@ -156,47 +150,51 @@ func TestCreateCategory_WithParent(t *testing.T) {
 	queries := dbtest.Tx(t)
 	const childName = "test_legal"
 
-	created := postCategoryBody(t, queries, `{"name":"`+childName+`","parent_name":"salary"}`, http.StatusCreated)
-	if created.ParentName == nil || *created.ParentName != "salary" {
-		t.Errorf("created.ParentName = %v, want \"salary\"", created.ParentName)
+	created := postCategoryBody(t, queries, `{"name":"`+childName+`","parent_id":"`+uuidText(t, categoryid.Salary)+`"}`, http.StatusCreated)
+	if created.ParentID != categoryid.Salary {
+		t.Errorf("created.ParentID = %v, want salary's id", created.ParentID)
+	}
+	if !created.ID.Valid {
+		t.Error("created.ID is null, want a generated id")
 	}
 
 	listed, ok := findListedCategory(t, queries, childName)
 	if !ok {
 		t.Fatalf("sub-category %q not found in ListCategories", childName)
 	}
-	if listed.ParentName == nil || *listed.ParentName != "salary" {
-		t.Errorf("listed.ParentName = %v, want \"salary\"", listed.ParentName)
+	if listed.ParentID != categoryid.Salary {
+		t.Errorf("listed.ParentID = %v, want salary's id", listed.ParentID)
 	}
 
 	topLevel, ok := findListedCategory(t, queries, "salary")
 	if !ok {
 		t.Fatal("salary not found in ListCategories")
 	}
-	if topLevel.ParentName != nil {
-		t.Errorf("salary.ParentName = %q, want nil", *topLevel.ParentName)
+	if topLevel.ParentID.Valid {
+		t.Errorf("salary.ParentID = %v, want null", topLevel.ParentID)
 	}
 }
 
-func TestCreateCategory_EmptyParentIsTopLevel(t *testing.T) {
+func TestCreateCategory_NullParentIsTopLevel(t *testing.T) {
 	queries := dbtest.Tx(t)
 
-	created := postCategoryBody(t, queries, `{"name":"test_no_parent","parent_name":"  "}`, http.StatusCreated)
-	if created.ParentName != nil {
-		t.Errorf("created.ParentName = %q, want nil", *created.ParentName)
+	created := postCategoryBody(t, queries, `{"name":"test_no_parent","parent_id":null}`, http.StatusCreated)
+	if created.ParentID.Valid {
+		t.Errorf("created.ParentID = %v, want null", created.ParentID)
 	}
 }
 
 func TestCreateCategory_InvalidParent(t *testing.T) {
 	queries := dbtest.Tx(t)
-	postCategoryBody(t, queries, `{"name":"test_child","parent_name":"salary"}`, http.StatusCreated)
+	child := postCategoryBody(t, queries, `{"name":"test_child","parent_id":"`+uuidText(t, categoryid.Salary)+`"}`, http.StatusCreated)
 
 	tests := []struct {
 		name string
 		body string
 	}{
-		{name: "parent does not exist", body: `{"name":"test_orphan","parent_name":"does_not_exist_xyz"}`},
-		{name: "parent is itself a sub-category", body: `{"name":"test_grandchild","parent_name":"test_child"}`},
+		{name: "parent does not exist", body: `{"name":"test_orphan","parent_id":"11111111-1111-4111-8111-111111111111"}`},
+		{name: "parent is itself a sub-category", body: `{"name":"test_grandchild","parent_id":"` + uuidText(t, child.ID) + `"}`},
+		{name: "parent id malformed", body: `{"name":"test_orphan","parent_id":"salary"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -207,27 +205,30 @@ func TestCreateCategory_InvalidParent(t *testing.T) {
 
 func TestDeleteCategory_HasChildren(t *testing.T) {
 	queries := dbtest.Tx(t)
-	postCategory(t, queries, "test_parent", http.StatusCreated)
-	postCategoryBody(t, queries, `{"name":"test_child","parent_name":"test_parent"}`, http.StatusCreated)
+	parent := postCategory(t, queries, "test_parent", http.StatusCreated)
+	child := postCategoryBody(t, queries, `{"name":"test_child","parent_id":"`+uuidText(t, parent.ID)+`"}`, http.StatusCreated)
 
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodDelete, "/categories/test_parent", nil)
-	request.SetPathValue("name", "test_parent")
-	DeleteCategory(queries)(recorder, request)
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want %d, body = %s", recorder.Code, http.StatusConflict, recorder.Body)
+	if status := deleteCategory(t, queries, uuidText(t, parent.ID)); status != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", status, http.StatusConflict)
 	}
 
 	// The child itself is deletable, after which the parent is too.
-	for _, name := range []string{"test_child", "test_parent"} {
-		recorder = httptest.NewRecorder()
-		request = httptest.NewRequest(http.MethodDelete, "/categories/"+name, nil)
-		request.SetPathValue("name", name)
-		DeleteCategory(queries)(recorder, request)
-		if recorder.Code != http.StatusNoContent {
-			t.Errorf("delete %q status = %d, want %d, body = %s", name, recorder.Code, http.StatusNoContent, recorder.Body)
+	for _, category := range []categoryResponse{child, parent} {
+		if status := deleteCategory(t, queries, uuidText(t, category.ID)); status != http.StatusNoContent {
+			t.Errorf("delete %q status = %d, want %d", category.Name, status, http.StatusNoContent)
 		}
 	}
+}
+
+// deleteCategory issues a DeleteCategory request for an id (text form) and
+// returns the status.
+func deleteCategory(t *testing.T, queries *db.Queries, id string) int {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/categories/"+id, nil)
+	request.SetPathValue("id", id)
+	DeleteCategory(queries)(recorder, request)
+	return recorder.Code
 }
 
 // postCategory issues a CreateCategory request and returns the decoded body,
@@ -238,7 +239,7 @@ func postCategory(t *testing.T, queries *db.Queries, name string, wantStatus int
 }
 
 // postCategoryBody is postCategory with a raw JSON body, for requests that
-// carry more than a name (e.g. parent_name).
+// carry more than a name (e.g. parent_id).
 func postCategoryBody(t *testing.T, queries *db.Queries, body string, wantStatus int) categoryResponse {
 	t.Helper()
 

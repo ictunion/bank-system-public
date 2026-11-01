@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kubik/bank-system/internal/categoryid"
 	"github.com/kubik/bank-system/internal/db"
 	"github.com/kubik/bank-system/internal/dbtest"
 )
@@ -110,19 +111,19 @@ func TestBudgetLines_CreateUpdateDelete(t *testing.T) {
 	createBudget(t, pool, `{"year":2026}`, http.StatusCreated)
 
 	wages := decodeLine(t, postLine(t, pool, "2026",
-		`{"kind":"expense","group_name":"Employment expenses","name":"Employee wages","projected":"300000","categories":["salary","salary"," "],"sort_order":10}`),
+		`{"kind":"expense","group_name":"Employment expenses","name":"Employee wages","projected":"300000","category_ids":["00000000-0000-4000-8000-000000000002","00000000-0000-4000-8000-000000000002"],"sort_order":10}`),
 		http.StatusCreated)
-	if wages.Projected != "300000.00" || len(wages.Categories) != 1 || wages.Categories[0] != "salary" {
-		t.Errorf("created = %+v, want projected 300000.00 and categories [salary] (deduplicated)", wages)
+	if wages.Projected != "300000.00" || len(wages.CategoryIDs) != 1 || wages.CategoryIDs[0] != categoryid.Salary {
+		t.Errorf("created = %+v, want projected 300000.00 and category_ids [salary] (deduplicated)", wages)
 	}
-	decodeLine(t, postLine(t, pool, "2026", `{"kind":"income","name":"Membership fees","projected":"600000.50","categories":["membership_fee"]}`),
+	decodeLine(t, postLine(t, pool, "2026", `{"kind":"income","name":"Membership fees","projected":"600000.50","category_ids":["00000000-0000-4000-8000-000000000001"]}`),
 		http.StatusCreated)
 
 	// Re-saving a line with its own categories isn't a conflict with itself.
 	updated := decodeLine(t, putLine(t, pool, "2026", wages.ID,
-		`{"kind":"expense","name":"Wages","projected":"310000","categories":["salary","other_expense"],"sort_order":5}`),
+		`{"kind":"expense","name":"Wages","projected":"310000","category_ids":["00000000-0000-4000-8000-000000000002","00000000-0000-4000-8000-000000000004"],"sort_order":5}`),
 		http.StatusOK)
-	if updated.Name != "Wages" || updated.GroupName != nil || len(updated.Categories) != 2 || updated.SortOrder != 5 {
+	if updated.Name != "Wages" || updated.GroupName != nil || len(updated.CategoryIDs) != 2 || updated.SortOrder != 5 {
 		t.Errorf("updated = %+v, want renamed, ungrouped, two categories, sort_order 5", updated)
 	}
 
@@ -143,16 +144,16 @@ func TestBudgetLines_CreateUpdateDelete(t *testing.T) {
 	}
 
 	// The deleted line's categories are free again.
-	decodeLine(t, postLine(t, pool, "2026", `{"kind":"expense","name":"Salaries","categories":["salary"]}`), http.StatusCreated)
+	decodeLine(t, postLine(t, pool, "2026", `{"kind":"expense","name":"Salaries","category_ids":["00000000-0000-4000-8000-000000000002"]}`), http.StatusCreated)
 }
 
 func TestBudgetLines_CategoryUsedByAnotherLine(t *testing.T) {
 	pool := dbtest.Pool(t)
 	createBudget(t, pool, `{"year":2026}`, http.StatusCreated)
 	createBudget(t, pool, `{"year":2027}`, http.StatusCreated)
-	decodeLine(t, postLine(t, pool, "2026", `{"kind":"expense","name":"Employee wages","categories":["salary"]}`), http.StatusCreated)
+	decodeLine(t, postLine(t, pool, "2026", `{"kind":"expense","name":"Employee wages","category_ids":["00000000-0000-4000-8000-000000000002"]}`), http.StatusCreated)
 
-	recorder := postLine(t, pool, "2026", `{"kind":"expense","name":"Legal","categories":["other_expense","salary"]}`)
+	recorder := postLine(t, pool, "2026", `{"kind":"expense","name":"Legal","category_ids":["00000000-0000-4000-8000-000000000004","00000000-0000-4000-8000-000000000002"]}`)
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d, body = %s", recorder.Code, http.StatusConflict, recorder.Body)
 	}
@@ -160,12 +161,12 @@ func TestBudgetLines_CategoryUsedByAnotherLine(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &conflict); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}
-	if conflict.Category != "salary" || conflict.Line != "Employee wages" {
+	if conflict.CategoryID != categoryid.Salary || conflict.Line != "Employee wages" {
 		t.Errorf("conflict = %+v, want salary owned by Employee wages", conflict)
 	}
 
 	// Another year's budget maps categories independently.
-	decodeLine(t, postLine(t, pool, "2027", `{"kind":"expense","name":"Legal","categories":["salary"]}`), http.StatusCreated)
+	decodeLine(t, postLine(t, pool, "2027", `{"kind":"expense","name":"Legal","category_ids":["00000000-0000-4000-8000-000000000002"]}`), http.StatusCreated)
 }
 
 func TestBudgetLines_Validation(t *testing.T) {
@@ -184,7 +185,9 @@ func TestBudgetLines_Validation(t *testing.T) {
 		{"missing name", "2026", `{"kind":"income","name":"  "}`, http.StatusBadRequest},
 		{"negative projected", "2026", `{"kind":"income","name":"X","projected":"-5"}`, http.StatusBadRequest},
 		{"three decimals", "2026", `{"kind":"income","name":"X","projected":"1.005"}`, http.StatusBadRequest},
-		{"unknown category", "2026", `{"kind":"income","name":"X","categories":["does_not_exist_xyz"]}`, http.StatusBadRequest},
+		{"null category id", "2026", `{"kind":"income","name":"X","category_ids":[null]}`, http.StatusBadRequest},
+		{"malformed category id", "2026", `{"kind":"income","name":"X","category_ids":["salary"]}`, http.StatusBadRequest},
+		{"unknown category", "2026", `{"kind":"income","name":"X","category_ids":["11111111-1111-4111-8111-111111111111"]}`, http.StatusBadRequest},
 		{"invalid year", "1999", `{"kind":"income","name":"X"}`, http.StatusBadRequest},
 		{"duplicate name", "2026", `{"kind":"income","name":"Interest"}`, http.StatusConflict},
 		{"no budget for year", "2030", `{"kind":"income","name":"X"}`, http.StatusNotFound},
@@ -214,7 +217,7 @@ func TestUpdateBudgetLine_OtherYearNotFound(t *testing.T) {
 func TestUpdateAndDeleteBudget(t *testing.T) {
 	pool := dbtest.Pool(t)
 	createBudget(t, pool, `{"year":2026,"note":"draft"}`, http.StatusCreated)
-	decodeLine(t, postLine(t, pool, "2026", `{"kind":"income","name":"Interest","categories":["credited_interest"]}`), http.StatusCreated)
+	decodeLine(t, postLine(t, pool, "2026", `{"kind":"income","name":"Interest","category_ids":["00000000-0000-4000-8000-000000000006"]}`), http.StatusCreated)
 
 	recorder := httptest.NewRecorder()
 	UpdateBudget(db.New(pool))(recorder, budgetRequest(http.MethodPatch, "/budgets/2026", `{"note":""}`, map[string]string{"year": "2026"}))
@@ -240,5 +243,5 @@ func TestUpdateAndDeleteBudget(t *testing.T) {
 	// Lines and mappings went with it: the year can be recreated and its
 	// categories mapped again.
 	createBudget(t, pool, `{"year":2026}`, http.StatusCreated)
-	decodeLine(t, postLine(t, pool, "2026", `{"kind":"income","name":"Interest","categories":["credited_interest"]}`), http.StatusCreated)
+	decodeLine(t, postLine(t, pool, "2026", `{"kind":"income","name":"Interest","category_ids":["00000000-0000-4000-8000-000000000006"]}`), http.StatusCreated)
 }

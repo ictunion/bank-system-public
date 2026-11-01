@@ -147,7 +147,7 @@ func main() {
 
 	api.HandleFunc("GET /categories", handler.RequireAnyRole(keycloakProvider, []keycloak.Role{keycloak.RoleListTransactions, keycloak.RoleManageRules}, handler.ListCategories(db.New(pool))))
 	api.HandleFunc("POST /categories", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.CreateCategory(db.New(pool))))
-	api.HandleFunc("DELETE /categories/{name}", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.DeleteCategory(db.New(pool))))
+	api.HandleFunc("DELETE /categories/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.DeleteCategory(db.New(pool))))
 	api.HandleFunc("GET /categorization-rules", handler.RequireAnyRole(keycloakProvider, []keycloak.Role{keycloak.RoleViewRules, keycloak.RoleManageRules}, handler.ListCategorizationRules(db.New(pool))))
 	api.HandleFunc("POST /categorization-rules", handler.RequireRole(keycloakProvider, keycloak.RoleManageRules, handler.CreateCategorizationRule(db.New(pool))))
 	api.HandleFunc("PUT /categorization-rules/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageRules, handler.UpdateCategorizationRule(db.New(pool))))

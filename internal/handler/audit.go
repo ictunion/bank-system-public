@@ -59,7 +59,7 @@ var auditRoutes = map[string]auditAction{
 	"PUT /transactions/{id}/assignment":                     {AuditCategoryTransaction, "assign_transaction"},
 	"DELETE /transactions/{id}/assignment":                  {AuditCategoryTransaction, "unassign_transaction"},
 	"POST /categories":                                      {AuditCategoryCategory, "create_category"},
-	"DELETE /categories/{name}":                             {AuditCategoryCategory, "delete_category"},
+	"DELETE /categories/{id}":                               {AuditCategoryCategory, "delete_category"},
 	"POST /categorization-rules":                            {AuditCategoryRule, "create_categorization_rule"},
 	"PUT /categorization-rules/{id}":                        {AuditCategoryRule, "update_categorization_rule"},
 	"DELETE /categorization-rules/{id}":                     {AuditCategoryRule, "delete_categorization_rule"},

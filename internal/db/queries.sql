@@ -457,7 +457,9 @@ ORDER BY ma.total_missed_months DESC, ma.member_number;
 -- a WHERE filter would instead make the whole FROM produce zero rows, and
 -- :one would then error on no rows. count(m.member_number), not count(*), so
 -- the LEFT JOIN's placeholder all-NULL row (no member matched the join
--- condition) doesn't itself count as a liable member.
+-- condition) doesn't itself count as a liable member. The membership_fee
+-- category id is passed in (categoryid.MembershipFee) rather than written
+-- here, so the fixed id lives in one place.
 WITH window_bounds AS (
     SELECT (CURRENT_DATE - interval '1 month')::date AS window_from, CURRENT_DATE::date AS window_to
 )
@@ -471,7 +473,7 @@ SELECT
             FROM processed_transactions pt
             JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
             WHERE pt.member_number = m.member_number
-              AND pt.category = 'membership_fee'
+              AND pt.category_id = sqlc.arg(membership_fee_category_id)::uuid
               AND rt.transaction_date BETWEEN wb.window_from AND wb.window_to
         )
     )::int AS paid_members
@@ -629,7 +631,8 @@ SELECT
     rt.amount,
     rt.currency,
     pt.direction,
-    pt.category,
+    pt.category_id,
+    tc.name AS category,
     pt.member_number,
     pt.matched_by,
     pt.category_set_manually,
@@ -647,17 +650,16 @@ SELECT
     count(*) OVER () AS total_count
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+JOIN transaction_categories tc ON tc.id = pt.category_id
 LEFT JOIN bank_accounts ba ON ba.id = rt.bank_account_id
 WHERE (sqlc.narg(assigned)::boolean IS NULL
         OR (pt.member_number IS NOT NULL) = sqlc.narg(assigned)::boolean)
   AND (sqlc.narg(direction)::text IS NULL OR pt.direction = sqlc.narg(direction)::text)
   -- include_children widens a category filter to that category's
   -- sub-categories too (one level only, so no recursion needed).
-  AND (sqlc.narg(category)::text IS NULL
-        OR pt.category = sqlc.narg(category)::text
-        OR (sqlc.arg(include_children)::boolean AND pt.category IN (
-              SELECT child.name FROM transaction_categories child
-              WHERE child.parent_name = sqlc.narg(category)::text)))
+  AND (sqlc.narg(category_id)::uuid IS NULL
+        OR pt.category_id = sqlc.narg(category_id)::uuid
+        OR (sqlc.arg(include_children)::boolean AND tc.parent_id = sqlc.narg(category_id)::uuid))
   AND (sqlc.narg(matched_by)::text IS NULL OR pt.matched_by = sqlc.narg(matched_by)::text)
   AND (sqlc.narg(member_number)::int IS NULL OR pt.member_number = sqlc.narg(member_number)::int)
   AND (sqlc.narg(date_from)::date IS NULL OR rt.transaction_date >= sqlc.narg(date_from)::date)
@@ -680,26 +682,27 @@ LIMIT sqlc.arg(lim)::int OFFSET sqlc.arg(off)::int;
 -- signed value raw_transactions stores it as. internal_transfer excluded
 -- entirely — money moving between our own bank_accounts isn't real income or
 -- expense and would otherwise inflate both totals for the same transfer.
--- A sub-category of internal_transfer is excluded the same way.
--- rollup=true reports each sub-category under its parent's name instead
--- (one level only, so COALESCE(parent_name, name) is the top-level name).
--- GROUP BY by position: a bare "category" there would resolve to
--- pt.category, not the rolled-up output column.
+-- A sub-category of internal_transfer is excluded the same way (its id is
+-- passed in: categoryid.InternalTransfer).
+-- rollup=true reports each sub-category under its parent instead (one level
+-- only, so COALESCE(parent_id, id) is the top-level category).
 SELECT
     pt.direction,
-    (CASE WHEN sqlc.arg(rollup)::boolean
-          THEN COALESCE(tc.parent_name, pt.category)
-          ELSE pt.category END)::text AS category,
+    shown.id AS category_id,
+    shown.name AS category,
     rt.currency,
     COALESCE(SUM(ABS(rt.amount)), 0)::numeric AS total
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
-JOIN transaction_categories tc ON tc.name = pt.category
-WHERE pt.category != 'internal_transfer'
-  AND tc.parent_name IS DISTINCT FROM 'internal_transfer'
+JOIN transaction_categories tc ON tc.id = pt.category_id
+JOIN transaction_categories shown ON shown.id = CASE WHEN sqlc.arg(rollup)::boolean
+                                                     THEN COALESCE(tc.parent_id, tc.id)
+                                                     ELSE tc.id END
+WHERE pt.category_id != sqlc.arg(internal_transfer_category_id)::uuid
+  AND tc.parent_id IS DISTINCT FROM sqlc.arg(internal_transfer_category_id)::uuid
   AND (sqlc.narg(date_from)::date IS NULL OR rt.transaction_date >= sqlc.narg(date_from)::date)
   AND (sqlc.narg(date_to)::date IS NULL OR rt.transaction_date <= sqlc.narg(date_to)::date)
-GROUP BY 1, 2, 3
+GROUP BY pt.direction, shown.id, shown.name, rt.currency
 ORDER BY pt.direction, total DESC;
 
 -- name: FindMemberByVariableSymbol :one
@@ -712,8 +715,8 @@ LIMIT 1;
 
 -- name: CreateProcessedTransaction :one
 -- categorization_rule_id is NULL when no rule matched (direction fallback).
-INSERT INTO processed_transactions (raw_transaction_id, member_number, category, direction, matched_by, categorization_rule_id)
-VALUES (sqlc.arg(raw_transaction_id), sqlc.narg(member_number), sqlc.arg(category), sqlc.arg(direction), sqlc.narg(matched_by), sqlc.narg(categorization_rule_id))
+INSERT INTO processed_transactions (raw_transaction_id, member_number, category_id, direction, matched_by, categorization_rule_id)
+VALUES (sqlc.arg(raw_transaction_id), sqlc.narg(member_number), sqlc.arg(category_id), sqlc.arg(direction), sqlc.narg(matched_by), sqlc.narg(categorization_rule_id))
 RETURNING *;
 
 -- name: ListEnabledCategorizationRules :many
@@ -728,7 +731,7 @@ ORDER BY priority, id;
 -- transaction not set by hand dated on or after date_from, with the raw
 -- fields the rules read and its current outcome to compare against.
 SELECT
-    pt.id, pt.direction, pt.category, pt.member_number, pt.matched_by, pt.categorization_rule_id,
+    pt.id, pt.direction, pt.category_id, pt.member_number, pt.matched_by, pt.categorization_rule_id,
     rt.transaction_date, rt.amount, rt.counter_account_number, rt.variable_symbol,
     rt.constant_symbol, rt.comment, rt.user_identification, rt.message_for_recipient,
     rt.transaction_type
@@ -744,7 +747,7 @@ ORDER BY pt.id;
 -- admin edit landing between ListReapplyCandidates and this update wins (0
 -- rows). Leaves admin_comment alone — not part of categorization.
 UPDATE processed_transactions
-SET category = sqlc.arg(category),
+SET category_id = sqlc.arg(category_id),
     member_number = sqlc.narg(member_number),
     matched_by = sqlc.narg(matched_by),
     categorization_rule_id = sqlc.narg(categorization_rule_id)
@@ -765,11 +768,11 @@ SELECT * FROM categorization_rules WHERE id = sqlc.arg(id);
 -- Only pattern rules are ever created; the two built-in kinds are seeded by
 -- migration and exist at most once each.
 INSERT INTO categorization_rules (
-    priority, kind, category, enabled,
+    priority, kind, category_id, enabled,
     counter_account_number, variable_symbol, constant_symbol,
     text_contains, transaction_type_contains, direction, note
 ) VALUES (
-    sqlc.arg(priority), 'pattern', sqlc.arg(category), sqlc.arg(enabled),
+    sqlc.arg(priority), 'pattern', sqlc.arg(category_id), sqlc.arg(enabled),
     sqlc.narg(counter_account_number), sqlc.narg(variable_symbol), sqlc.narg(constant_symbol),
     sqlc.narg(text_contains), sqlc.narg(transaction_type_contains), sqlc.narg(direction), sqlc.narg(note)
 )
@@ -781,7 +784,7 @@ RETURNING id;
 -- CHECK rejects anything else anyway).
 UPDATE categorization_rules
 SET priority = sqlc.arg(priority),
-    category = sqlc.arg(category),
+    category_id = sqlc.arg(category_id),
     enabled = sqlc.arg(enabled),
     counter_account_number = sqlc.narg(counter_account_number),
     variable_symbol = sqlc.narg(variable_symbol),
@@ -820,7 +823,8 @@ SELECT
     rt.amount,
     rt.currency,
     pt.direction,
-    pt.category,
+    pt.category_id,
+    tc.name AS category,
     pt.member_number,
     pt.matched_by,
     pt.category_set_manually,
@@ -837,6 +841,7 @@ SELECT
     ba.color AS bank_account_color
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+JOIN transaction_categories tc ON tc.id = pt.category_id
 LEFT JOIN bank_accounts ba ON ba.id = rt.bank_account_id
 WHERE pt.id = sqlc.arg(id);
 
@@ -850,31 +855,36 @@ ORDER BY covers_year, covers_month;
 SELECT EXISTS (SELECT 1 FROM members WHERE member_number = sqlc.arg(member_number)) AS exists;
 
 -- name: CategoryExists :one
-SELECT EXISTS (SELECT 1 FROM transaction_categories WHERE name = sqlc.arg(name)) AS exists;
+SELECT EXISTS (SELECT 1 FROM transaction_categories WHERE id = sqlc.arg(id)) AS exists;
 
 -- name: ListCategories :many
 SELECT * FROM transaction_categories ORDER BY is_mandatory DESC, name;
 
 -- name: CreateCategory :one
--- is_mandatory is never set true here — only the four seeded in
--- migrations/20260910000001_add_transaction_categories.sql are mandatory.
--- parent_name's one-level rule is checked by the caller (handler.CreateCategory).
-INSERT INTO transaction_categories (name, is_mandatory, parent_name)
-VALUES (sqlc.arg(name), false, sqlc.narg(parent_name))
+-- is_mandatory is never set true here — only the six with fixed ids (see
+-- internal/categoryid) are mandatory. The id is generated. parent_id's
+-- one-level rule is checked by the caller (handler.CreateCategory).
+INSERT INTO transaction_categories (name, is_mandatory, parent_id)
+VALUES (sqlc.arg(name), false, sqlc.narg(parent_id))
 RETURNING *;
 
 -- name: CategoryHasChildren :one
-SELECT EXISTS (SELECT 1 FROM transaction_categories WHERE parent_name = sqlc.arg(name)::text) AS exists;
+SELECT EXISTS (SELECT 1 FROM transaction_categories WHERE parent_id = sqlc.arg(id)::uuid) AS exists;
 
 -- name: DeleteCategory :execrows
 -- The is_mandatory=false guard means a mandatory category and a missing one
 -- both come back as 0 rows affected — the caller (handler.DeleteCategory)
 -- checks GetCategory first to tell those two cases apart. A category still
--- referenced by processed_transactions.category fails this with a foreign
--- key violation instead (see processed_transactions_category_fkey).
-DELETE FROM transaction_categories WHERE name = sqlc.arg(name) AND is_mandatory = false;
+-- referenced by processed_transactions, categorization_rules or
+-- budget_line_categories fails this with a foreign key violation instead.
+DELETE FROM transaction_categories WHERE id = sqlc.arg(id) AND is_mandatory = false;
 
 -- name: GetCategory :one
+SELECT * FROM transaction_categories WHERE id = sqlc.arg(id);
+
+-- name: GetCategoryByName :one
+-- Names are unique labels; used where a category is only known by name
+-- (fixtures).
 SELECT * FROM transaction_categories WHERE name = sqlc.arg(name);
 
 -- name: AssignTransactionToMember :one
@@ -887,7 +897,7 @@ SELECT * FROM transaction_categories WHERE name = sqlc.arg(name);
 -- automatic re-categorization leaves this row alone from now on.
 UPDATE processed_transactions
 SET member_number = sqlc.arg(member_number),
-    category = sqlc.arg(category),
+    category_id = sqlc.arg(category_id),
     matched_by = sqlc.narg(matched_by),
     admin_comment = sqlc.arg(admin_comment),
     category_set_manually = true
@@ -901,7 +911,7 @@ RETURNING id;
 UPDATE processed_transactions
 SET member_number = NULL,
     matched_by = NULL,
-    category = sqlc.arg(category),
+    category_id = sqlc.arg(category_id),
     category_set_manually = false
 WHERE id = sqlc.arg(id)
 RETURNING id;
@@ -984,11 +994,12 @@ ORDER BY sort_order, id;
 -- Every category mapping of one year, with its line's name — used both to
 -- attach categories to lines and to report which line already owns a
 -- category when a save would map it twice.
-SELECT blc.budget_line_id, blc.category, bl.name AS line_name
+SELECT blc.budget_line_id, blc.category_id, bl.name AS line_name
 FROM budget_line_categories blc
 JOIN budget_lines bl ON bl.id = blc.budget_line_id
+JOIN transaction_categories tc ON tc.id = blc.category_id
 WHERE blc.budget_year = sqlc.arg(budget_year)
-ORDER BY blc.budget_line_id, blc.category;
+ORDER BY blc.budget_line_id, tc.name;
 
 -- name: CreateBudgetLine :one
 INSERT INTO budget_lines (budget_year, kind, group_name, name, projected_amount, sort_order)
@@ -1013,8 +1024,8 @@ WHERE id = sqlc.arg(id) AND budget_year = sqlc.arg(budget_year);
 DELETE FROM budget_line_categories WHERE budget_line_id = sqlc.arg(budget_line_id);
 
 -- name: InsertBudgetLineCategory :exec
-INSERT INTO budget_line_categories (budget_line_id, budget_year, category)
-VALUES (sqlc.arg(budget_line_id), sqlc.arg(budget_year), sqlc.arg(category));
+INSERT INTO budget_line_categories (budget_line_id, budget_year, category_id)
+VALUES (sqlc.arg(budget_line_id), sqlc.arg(budget_year), sqlc.arg(category_id));
 
 -- name: DeleteBudgetLine :execrows
 -- Cascades to the line's budget_line_categories.

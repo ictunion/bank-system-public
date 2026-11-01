@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kubik/bank-system/internal/categoryid"
 	"github.com/kubik/bank-system/internal/db"
 	"github.com/kubik/bank-system/internal/dbtest"
 )
@@ -30,7 +31,7 @@ func listRules(t *testing.T, queries *db.Queries) []categorizationRuleResponse {
 func seededRule(t *testing.T, queries *db.Queries, kind, category string) categorizationRuleResponse {
 	t.Helper()
 	for _, rule := range listRules(t, queries) {
-		if rule.Kind == kind && rule.Category == category {
+		if rule.Kind == kind && rule.CategoryID == categoryIDByName(t, queries, category) {
 			return rule
 		}
 	}
@@ -100,7 +101,7 @@ func TestListCategorizationRules_SeededInOrder(t *testing.T) {
 		t.Fatalf("got %d rules, want %d: %+v", len(got), len(want), got)
 	}
 	for i, w := range want {
-		if got[i].Priority != w.priority || got[i].Kind != w.kind || got[i].Category != w.category || !got[i].Enabled {
+		if got[i].Priority != w.priority || got[i].Kind != w.kind || got[i].CategoryID != categoryIDByName(t, queries, w.category) || !got[i].Enabled {
 			t.Errorf("rule %d = %+v, want enabled %d %s %s", i, got[i], w.priority, w.kind, w.category)
 		}
 	}
@@ -110,7 +111,7 @@ func TestCreateCategorizationRule_ThenUpdateThenDelete(t *testing.T) {
 	queries := dbtest.Tx(t)
 
 	created := postRule(t, queries,
-		`{"priority":400,"category":"other_expense","counter_account_number":" 2900000001 ","direction":"outgoing","text_contains":"","note":"Lawyer"}`,
+		`{"priority":400,"category_id":"00000000-0000-4000-8000-000000000004","counter_account_number":" 2900000001 ","direction":"outgoing","text_contains":"","note":"Lawyer"}`,
 		http.StatusCreated)
 	if created.Kind != "pattern" || !created.Enabled {
 		t.Errorf("created = %+v, want an enabled pattern rule", created)
@@ -124,9 +125,9 @@ func TestCreateCategorizationRule_ThenUpdateThenDelete(t *testing.T) {
 
 	// Full overwrite: the omitted direction and note are cleared.
 	updated := putRule(t, queries, created.ID,
-		`{"priority":450,"category":"salary","enabled":false,"counter_account_number":"2900000001"}`,
+		`{"priority":450,"category_id":"00000000-0000-4000-8000-000000000002","enabled":false,"counter_account_number":"2900000001"}`,
 		http.StatusOK)
-	if updated.Priority != 450 || updated.Category != "salary" || updated.Enabled {
+	if updated.Priority != 450 || updated.CategoryID != categoryid.Salary || updated.Enabled {
 		t.Errorf("updated = %+v, want priority 450, category salary, disabled", updated)
 	}
 	if updated.Direction != nil || updated.Note != nil {
@@ -149,14 +150,15 @@ func TestCreateCategorizationRule_Validation(t *testing.T) {
 		body string
 	}{
 		{"invalid JSON", `not json`},
-		{"missing priority", `{"category":"salary","text_contains":"mzda"}`},
+		{"missing priority", `{"category_id":"00000000-0000-4000-8000-000000000002","text_contains":"mzda"}`},
 		{"missing category", `{"priority":400,"text_contains":"mzda"}`},
-		{"unknown category", `{"priority":400,"category":"does_not_exist_xyz","text_contains":"mzda"}`},
-		{"no condition", `{"priority":400,"category":"salary"}`},
-		{"direction only", `{"priority":400,"category":"salary","direction":"outgoing"}`},
-		{"blank conditions only", `{"priority":400,"category":"salary","text_contains":"  "}`},
-		{"invalid direction", `{"priority":400,"category":"salary","text_contains":"mzda","direction":"sideways"}`},
-		{"condition too long", `{"priority":400,"category":"salary","text_contains":"` + strings.Repeat("x", ruleFieldMaxLength+1) + `"}`},
+		{"malformed category_id", `{"priority":400,"category_id":"salary","text_contains":"mzda"}`},
+		{"unknown category", `{"priority":400,"category_id":"11111111-1111-4111-8111-111111111111","text_contains":"mzda"}`},
+		{"no condition", `{"priority":400,"category_id":"00000000-0000-4000-8000-000000000002"}`},
+		{"direction only", `{"priority":400,"category_id":"00000000-0000-4000-8000-000000000002","direction":"outgoing"}`},
+		{"blank conditions only", `{"priority":400,"category_id":"00000000-0000-4000-8000-000000000002","text_contains":"  "}`},
+		{"invalid direction", `{"priority":400,"category_id":"00000000-0000-4000-8000-000000000002","text_contains":"mzda","direction":"sideways"}`},
+		{"condition too long", `{"priority":400,"category_id":"00000000-0000-4000-8000-000000000002","text_contains":"` + strings.Repeat("x", ruleFieldMaxLength+1) + `"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -171,7 +173,7 @@ func TestUpdateCategorizationRule_BuiltIn(t *testing.T) {
 
 	// Priority, enabled and note are editable; category may be omitted.
 	updated := putRule(t, queries, memberRule.ID, `{"priority":350,"enabled":false,"note":"moved"}`, http.StatusOK)
-	if updated.Priority != 350 || updated.Enabled || updated.Category != "membership_fee" || updated.Kind != "member_variable_symbol" {
+	if updated.Priority != 350 || updated.Enabled || updated.CategoryID != categoryid.MembershipFee || updated.Kind != "member_variable_symbol" {
 		t.Errorf("updated = %+v, want disabled membership_fee rule at 350", updated)
 	}
 
@@ -179,7 +181,7 @@ func TestUpdateCategorizationRule_BuiltIn(t *testing.T) {
 		name string
 		body string
 	}{
-		{"category change", `{"priority":300,"category":"salary"}`},
+		{"category change", `{"priority":300,"category_id":"00000000-0000-4000-8000-000000000002"}`},
 		{"condition", `{"priority":300,"text_contains":"mzda"}`},
 		{"direction", `{"priority":300,"direction":"incoming"}`},
 	}
@@ -190,12 +192,12 @@ func TestUpdateCategorizationRule_BuiltIn(t *testing.T) {
 	}
 
 	// Sending its own fixed category is fine.
-	putRule(t, queries, memberRule.ID, `{"priority":300,"category":"membership_fee"}`, http.StatusOK)
+	putRule(t, queries, memberRule.ID, `{"priority":300,"category_id":"00000000-0000-4000-8000-000000000001"}`, http.StatusOK)
 }
 
 func TestUpdateCategorizationRule_NotFound(t *testing.T) {
 	queries := dbtest.Tx(t)
-	putRule(t, queries, 999999, `{"priority":400,"category":"salary","text_contains":"mzda"}`, http.StatusNotFound)
+	putRule(t, queries, 999999, `{"priority":400,"category_id":"00000000-0000-4000-8000-000000000002","text_contains":"mzda"}`, http.StatusNotFound)
 }
 
 func TestDeleteCategorizationRule_BuiltInRefused(t *testing.T) {
@@ -213,7 +215,7 @@ func TestDeleteCategorizationRule_BuiltInRefused(t *testing.T) {
 func TestDeleteCategorizationRule_KeepsTransactions(t *testing.T) {
 	queries := dbtest.Tx(t)
 	account := seedBankAccount(t, queries, "9100000021")
-	rule := postRule(t, queries, `{"priority":400,"category":"salary","counter_account_number":"2900000002"}`, http.StatusCreated)
+	rule := postRule(t, queries, `{"priority":400,"category_id":"00000000-0000-4000-8000-000000000002","counter_account_number":"2900000002"}`, http.StatusCreated)
 	pt := seedTransactionWithRule(t, queries, account.ID, 2104, "-100.00", "salary", "outgoing", nil, &rule.ID)
 
 	if status := deleteRule(t, queries, rule.ID); status != http.StatusNoContent {

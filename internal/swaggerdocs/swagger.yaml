@@ -6,8 +6,8 @@ definitions:
         description: optional staff note; omit or empty string to clear, full overwrite
           like member_number
         type: string
-      category:
-        description: optional, defaults to "membership_fee"
+      category_id:
+        description: optional, defaults to membership_fee
         type: string
       covers:
         description: optional; empty = the transaction's own month
@@ -94,7 +94,7 @@ definitions:
     type: object
   handler.budgetLineRequest:
     properties:
-      categories:
+      category_ids:
         items:
           type: string
         type: array
@@ -113,7 +113,7 @@ definitions:
     type: object
   handler.budgetLineResponse:
     properties:
-      categories:
+      category_ids:
         items:
           type: string
         type: array
@@ -127,7 +127,7 @@ definitions:
       name:
         type: string
       projected:
-        description: Projected is always positive; kind gives the sign.
+        description: always positive; kind gives the sign
         type: string
       sort_order:
         type: integer
@@ -156,7 +156,7 @@ definitions:
     type: object
   handler.categorizationRuleRequest:
     properties:
-      category:
+      category_id:
         type: string
       constant_symbol:
         type: string
@@ -181,7 +181,7 @@ definitions:
     type: object
   handler.categorizationRuleResponse:
     properties:
-      category:
+      category_id:
         type: string
       constant_symbol:
         type: string
@@ -210,7 +210,7 @@ definitions:
     type: object
   handler.categoryConflictResponse:
     properties:
-      category:
+      category_id:
         type: string
       error:
         type: string
@@ -219,11 +219,14 @@ definitions:
     type: object
   handler.categoryResponse:
     properties:
+      id:
+        type: string
       is_mandatory:
         type: boolean
       name:
         type: string
-      parent_name:
+      parent_id:
+        description: null for a top-level category
         type: string
     type: object
   handler.categorySummaryResponse:
@@ -250,6 +253,9 @@ definitions:
   handler.categoryTotal:
     properties:
       category:
+        description: name, for display
+        type: string
+      category_id:
         type: string
       currency:
         type: string
@@ -305,7 +311,8 @@ definitions:
     properties:
       name:
         type: string
-      parent_name:
+      parent_id:
+        description: optional
         type: string
     type: object
   handler.currencyTotal:
@@ -464,6 +471,9 @@ definitions:
       bank_account_color:
         type: string
       category:
+        description: the category's name, for display
+        type: string
+      category_id:
         type: string
       category_set_manually:
         type: boolean
@@ -511,6 +521,9 @@ definitions:
       bank_account_color:
         type: string
       category:
+        description: the category's name, for display
+        type: string
+      category_id:
         type: string
       category_set_manually:
         type: boolean
@@ -1203,8 +1216,9 @@ paths:
       consumes:
       - application/json
       description: Requires the manage-budget role. projected is a non-negative decimal
-        string; kind gives the sign. Each category may feed only one line per year
-        (409 names the line that has it). Unknown category → 400.
+        string; kind gives the sign. Each category (by id in category_ids) may feed
+        only one line per year (409 names the line that has it). Unknown category
+        → 400.
       parameters:
       - description: Budget year
         in: path
@@ -1369,7 +1383,7 @@ paths:
   /categories:
     get:
       description: Requires the list-transactions or manage-rules role. Mandatory
-        categories first. parent_name is null for top-level categories.
+        categories first. parent_id is null for top-level categories.
       produces:
       - application/json
       responses:
@@ -1400,7 +1414,7 @@ paths:
       consumes:
       - application/json
       description: Requires the manage-transactions role. Always created with is_mandatory=false.
-        Optional parent_name must name an existing top-level category.
+        Optional parent_id must be an existing top-level category.
       parameters:
       - description: New category
         in: body
@@ -1444,14 +1458,14 @@ paths:
       summary: Add a custom transaction category
       tags:
       - categories
-  /categories/{name}:
+  /categories/{id}:
     delete:
       description: Requires the manage-transactions role. Mandatory categories and
         categories still in use cannot be deleted.
       parameters:
-      - description: Category name
+      - description: Category UUID
         in: path
-        name: name
+        name: id
         required: true
         type: string
       responses:
@@ -1482,8 +1496,8 @@ paths:
               type: string
             type: object
         "409":
-          description: category still has sub-categories or is referenced by existing
-            transactions
+          description: category still has sub-categories or is referenced by transactions,
+            rules or budget lines
           schema:
             additionalProperties:
               type: string
@@ -2448,12 +2462,12 @@ paths:
         in: query
         name: direction
         type: string
-      - description: e.g. membership_fee, salary, other_income, other_expense
+      - description: Category UUID
         in: query
-        name: category
+        name: category_id
         type: string
-      - description: 'With category: also match that category''s sub-categories. Default
-          false'
+      - description: 'With category_id: also match that category''s sub-categories.
+          Default false'
         in: query
         name: include_children
         type: boolean
