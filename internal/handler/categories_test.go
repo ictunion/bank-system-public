@@ -152,13 +152,98 @@ func TestDeleteCategory_NotFound(t *testing.T) {
 	}
 }
 
+func TestCreateCategory_WithParent(t *testing.T) {
+	queries := dbtest.Tx(t)
+	const childName = "test_legal"
+
+	created := postCategoryBody(t, queries, `{"name":"`+childName+`","parent_name":"salary"}`, http.StatusCreated)
+	if created.ParentName == nil || *created.ParentName != "salary" {
+		t.Errorf("created.ParentName = %v, want \"salary\"", created.ParentName)
+	}
+
+	listed, ok := findListedCategory(t, queries, childName)
+	if !ok {
+		t.Fatalf("sub-category %q not found in ListCategories", childName)
+	}
+	if listed.ParentName == nil || *listed.ParentName != "salary" {
+		t.Errorf("listed.ParentName = %v, want \"salary\"", listed.ParentName)
+	}
+
+	topLevel, ok := findListedCategory(t, queries, "salary")
+	if !ok {
+		t.Fatal("salary not found in ListCategories")
+	}
+	if topLevel.ParentName != nil {
+		t.Errorf("salary.ParentName = %q, want nil", *topLevel.ParentName)
+	}
+}
+
+func TestCreateCategory_EmptyParentIsTopLevel(t *testing.T) {
+	queries := dbtest.Tx(t)
+
+	created := postCategoryBody(t, queries, `{"name":"test_no_parent","parent_name":"  "}`, http.StatusCreated)
+	if created.ParentName != nil {
+		t.Errorf("created.ParentName = %q, want nil", *created.ParentName)
+	}
+}
+
+func TestCreateCategory_InvalidParent(t *testing.T) {
+	queries := dbtest.Tx(t)
+	postCategoryBody(t, queries, `{"name":"test_child","parent_name":"salary"}`, http.StatusCreated)
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "parent does not exist", body: `{"name":"test_orphan","parent_name":"does_not_exist_xyz"}`},
+		{name: "parent is itself a sub-category", body: `{"name":"test_grandchild","parent_name":"test_child"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			postCategoryBody(t, queries, tt.body, http.StatusBadRequest)
+		})
+	}
+}
+
+func TestDeleteCategory_HasChildren(t *testing.T) {
+	queries := dbtest.Tx(t)
+	postCategory(t, queries, "test_parent", http.StatusCreated)
+	postCategoryBody(t, queries, `{"name":"test_child","parent_name":"test_parent"}`, http.StatusCreated)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/categories/test_parent", nil)
+	request.SetPathValue("name", "test_parent")
+	DeleteCategory(queries)(recorder, request)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d, body = %s", recorder.Code, http.StatusConflict, recorder.Body)
+	}
+
+	// The child itself is deletable, after which the parent is too.
+	for _, name := range []string{"test_child", "test_parent"} {
+		recorder = httptest.NewRecorder()
+		request = httptest.NewRequest(http.MethodDelete, "/categories/"+name, nil)
+		request.SetPathValue("name", name)
+		DeleteCategory(queries)(recorder, request)
+		if recorder.Code != http.StatusNoContent {
+			t.Errorf("delete %q status = %d, want %d, body = %s", name, recorder.Code, http.StatusNoContent, recorder.Body)
+		}
+	}
+}
+
 // postCategory issues a CreateCategory request and returns the decoded body,
 // failing the test if the response status doesn't match wantStatus.
 func postCategory(t *testing.T, queries *db.Queries, name string, wantStatus int) categoryResponse {
 	t.Helper()
+	return postCategoryBody(t, queries, `{"name":"`+name+`"}`, wantStatus)
+}
+
+// postCategoryBody is postCategory with a raw JSON body, for requests that
+// carry more than a name (e.g. parent_name).
+func postCategoryBody(t *testing.T, queries *db.Queries, body string, wantStatus int) categoryResponse {
+	t.Helper()
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/categories", strings.NewReader(`{"name":"`+name+`"}`))
+	request := httptest.NewRequest(http.MethodPost, "/categories", strings.NewReader(body))
 	CreateCategory(queries)(recorder, request)
 
 	if recorder.Code != wantStatus {
@@ -177,6 +262,13 @@ func postCategory(t *testing.T, queries *db.Queries, name string, wantStatus int
 // ListCategories call.
 func categoryListContains(t *testing.T, queries *db.Queries, name string) bool {
 	t.Helper()
+	_, ok := findListedCategory(t, queries, name)
+	return ok
+}
+
+// findListedCategory returns name's entry from a fresh ListCategories call.
+func findListedCategory(t *testing.T, queries *db.Queries, name string) (categoryResponse, bool) {
+	t.Helper()
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/categories", nil)
@@ -191,10 +283,10 @@ func categoryListContains(t *testing.T, queries *db.Queries, name string) bool {
 	}
 	for _, c := range got {
 		if c.Name == name {
-			return true
+			return c, true
 		}
 	}
-	return false
+	return categoryResponse{}, false
 }
 
 // categoryListMissing is categoryListContains negated — named separately

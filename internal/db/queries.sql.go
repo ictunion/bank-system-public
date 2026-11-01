@@ -60,6 +60,17 @@ func (q *Queries) CategoryExists(ctx context.Context, name string) (bool, error)
 	return exists, err
 }
 
+const categoryHasChildren = `-- name: CategoryHasChildren :one
+SELECT EXISTS (SELECT 1 FROM transaction_categories WHERE parent_name = $1::text) AS exists
+`
+
+func (q *Queries) CategoryHasChildren(ctx context.Context, name string) (bool, error) {
+	row := q.db.QueryRow(ctx, categoryHasChildren, name)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const createAuditLog = `-- name: CreateAuditLog :exec
 INSERT INTO audit_logs (
     actor_sub, actor_email,
@@ -160,16 +171,28 @@ func (q *Queries) CreateBankAccount(ctx context.Context, arg CreateBankAccountPa
 }
 
 const createCategory = `-- name: CreateCategory :one
-INSERT INTO transaction_categories (name, is_mandatory) VALUES ($1, false)
-RETURNING name, is_mandatory, created_at
+INSERT INTO transaction_categories (name, is_mandatory, parent_name)
+VALUES ($1, false, $2)
+RETURNING name, is_mandatory, created_at, parent_name
 `
+
+type CreateCategoryParams struct {
+	Name       string  `json:"name"`
+	ParentName *string `json:"parent_name"`
+}
 
 // is_mandatory is never set true here — only the four seeded in
 // migrations/20260910000001_add_transaction_categories.sql are mandatory.
-func (q *Queries) CreateCategory(ctx context.Context, name string) (TransactionCategory, error) {
-	row := q.db.QueryRow(ctx, createCategory, name)
+// parent_name's one-level rule is checked by the caller (handler.CreateCategory).
+func (q *Queries) CreateCategory(ctx context.Context, arg CreateCategoryParams) (TransactionCategory, error) {
+	row := q.db.QueryRow(ctx, createCategory, arg.Name, arg.ParentName)
 	var i TransactionCategory
-	err := row.Scan(&i.Name, &i.IsMandatory, &i.CreatedAt)
+	err := row.Scan(
+		&i.Name,
+		&i.IsMandatory,
+		&i.CreatedAt,
+		&i.ParentName,
+	)
 	return i, err
 }
 
@@ -539,13 +562,18 @@ func (q *Queries) GetBankAccountWithToken(ctx context.Context, arg GetBankAccoun
 }
 
 const getCategory = `-- name: GetCategory :one
-SELECT name, is_mandatory, created_at FROM transaction_categories WHERE name = $1
+SELECT name, is_mandatory, created_at, parent_name FROM transaction_categories WHERE name = $1
 `
 
 func (q *Queries) GetCategory(ctx context.Context, name string) (TransactionCategory, error) {
 	row := q.db.QueryRow(ctx, getCategory, name)
 	var i TransactionCategory
-	err := row.Scan(&i.Name, &i.IsMandatory, &i.CreatedAt)
+	err := row.Scan(
+		&i.Name,
+		&i.IsMandatory,
+		&i.CreatedAt,
+		&i.ParentName,
+	)
 	return i, err
 }
 
@@ -1266,7 +1294,7 @@ func (q *Queries) ListBankAccountsWithToken(ctx context.Context, encryptionKey s
 }
 
 const listCategories = `-- name: ListCategories :many
-SELECT name, is_mandatory, created_at FROM transaction_categories ORDER BY is_mandatory DESC, name
+SELECT name, is_mandatory, created_at, parent_name FROM transaction_categories ORDER BY is_mandatory DESC, name
 `
 
 func (q *Queries) ListCategories(ctx context.Context) ([]TransactionCategory, error) {
@@ -1278,7 +1306,12 @@ func (q *Queries) ListCategories(ctx context.Context) ([]TransactionCategory, er
 	var items []TransactionCategory
 	for rows.Next() {
 		var i TransactionCategory
-		if err := rows.Scan(&i.Name, &i.IsMandatory, &i.CreatedAt); err != nil {
+		if err := rows.Scan(
+			&i.Name,
+			&i.IsMandatory,
+			&i.CreatedAt,
+			&i.ParentName,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

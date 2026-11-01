@@ -19,6 +19,7 @@ type Querier interface {
 	// intended value, NULL clears it.
 	AssignTransactionToMember(ctx context.Context, arg AssignTransactionToMemberParams) (int64, error)
 	CategoryExists(ctx context.Context, name string) (bool, error)
+	CategoryHasChildren(ctx context.Context, name string) (bool, error)
 	// Written by the handler.AuditLog middleware once per authenticated
 	// POST/PUT/PATCH/DELETE request, after the handler has responded.
 	CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) error
@@ -31,7 +32,8 @@ type Querier interface {
 	CreateBankAccount(ctx context.Context, arg CreateBankAccountParams) (CreateBankAccountRow, error)
 	// is_mandatory is never set true here — only the four seeded in
 	// migrations/20260910000001_add_transaction_categories.sql are mandatory.
-	CreateCategory(ctx context.Context, name string) (TransactionCategory, error)
+	// parent_name's one-level rule is checked by the caller (handler.CreateCategory).
+	CreateCategory(ctx context.Context, arg CreateCategoryParams) (TransactionCategory, error)
 	// Several transactions may cover the same member/month (dues split across
 	// payments), so a second payment landing on an already-covered month just
 	// adds its own row. ON CONFLICT only guards the same transaction listing the

@@ -787,8 +787,13 @@ SELECT * FROM transaction_categories ORDER BY is_mandatory DESC, name;
 -- name: CreateCategory :one
 -- is_mandatory is never set true here — only the four seeded in
 -- migrations/20260910000001_add_transaction_categories.sql are mandatory.
-INSERT INTO transaction_categories (name, is_mandatory) VALUES (sqlc.arg(name), false)
+-- parent_name's one-level rule is checked by the caller (handler.CreateCategory).
+INSERT INTO transaction_categories (name, is_mandatory, parent_name)
+VALUES (sqlc.arg(name), false, sqlc.narg(parent_name))
 RETURNING *;
+
+-- name: CategoryHasChildren :one
+SELECT EXISTS (SELECT 1 FROM transaction_categories WHERE parent_name = sqlc.arg(name)::text) AS exists;
 
 -- name: DeleteCategory :execrows
 -- The is_mandatory=false guard means a mandatory category and a missing one

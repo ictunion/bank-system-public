@@ -6,6 +6,20 @@ import { Overlay } from './Overlay'
 
 const COLUMNS = ['Name', 'Type', ''] as const
 
+// Top-level categories in API order, each immediately followed by its
+// sub-categories, so the table reads as a one-level tree.
+function withChildrenUnderParents(categories: Category[]): Category[] {
+  const topLevel = categories.filter((c) => c.parent_name === null)
+  const ordered = topLevel.flatMap((parent) => [
+    parent,
+    ...categories.filter((c) => c.parent_name === parent.name),
+  ])
+  // A child whose parent is missing from the list shouldn't happen (FK), but
+  // never drop a row silently.
+  const orphans = categories.filter((c) => !ordered.includes(c))
+  return [...ordered, ...orphans]
+}
+
 export function CategoriesPage() {
   const [adding, setAdding] = useState(false)
 
@@ -38,7 +52,7 @@ export function CategoriesPage() {
               </tr>
             </thead>
             <tbody>
-              {data.map((c) => (
+              {withChildrenUnderParents(data).map((c) => (
                 <CategoryRow key={c.name} category={c} />
               ))}
             </tbody>
@@ -46,7 +60,7 @@ export function CategoriesPage() {
         </div>
       )}
 
-      {adding && <AddCategoryDialog onClose={() => setAdding(false)} />}
+      {adding && data && <AddCategoryDialog categories={data} onClose={() => setAdding(false)} />}
     </section>
   )
 }
@@ -63,7 +77,10 @@ function CategoryRow({ category }: { category: Category }) {
 
   return (
     <tr>
-      <td style={td}>{category.name}</td>
+      <td style={category.parent_name === null ? td : { ...td, paddingLeft: '2rem' }}>
+        {category.parent_name !== null && <span style={{ color: '#999' }}>↳ </span>}
+        {category.name}
+      </td>
       <td style={td}>{category.is_mandatory ? 'Mandatory' : 'Custom'}</td>
       <td style={{ ...td, whiteSpace: 'normal' }}>
         {category.is_mandatory ? (
@@ -89,12 +106,16 @@ function CategoryRow({ category }: { category: Category }) {
   )
 }
 
-function AddCategoryDialog({ onClose }: { onClose: () => void }) {
+function AddCategoryDialog({ categories, onClose }: { categories: Category[]; onClose: () => void }) {
   const qc = useQueryClient()
   const [name, setName] = useState('')
+  const [parentName, setParentName] = useState('')
+
+  // Only one level of nesting — a sub-category can't be a parent.
+  const parentOptions = categories.filter((c) => c.parent_name === null)
 
   const create = useMutation({
-    mutationFn: () => createCategory(name.trim()),
+    mutationFn: () => createCategory(name.trim(), parentName === '' ? null : parentName),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['categories'] })
       onClose()
@@ -115,6 +136,18 @@ function AddCategoryDialog({ onClose }: { onClose: () => void }) {
         <label style={field}>
           Name
           <input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+        </label>
+
+        <label style={field}>
+          Parent category (optional)
+          <select value={parentName} onChange={(e) => setParentName(e.target.value)}>
+            <option value="">— none (top-level) —</option>
+            {parentOptions.map((c) => (
+              <option key={c.name} value={c.name}>
+                {c.name}
+              </option>
+            ))}
+          </select>
         </label>
 
         {create.error && <p style={{ color: '#b00' }}>{errMessage(create.error)}</p>}

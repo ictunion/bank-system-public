@@ -3,14 +3,17 @@ import { apiGet, apiSend } from './client'
 export interface Category {
   name: string
   is_mandatory: boolean
+  // Null for a top-level category. Only one level of nesting exists, so a
+  // parent is always itself top-level.
+  parent_name: string | null
 }
 
 export function fetchCategories(): Promise<Category[]> {
   return apiGet<Category[]>('/api/categories')
 }
 
-export function createCategory(name: string): Promise<Category> {
-  return apiSend<Category>('POST', '/api/categories', { name })
+export function createCategory(name: string, parentName: string | null): Promise<Category> {
+  return apiSend<Category>('POST', '/api/categories', { name, parent_name: parentName })
 }
 
 export function deleteCategory(name: string): Promise<void> {

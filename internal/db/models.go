@@ -141,4 +141,5 @@ type TransactionCategory struct {
 	Name        string    `json:"name"`
 	IsMandatory bool      `json:"is_mandatory"`
 	CreatedAt   time.Time `json:"created_at"`
+	ParentName  *string   `json:"parent_name"`
 }
