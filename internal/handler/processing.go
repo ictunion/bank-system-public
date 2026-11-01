@@ -16,8 +16,8 @@ type processingRunRequest struct {
 
 // processingActionResponse is the one response shape every action returns —
 // Succeeded/Failed means whatever that action's own unit of work is
-// (transactions processed for "run", transactions reclassified for
-// "reclassify_internal_transfers"). Keeping one generic {action, succeeded,
+// (transactions processed for "run", transactions changed for
+// "reapply_rules"). Keeping one generic {action, succeeded,
 // failed} contract, rather than a bespoke shape per action, is what lets new
 // actions get added here later without changing the response contract too.
 type processingActionResponse struct {
@@ -35,12 +35,12 @@ type processingActionResponse struct {
 // (RequireAnyRole(RoleManageBankAccounts, RoleManageTransactions)) only
 // establishes the caller holds *some* processing-admin capability; each
 // action below checks the specific role it actually needs itself, since
-// different actions can require different roles (a plain re-match is a
-// bank-accounts-admin concern, but reclassifying already-processed rows is a
+// different actions can require different roles (processing new rows is a
+// bank-accounts-admin concern, but rewriting already-processed rows is a
 // manage-transactions write, same as PUT /transactions/{id}/assignment).
 //
 // @Summary      Run an on-demand processing action
-// @Description  Requires manage-bank-accounts or manage-transactions (which, depends on the action). Body selects the action: "run" (re-run matching for unprocessed transactions, needs manage-bank-accounts), "reclassify_internal_transfers" (re-check already-processed transactions against the current bank_accounts roster, needs manage-transactions), "rematch_unmatched" (re-check already-processed-but-unmatched transactions against member_payment_identifiers, needs manage-transactions), or "reclassify_interest" (re-check already-processed transactions against transaction_type for interest wording, needs manage-transactions).
+// @Description  Requires manage-bank-accounts or manage-transactions (which, depends on the action). Body selects the action: "run" (categorize unprocessed transactions, needs manage-bank-accounts) or "reapply_rules" (re-evaluate the current categorization rules for every already-processed transaction not set by hand, rewriting those whose outcome changed; succeeded = transactions changed; needs manage-transactions).
 // @Tags         transactions
 // @Security     BearerAuth
 // @Accept       json
@@ -81,51 +81,19 @@ func RunProcessing(pool *pgxpool.Pool, provider *keycloak.Provider) http.Handler
 				Failed:    result.TransactionsFailed,
 			})
 
-		case "reclassify_internal_transfers":
+		case "reapply_rules":
 			if !provider.HasRole(claims, keycloak.RoleManageTransactions) {
 				writeError(w, http.StatusForbidden, "not authorized")
 				return
 			}
-			result, err := processing.ReclassifyInternalTransfers(r.Context(), pool)
+			result, err := processing.ReapplyRules(r.Context(), pool)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "reclassification failed: "+err.Error())
+				writeError(w, http.StatusInternalServerError, "reapplying rules failed: "+err.Error())
 				return
 			}
 			writeJSON(w, http.StatusOK, processingActionResponse{
 				Action:    request.Action,
-				Succeeded: result.Reclassified,
-				Failed:    result.Failed,
-			})
-
-		case "reclassify_interest":
-			if !provider.HasRole(claims, keycloak.RoleManageTransactions) {
-				writeError(w, http.StatusForbidden, "not authorized")
-				return
-			}
-			result, err := processing.ReclassifyInterest(r.Context(), pool)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "reclassification failed: "+err.Error())
-				return
-			}
-			writeJSON(w, http.StatusOK, processingActionResponse{
-				Action:    request.Action,
-				Succeeded: result.Reclassified,
-				Failed:    result.Failed,
-			})
-
-		case "rematch_unmatched":
-			if !provider.HasRole(claims, keycloak.RoleManageTransactions) {
-				writeError(w, http.StatusForbidden, "not authorized")
-				return
-			}
-			result, err := processing.RematchUnmatched(r.Context(), pool)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "rematch failed: "+err.Error())
-				return
-			}
-			writeJSON(w, http.StatusOK, processingActionResponse{
-				Action:    request.Action,
-				Succeeded: result.Matched,
+				Succeeded: result.Changed,
 				Failed:    result.Failed,
 			})
 

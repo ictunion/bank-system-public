@@ -83,7 +83,7 @@ export function backfillAccount(id: number, from: string, to: string): Promise<S
 // — see internal/handler/processing.go. `succeeded`/`failed` mean whatever
 // that action's own unit of work is; new actions reuse this same shape
 // rather than getting a bespoke response type each.
-type ProcessingAction = 'run' | 'reclassify_internal_transfers' | 'rematch_unmatched' | 'reclassify_interest'
+type ProcessingAction = 'run' | 'reapply_rules'
 
 interface ProcessingActionResult {
   action: ProcessingAction
@@ -110,55 +110,20 @@ export async function triggerProcessing(): Promise<ProcessingResult> {
   return { transactions_processed: result.succeeded, transactions_failed: result.failed }
 }
 
-export interface ReclassifyResult {
-  reclassified: number
+export interface ReapplyRulesResult {
+  changed: number
   failed: number
 }
 
-// Re-checks already-processed transactions against the current bank_accounts
-// roster and flips any now-recognizable transfer between our own accounts to
-// internal_transfer — for a transfer synced/processed before its counterparty
-// account was registered here (see internal/processing/processing.go). Skips
-// manually-matched transactions; safe/idempotent to call repeatedly. Needs
-// manage-transactions, not manage-bank-accounts, since it rewrites
+// Re-evaluates the current categorization rules for every already-processed
+// transaction not set by hand, and rewrites those whose outcome changed — for
+// a new or edited rule, a bank account added after its transfers were
+// processed, or a member's liability window corrected in Orca (run after the
+// corrected data has synced). Skips manual edits; safe/idempotent to call
+// repeatedly. Needs manage-transactions, since it rewrites
 // processed_transactions rows.
-export async function reclassifyInternalTransfers(): Promise<ReclassifyResult> {
-  const result = await runProcessingAction('reclassify_internal_transfers')
-  return { reclassified: result.succeeded, failed: result.failed }
+export async function reapplyRules(): Promise<ReapplyRulesResult> {
+  const result = await runProcessingAction('reapply_rules')
+  return { changed: result.succeeded, failed: result.failed }
 }
-
-export interface RematchResult {
-  matched: number
-  failed: number
-}
-
-// Re-checks already-processed but still-unmatched transactions against
-// member_payment_identifiers and matches one to a member if it now resolves
-// — for a member whose fee_start_date was wrong in Orca at the time their
-// earlier transactions were processed, since corrected and re-synced (see
-// internal/processing/processing.go RematchUnmatched). Only re-checks the
-// matching step itself — run this *after* the corrected Orca data has
-// synced (automatic, daily 3am, or a restart), not instead of it. Skips
-// manually-matched transactions and anything already internal_transfer;
-// safe/idempotent to call repeatedly. Needs manage-transactions.
-export async function rematchUnmatched(): Promise<RematchResult> {
-  const result = await runProcessingAction('rematch_unmatched')
-  return { matched: result.succeeded, failed: result.failed }
-}
-
-export interface ReclassifyInterestResult {
-  reclassified: number
-  failed: number
-}
-
-// Re-checks already-processed transactions against transaction_type for
-// interest wording (e.g. "Připsaný úrok") and flips any match to the
-// interest category — for a savings-account interest posting synced/
-// processed before this detection step existed (see
-// internal/processing/processing.go ReclassifyInterest). Skips
-// manually-matched transactions; safe/idempotent to call repeatedly. Needs
-// manage-transactions, same as the other reclassify actions.
-export async function reclassifyInterest(): Promise<ReclassifyInterestResult> {
-  const result = await runProcessingAction('reclassify_interest')
-  return { reclassified: result.succeeded, failed: result.failed }
 }

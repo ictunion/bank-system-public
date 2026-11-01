@@ -39,19 +39,9 @@ func Run(requestContext context.Context, pool *pgxpool.Pool) (Result, error) {
 		return Result{}, fmt.Errorf("listing unprocessed transactions: %w", err)
 	}
 
-	// Rules and our own account numbers are both fetched once per run, not
-	// per transaction. Soft-deleted accounts excluded (ListActiveBankAccountNumbers).
-	rules, err := queries.ListEnabledCategorizationRules(requestContext)
+	rules, ourAccounts, err := loadRules(requestContext, queries)
 	if err != nil {
-		return Result{}, fmt.Errorf("listing categorization rules: %w", err)
-	}
-	ourAccountNumbers, err := queries.ListActiveBankAccountNumbers(requestContext)
-	if err != nil {
-		return Result{}, fmt.Errorf("listing active bank account numbers: %w", err)
-	}
-	ourAccounts := make(map[string]bool, len(ourAccountNumbers))
-	for _, number := range ourAccountNumbers {
-		ourAccounts[number] = true
+		return Result{}, err
 	}
 
 	var result Result
@@ -64,6 +54,25 @@ func Run(requestContext context.Context, pool *pgxpool.Pool) (Result, error) {
 		result.TransactionsProcessed++
 	}
 	return result, nil
+}
+
+// loadRules fetches what categorize needs: the enabled rules in evaluation
+// order and our own account numbers (soft-deleted accounts excluded). Done
+// once per run, not per transaction.
+func loadRules(requestContext context.Context, queries *db.Queries) ([]db.CategorizationRule, map[string]bool, error) {
+	rules, err := queries.ListEnabledCategorizationRules(requestContext)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing categorization rules: %w", err)
+	}
+	ourAccountNumbers, err := queries.ListActiveBankAccountNumbers(requestContext)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing active bank account numbers: %w", err)
+	}
+	ourAccounts := make(map[string]bool, len(ourAccountNumbers))
+	for _, number := range ourAccountNumbers {
+		ourAccounts[number] = true
+	}
+	return rules, ourAccounts, nil
 }
 
 // outcome is what categorize decided for one transaction. ruleID is nil
@@ -232,8 +241,8 @@ func processOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.
 // normalizeVariableSymbol strips leading zeroes Fio sometimes pads a
 // variable symbol with (e.g. "00000123" for VS 123) — member_payment_identifiers
 // stores it unpadded (Orca sync seeds it from member_number, an int, with no
-// padding). Used by every variable_symbol match against
-// member_payment_identifiers (processOne and rematchOne alike) — not applied
+// padding). Used by every variable_symbol comparison (the member lookup in
+// categorize, pattern rules in matchesPattern) — not applied
 // at insert time, so raw_transactions stays an untouched mirror of Fio's
 // response.
 func normalizeVariableSymbol(variableSymbol string) string {
@@ -244,174 +253,71 @@ func normalizeVariableSymbol(variableSymbol string) string {
 	return normalized
 }
 
-// ReclassifyResult summarizes one ReclassifyInternalTransfers run.
-type ReclassifyResult struct {
-	Reclassified int
-	Failed       int
-}
-
-// ReclassifyInternalTransfers re-checks already-processed transactions
-// against the *current* bank_accounts roster and flips any that are now
-// recognizable as a transfer between our own accounts to
-// category=internal_transfer. Unlike Run, this deliberately revisits rows
-// that already have a processed_transactions row — internal-transfer
-// detection in processOne only ever sees the roster as of the moment a
-// transaction was first processed (see ListActiveBankAccountNumbers there),
-// so a transaction synced/processed before a second (or newly taken-over)
-// bank account was registered here stays miscategorized forever otherwise,
-// even after the account is added and Run is called again. Skips
-// matched_by='manual' and category_set_manually rows (never override an admin's explicit decision) and
-// anything already internal_transfer, so repeat calls are safe/idempotent —
-// only ever touching what's still wrong.
-func ReclassifyInternalTransfers(requestContext context.Context, pool *pgxpool.Pool) (ReclassifyResult, error) {
-	queries := db.New(pool)
-
-	ourAccountNumbers, err := queries.ListActiveBankAccountNumbers(requestContext)
-	if err != nil {
-		return ReclassifyResult{}, fmt.Errorf("listing active bank account numbers: %w", err)
-	}
-
-	candidateIDs, err := queries.ListInternalTransferCandidates(requestContext, ourAccountNumbers)
-	if err != nil {
-		return ReclassifyResult{}, fmt.Errorf("listing internal transfer candidates: %w", err)
-	}
-
-	var result ReclassifyResult
-	for _, id := range candidateIDs {
-		if err := reclassifyOne(requestContext, pool, id); err != nil {
-			result.Failed++
-			log.Printf("reclassify internal transfers: processed_transaction_id=%d: %v", id, err)
-			continue
-		}
-		result.Reclassified++
-	}
-	return result, nil
-}
-
-func reclassifyOne(requestContext context.Context, pool *pgxpool.Pool, processedTransactionID int64) error {
-	return reclassifyOneToCategory(requestContext, pool, processedTransactionID, "internal_transfer")
-}
-
-// reclassifyOneToCategory clears any existing member match/coverage and sets
-// category on an already-processed transaction — the shared write both
-// ReclassifyInternalTransfers and ReclassifyInterest use, since both are
-// "detection step added after some rows were already processed" fixes that
-// only differ in which category they reclassify to and how a candidate is
-// selected (see ListInternalTransferCandidates / ListInterestReclassifyCandidates).
-func reclassifyOneToCategory(requestContext context.Context, pool *pgxpool.Pool, processedTransactionID int64, category string) error {
-	tx, err := pool.Begin(requestContext)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(requestContext)
-	txQueries := db.New(tx)
-
-	if err := txQueries.DeleteCoverageForTransaction(requestContext, processedTransactionID); err != nil {
-		return fmt.Errorf("clearing coverage: %w", err)
-	}
-	if _, err := txQueries.UnassignTransaction(requestContext, db.UnassignTransactionParams{
-		ID:       processedTransactionID,
-		Category: category,
-	}); err != nil {
-		return fmt.Errorf("updating category: %w", err)
-	}
-
-	return tx.Commit(requestContext)
-}
-
-// ReclassifyInterestResult summarizes one ReclassifyInterest run.
-type ReclassifyInterestResult struct {
-	Reclassified int
-	Failed       int
-}
-
-// ReclassifyInterest re-checks already-processed transactions against
-// transaction_type for interest wording and flips any match to
-// category=credited_interest — same "detection added after some rows were
-// already processed" fix as ReclassifyInternalTransfers, for the
-// credited_interest category instead of internal_transfer (see
-// ListInterestReclassifyCandidates). Skips matched_by='manual' and category_set_manually rows and
-// anything already category=credited_interest, so repeat calls are
-// safe/idempotent.
-func ReclassifyInterest(requestContext context.Context, pool *pgxpool.Pool) (ReclassifyInterestResult, error) {
-	queries := db.New(pool)
-
-	candidateIDs, err := queries.ListInterestReclassifyCandidates(requestContext)
-	if err != nil {
-		return ReclassifyInterestResult{}, fmt.Errorf("listing interest reclassify candidates: %w", err)
-	}
-
-	var result ReclassifyInterestResult
-	for _, id := range candidateIDs {
-		if err := reclassifyOneToCategory(requestContext, pool, id, "credited_interest"); err != nil {
-			result.Failed++
-			log.Printf("reclassify interest: processed_transaction_id=%d: %v", id, err)
-			continue
-		}
-		result.Reclassified++
-	}
-	return result, nil
-}
-
-// RematchResult summarizes one RematchUnmatched run.
-type RematchResult struct {
-	Matched int
+// ReapplyResult summarizes one ReapplyRules run.
+type ReapplyResult struct {
+	Changed int
 	Failed  int
 }
 
-// RematchUnmatched re-checks every currently-unmatched processed transaction
-// against member_payment_identifiers and matches it to a member if one now
-// resolves for its variable_symbol/date. Unlike Run, this deliberately
-// revisits rows that already have a processed_transactions row — the classic
-// case is a member whose fee_start_date was wrong in Orca at the time a
-// transaction was first processed (so member_payment_identifiers had no row
-// covering that date, and the transaction fell through to
-// salary/other_income/other_expense), corrected upstream in Orca, and
-// re-synced (see "Orca member sync") — the corrected liability window only
-// helps *new* processing, since Run only ever touches unprocessed rows.
-// Skips matched_by='manual' and category_set_manually rows (never override an admin's explicit
-// decision) and anything already category='internal_transfer' (that
-// precedence is fixed by processOne, not up for re-evaluation here). Safe to
-// call repeatedly — a transaction that still doesn't resolve to a member is
-// silently left alone, not an error.
-func RematchUnmatched(requestContext context.Context, pool *pgxpool.Pool) (RematchResult, error) {
+// ReapplyRules re-evaluates the current rule chain for every already-processed
+// transaction that wasn't set by hand, and rewrites the ones whose outcome
+// differs. Run only ever touches unprocessed rows, so without this a new or
+// edited rule, a bank account added later (own_account), or a corrected
+// member liability window (member_variable_symbol) would never reach
+// existing transactions.
+//
+// Skips matched_by='manual' and category_set_manually rows — never override
+// an admin's explicit decision. Such rows only ever have the one default
+// payment_coverage row, so rewriting it is safe. Idempotent: a second call
+// finds nothing left to change.
+func ReapplyRules(requestContext context.Context, pool *pgxpool.Pool) (ReapplyResult, error) {
 	queries := db.New(pool)
 
-	candidates, err := queries.ListRematchCandidates(requestContext)
+	rules, ourAccounts, err := loadRules(requestContext, queries)
 	if err != nil {
-		return RematchResult{}, fmt.Errorf("listing rematch candidates: %w", err)
+		return ReapplyResult{}, err
+	}
+	candidates, err := queries.ListReapplyCandidates(requestContext)
+	if err != nil {
+		return ReapplyResult{}, fmt.Errorf("listing reapply candidates: %w", err)
 	}
 
-	var result RematchResult
+	var result ReapplyResult
 	for _, candidate := range candidates {
-		matched, err := rematchOne(requestContext, pool, queries, candidate)
+		changed, err := reapplyOne(requestContext, pool, queries, candidate, rules, ourAccounts)
 		if err != nil {
 			result.Failed++
-			log.Printf("rematch unmatched: processed_transaction_id=%d: %v", candidate.ID, err)
+			log.Printf("reapply rules: processed_transaction_id=%d: %v", candidate.ID, err)
 			continue
 		}
-		if matched {
-			result.Matched++
+		if changed {
+			result.Changed++
 		}
 	}
 	return result, nil
 }
 
-// rematchOne looks up candidate's variable_symbol/date the same way
-// processOne's member-match step does. A "no member currently claims this
-// variable symbol" result isn't an error — it's the expected outcome for
-// most candidates on any given run — so it's reported back as matched=false
-// rather than failing the row.
-func rematchOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.Queries, candidate db.ListRematchCandidatesRow) (matched bool, err error) {
-	member, err := queries.FindMemberByVariableSymbol(requestContext, db.FindMemberByVariableSymbolParams{
-		VariableSymbol:  normalizeVariableSymbol(*candidate.VariableSymbol),
-		TransactionDate: candidate.TransactionDate,
-	})
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
+func reapplyOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.Queries, candidate db.ListReapplyCandidatesRow, rules []db.CategorizationRule, ourAccounts map[string]bool) (changed bool, err error) {
+	rt := db.RawTransaction{
+		TransactionDate:      candidate.TransactionDate,
+		Amount:               candidate.Amount,
+		CounterAccountNumber: candidate.CounterAccountNumber,
+		VariableSymbol:       candidate.VariableSymbol,
+		ConstantSymbol:       candidate.ConstantSymbol,
+		Comment:              candidate.Comment,
+		UserIdentification:   candidate.UserIdentification,
+		MessageForRecipient:  candidate.MessageForRecipient,
+		TransactionType:      candidate.TransactionType,
+	}
+	result, err := categorize(requestContext, queries, rt, candidate.Direction, rules, ourAccounts)
+	if err != nil {
+		return false, err
+	}
+
+	memberChanged := !equalPointer(result.memberNumber, candidate.MemberNumber)
+	if result.category == candidate.Category && !memberChanged &&
+		equalPointer(result.matchedBy, candidate.MatchedBy) && equalPointer(result.ruleID, candidate.CategorizationRuleID) {
 		return false, nil
-	case err != nil:
-		return false, fmt.Errorf("matching variable_symbol %q: %w", *candidate.VariableSymbol, err)
 	}
 
 	tx, err := pool.Begin(requestContext)
@@ -421,24 +327,47 @@ func rematchOne(requestContext context.Context, pool *pgxpool.Pool, queries *db.
 	defer tx.Rollback(requestContext)
 	txQueries := db.New(tx)
 
-	if err := txQueries.RematchTransactionToMember(requestContext, db.RematchTransactionToMemberParams{
-		ID:           candidate.ID,
-		MemberNumber: &member,
-	}); err != nil {
+	rows, err := txQueries.ReapplyCategorization(requestContext, db.ReapplyCategorizationParams{
+		ID:                   candidate.ID,
+		Category:             result.category,
+		MemberNumber:         result.memberNumber,
+		MatchedBy:            result.matchedBy,
+		CategorizationRuleID: result.ruleID,
+	})
+	if err != nil {
 		return false, fmt.Errorf("updating processed_transactions: %w", err)
 	}
+	if rows == 0 {
+		// An admin edited it by hand since it was listed — leave it.
+		return false, nil
+	}
 
-	// Same arrears convention as processOne's default single-month coverage:
-	// month before the transaction's own.
-	coveredMonth := candidate.TransactionDate.AddDate(0, -1, 0)
-	if err := txQueries.CreatePaymentCoverage(requestContext, db.CreatePaymentCoverageParams{
-		ProcessedTransactionID: candidate.ID,
-		MemberNumber:           member,
-		CoversYear:             int32(coveredMonth.Year()),
-		CoversMonth:            int16(coveredMonth.Month()),
-	}); err != nil {
-		return false, fmt.Errorf("inserting payment_coverage: %w", err)
+	// Same member as before: its default coverage row is still right.
+	if memberChanged {
+		if err := txQueries.DeleteCoverageForTransaction(requestContext, candidate.ID); err != nil {
+			return false, fmt.Errorf("clearing coverage: %w", err)
+		}
+		if result.memberNumber != nil {
+			// Same arrears convention as processOne: month before the
+			// transaction's own.
+			coveredMonth := candidate.TransactionDate.AddDate(0, -1, 0)
+			if err := txQueries.CreatePaymentCoverage(requestContext, db.CreatePaymentCoverageParams{
+				ProcessedTransactionID: candidate.ID,
+				MemberNumber:           *result.memberNumber,
+				CoversYear:             int32(coveredMonth.Year()),
+				CoversMonth:            int16(coveredMonth.Month()),
+			}); err != nil {
+				return false, fmt.Errorf("inserting payment_coverage: %w", err)
+			}
+		}
 	}
 
 	return true, tx.Commit(requestContext)
+}
+
+func equalPointer[T comparable](a, b *T) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }

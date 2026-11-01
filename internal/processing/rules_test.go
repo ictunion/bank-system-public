@@ -282,3 +282,88 @@ func TestRun_DisabledRuleIsSkipped(t *testing.T) {
 		t.Errorf("category = %q, want other_expense (salary rule disabled)", got.category)
 	}
 }
+
+// A rule added after a transaction was processed reaches it through
+// ReapplyRules — the lawyer payment tagged salary by "mzda" moves to its own
+// category.
+func TestReapplyRules_NewRuleRecategorizesHistory(t *testing.T) {
+	pool := dbtest.Pool(t)
+	queries := db.New(pool)
+	account := seedBankAccount(t, queries, "9400000047")
+	if _, err := queries.InsertRawTransaction(context.Background(), db.InsertRawTransactionParams{
+		BankAccountID:        account.ID,
+		FioTransactionID:     6048,
+		TransactionDate:      time.Now(),
+		Amount:               "-5000.00",
+		Currency:             "CZK",
+		CounterAccountNumber: strPtr("2900000003"),
+		Comment:              strPtr("mzda pravni sluzby"),
+		RawPayload:           []byte("{}"),
+	}); err != nil {
+		t.Fatalf("InsertRawTransaction: %v", err)
+	}
+	if _, err := Run(context.Background(), pool); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := queryProcessed(t, pool, 6048); got.category != "salary" {
+		t.Fatalf("category before the rule = %q, want salary", got.category)
+	}
+
+	insertTestCategory(t, pool, "test_legal")
+	ruleID := insertPatternRule(t, pool, 400, "test_legal", strPtr("2900000003"), nil)
+
+	result, err := ReapplyRules(context.Background(), pool)
+	if err != nil {
+		t.Fatalf("ReapplyRules: %v", err)
+	}
+	if result.Changed != 1 || result.Failed != 0 {
+		t.Fatalf("result = %+v, want {1 0}", result)
+	}
+	if got := queryProcessed(t, pool, 6048); got.category != "test_legal" {
+		t.Errorf("category = %q, want test_legal", got.category)
+	}
+	if id := ruleIDFor(t, pool, 6048); id == nil || *id != ruleID {
+		t.Errorf("rule id = %v, want %d", id, ruleID)
+	}
+
+	second, err := ReapplyRules(context.Background(), pool)
+	if err != nil {
+		t.Fatalf("second ReapplyRules: %v", err)
+	}
+	if second.Changed != 0 || second.Failed != 0 {
+		t.Errorf("second result = %+v, want {0 0}", second)
+	}
+}
+
+// When the member rule no longer matches (here: disabled), an automatic
+// member match is undone — member cleared, default coverage removed.
+func TestReapplyRules_UndoesMemberMatchThatNoLongerApplies(t *testing.T) {
+	pool := dbtest.Pool(t)
+	queries := db.New(pool)
+	account := seedBankAccount(t, queries, "9400000048")
+	seedMemberWithIdentifier(t, queries, 900648, "900648")
+	seedRawTransaction(t, queries, account.ID, 6049, "500.00", strPtr("900648"), nil)
+	if _, err := Run(context.Background(), pool); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if n := coverageMonthsFor(t, pool, 900648); n != 1 {
+		t.Fatalf("coverage before = %d, want 1", n)
+	}
+
+	disableSeededRule(t, pool, "membership_fee")
+
+	result, err := ReapplyRules(context.Background(), pool)
+	if err != nil {
+		t.Fatalf("ReapplyRules: %v", err)
+	}
+	if result.Changed != 1 || result.Failed != 0 {
+		t.Fatalf("result = %+v, want {1 0}", result)
+	}
+	got := queryProcessed(t, pool, 6049)
+	if got.category != "other_income" || got.memberNumber != nil || got.matchedBy != nil {
+		t.Errorf("got %+v, want other_income with no member", got)
+	}
+	if n := coverageMonthsFor(t, pool, 900648); n != 0 {
+		t.Errorf("coverage after = %d, want 0", n)
+	}
+}

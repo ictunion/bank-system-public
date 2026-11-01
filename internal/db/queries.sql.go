@@ -1851,88 +1851,6 @@ func (q *Queries) ListEventLogs(ctx context.Context, arg ListEventLogsParams) ([
 	return items, nil
 }
 
-const listInterestReclassifyCandidates = `-- name: ListInterestReclassifyCandidates :many
-SELECT pt.id
-FROM processed_transactions pt
-JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
-WHERE pt.category != 'credited_interest'
-  AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
-  AND NOT pt.category_set_manually
-  AND rt.transaction_type ILIKE '%úrok%'
-`
-
-// Same "detection added after some rows were already processed" problem as
-// ListInternalTransferCandidates, for the interest category: a savings-account
-// interest posting synced/processed before this category/detection step
-// existed landed in other_income and, since a processed row is never
-// revisited on its own (see ListUnprocessedTransactions), stays there
-// forever without this. Same exclusions as ListInternalTransferCandidates —
-// skip matched_by='manual' and category_set_manually (never override an
-// admin's explicit decision) and already-interest rows, so a repeat run only
-// touches what's still wrong.
-// ILIKE, not =, since transaction_type is Fio's free-form label for the
-// movement type, not an enum — same "not error-proof" caveat as the "mzda"
-// salary heuristic in processing.go.
-func (q *Queries) ListInterestReclassifyCandidates(ctx context.Context) ([]int64, error) {
-	rows, err := q.db.Query(ctx, listInterestReclassifyCandidates)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listInternalTransferCandidates = `-- name: ListInternalTransferCandidates :many
-SELECT pt.id
-FROM processed_transactions pt
-JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
-WHERE pt.category != 'internal_transfer'
-  AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
-  AND NOT pt.category_set_manually
-  AND rt.counter_account_number = ANY($1::text[])
-`
-
-// Rows categorized before their counterparty's bank_accounts row existed —
-// internal-transfer detection (processing.go) only ever sees the roster as
-// of the moment a transaction was first processed, and a processed row is
-// never revisited on its own (see ListUnprocessedTransactions), so adding a
-// second/new account later leaves earlier transfers to/from it permanently
-// miscategorized. Excludes matched_by = 'manual' — never silently override
-// an admin's explicit decision, same rule as elsewhere in this schema (see
-// payment_waivers, admin_comment) — both a manual member match and a
-// manual category-only edit (category_set_manually). Excludes
-// already-internal_transfer rows so a repeat run only touches what's still wrong.
-func (q *Queries) ListInternalTransferCandidates(ctx context.Context, accountNumbers []string) ([]int64, error) {
-	rows, err := q.db.Query(ctx, listInternalTransferCandidates, accountNumbers)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listMembersMissingPayment = `-- name: ListMembersMissingPayment :many
 SELECT ma.member_number, ma.total_missed_months, ma.has_ever_paid
 FROM member_arrears ma
@@ -2178,47 +2096,66 @@ func (q *Queries) ListMembersMissingPaymentInYearForWorkplace(ctx context.Contex
 	return items, nil
 }
 
-const listRematchCandidates = `-- name: ListRematchCandidates :many
-SELECT pt.id, rt.variable_symbol, rt.transaction_date
+const listReapplyCandidates = `-- name: ListReapplyCandidates :many
+SELECT
+    pt.id, pt.direction, pt.category, pt.member_number, pt.matched_by, pt.categorization_rule_id,
+    rt.transaction_date, rt.amount, rt.counter_account_number, rt.variable_symbol,
+    rt.constant_symbol, rt.comment, rt.user_identification, rt.message_for_recipient,
+    rt.transaction_type
 FROM processed_transactions pt
 JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
-WHERE pt.member_number IS NULL
-  AND pt.category != 'internal_transfer'
-  AND (pt.matched_by IS NULL OR pt.matched_by != 'manual')
-  AND NOT pt.category_set_manually
-  AND rt.variable_symbol IS NOT NULL AND rt.variable_symbol != ''
+WHERE NOT pt.category_set_manually
+  AND pt.matched_by IS DISTINCT FROM 'manual'
+ORDER BY pt.id
 `
 
-type ListRematchCandidatesRow struct {
-	ID              int64     `json:"id"`
-	VariableSymbol  *string   `json:"variable_symbol"`
-	TransactionDate time.Time `json:"transaction_date"`
+type ListReapplyCandidatesRow struct {
+	ID                   int64     `json:"id"`
+	Direction            string    `json:"direction"`
+	Category             string    `json:"category"`
+	MemberNumber         *int32    `json:"member_number"`
+	MatchedBy            *string   `json:"matched_by"`
+	CategorizationRuleID *int64    `json:"categorization_rule_id"`
+	TransactionDate      time.Time `json:"transaction_date"`
+	Amount               string    `json:"amount"`
+	CounterAccountNumber *string   `json:"counter_account_number"`
+	VariableSymbol       *string   `json:"variable_symbol"`
+	ConstantSymbol       *string   `json:"constant_symbol"`
+	Comment              *string   `json:"comment"`
+	UserIdentification   *string   `json:"user_identification"`
+	MessageForRecipient  *string   `json:"message_for_recipient"`
+	TransactionType      *string   `json:"transaction_type"`
 }
 
-// Backs POST /processing/run action=rematch_unmatched — currently-unmatched
-// processed transactions worth re-checking against member_payment_identifiers,
-// for when a member's liability window was wrong at original processing time
-// (a bad fee_start_date pulled from Orca) and has since been corrected
-// upstream and re-synced (see "Orca member sync"). Skips
-// matched_by = 'manual' (never override an admin's explicit decision, same
-// rule as elsewhere in this schema) and category = 'internal_transfer' (that
-// precedence is fixed by processOne, not up for re-evaluation here — see
-// ReclassifyInternalTransfers for the transfer side of the same idea).
-// member_number IS NULL already implies matched_by IS NULL in practice
-// (matched_by is only ever set alongside a member_number) — the explicit
-// matched_by check is just defensive. Also skips category_set_manually
-// rows — a category-only manual edit has no member, so matched_by alone
-// doesn't protect it.
-func (q *Queries) ListRematchCandidates(ctx context.Context) ([]ListRematchCandidatesRow, error) {
-	rows, err := q.db.Query(ctx, listRematchCandidates)
+// Backs POST /processing/run action=reapply_rules: every processed
+// transaction not set by hand, with the raw fields the rules read and its
+// current outcome to compare against.
+func (q *Queries) ListReapplyCandidates(ctx context.Context) ([]ListReapplyCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listReapplyCandidates)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListRematchCandidatesRow
+	var items []ListReapplyCandidatesRow
 	for rows.Next() {
-		var i ListRematchCandidatesRow
-		if err := rows.Scan(&i.ID, &i.VariableSymbol, &i.TransactionDate); err != nil {
+		var i ListReapplyCandidatesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Direction,
+			&i.Category,
+			&i.MemberNumber,
+			&i.MatchedBy,
+			&i.CategorizationRuleID,
+			&i.TransactionDate,
+			&i.Amount,
+			&i.CounterAccountNumber,
+			&i.VariableSymbol,
+			&i.ConstantSymbol,
+			&i.Comment,
+			&i.UserIdentification,
+			&i.MessageForRecipient,
+			&i.TransactionType,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -2546,26 +2483,40 @@ func (q *Queries) PaymentCoverageExists(ctx context.Context, arg PaymentCoverage
 	return exists, err
 }
 
-const rematchTransactionToMember = `-- name: RematchTransactionToMember :exec
+const reapplyCategorization = `-- name: ReapplyCategorization :execrows
 UPDATE processed_transactions
-SET member_number = $1,
-    category = 'membership_fee',
-    matched_by = 'variable_symbol'
-WHERE id = $2
+SET category = $1,
+    member_number = $2,
+    matched_by = $3,
+    categorization_rule_id = $4
+WHERE id = $5
+  AND NOT category_set_manually
+  AND matched_by IS DISTINCT FROM 'manual'
 `
 
-type RematchTransactionToMemberParams struct {
-	MemberNumber *int32 `json:"member_number"`
-	ID           int64  `json:"id"`
+type ReapplyCategorizationParams struct {
+	Category             string  `json:"category"`
+	MemberNumber         *int32  `json:"member_number"`
+	MatchedBy            *string `json:"matched_by"`
+	CategorizationRuleID *int64  `json:"categorization_rule_id"`
+	ID                   int64   `json:"id"`
 }
 
-// Only touches member_number/category/matched_by — deliberately leaves
-// admin_comment untouched (unlike AssignTransactionToMember, which always
-// full-overwrites it), since this is an automatic re-match, not an admin
-// action with a comment of its own to record.
-func (q *Queries) RematchTransactionToMember(ctx context.Context, arg RematchTransactionToMemberParams) error {
-	_, err := q.db.Exec(ctx, rematchTransactionToMember, arg.MemberNumber, arg.ID)
-	return err
+// Rewrites one row's automatic outcome. The manual guards are repeated so an
+// admin edit landing between ListReapplyCandidates and this update wins (0
+// rows). Leaves admin_comment alone — not part of categorization.
+func (q *Queries) ReapplyCategorization(ctx context.Context, arg ReapplyCategorizationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, reapplyCategorization,
+		arg.Category,
+		arg.MemberNumber,
+		arg.MatchedBy,
+		arg.CategorizationRuleID,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const syncDefaultPaymentIdentifierValidTo = `-- name: SyncDefaultPaymentIdentifierValidTo :exec
@@ -2609,8 +2560,6 @@ type UnassignTransactionParams struct {
 // Reverts a manual (or automatic) match: clears the member and matched_by, and
 // resets category to the direction-based default the caller passes in.
 // Clears category_set_manually: the row is back to automatic categorization.
-// Also used by processing's reclassify actions, which only ever touch rows
-// that aren't manual anyway.
 func (q *Queries) UnassignTransaction(ctx context.Context, arg UnassignTransactionParams) (int64, error) {
 	row := q.db.QueryRow(ctx, unassignTransaction, arg.Category, arg.ID)
 	var id int64

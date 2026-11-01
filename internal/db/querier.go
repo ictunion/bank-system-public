@@ -223,30 +223,6 @@ type Querier interface {
 	// detail is the bank account's display name for a fio_sync row, NULL for
 	// orca_sync (there's no per-account breakdown for the member sync).
 	ListEventLogs(ctx context.Context, arg ListEventLogsParams) ([]ListEventLogsRow, error)
-	// Same "detection added after some rows were already processed" problem as
-	// ListInternalTransferCandidates, for the interest category: a savings-account
-	// interest posting synced/processed before this category/detection step
-	// existed landed in other_income and, since a processed row is never
-	// revisited on its own (see ListUnprocessedTransactions), stays there
-	// forever without this. Same exclusions as ListInternalTransferCandidates —
-	// skip matched_by='manual' and category_set_manually (never override an
-	// admin's explicit decision) and already-interest rows, so a repeat run only
-	// touches what's still wrong.
-	// ILIKE, not =, since transaction_type is Fio's free-form label for the
-	// movement type, not an enum — same "not error-proof" caveat as the "mzda"
-	// salary heuristic in processing.go.
-	ListInterestReclassifyCandidates(ctx context.Context) ([]int64, error)
-	// Rows categorized before their counterparty's bank_accounts row existed —
-	// internal-transfer detection (processing.go) only ever sees the roster as
-	// of the moment a transaction was first processed, and a processed row is
-	// never revisited on its own (see ListUnprocessedTransactions), so adding a
-	// second/new account later leaves earlier transfers to/from it permanently
-	// miscategorized. Excludes matched_by = 'manual' — never silently override
-	// an admin's explicit decision, same rule as elsewhere in this schema (see
-	// payment_waivers, admin_comment) — both a manual member match and a
-	// manual category-only edit (category_set_manually). Excludes
-	// already-internal_transfer rows so a repeat run only touches what's still wrong.
-	ListInternalTransferCandidates(ctx context.Context, accountNumbers []string) ([]int64, error)
 	// Members who were liable for the membership fee in the given year/month but
 	// have no payment_coverage row for it. "Liable" = fee_start_date is set (the
 	// member_arrears view enforces this) and the target month falls within
@@ -278,21 +254,10 @@ type Querier interface {
 	// Workplace-rep counterpart to ListMembersMissingPaymentInYear — same shape
 	// and logic, scoped to members in any of the caller's workplace groups.
 	ListMembersMissingPaymentInYearForWorkplace(ctx context.Context, arg ListMembersMissingPaymentInYearForWorkplaceParams) ([]MemberArrear, error)
-	// Backs POST /processing/run action=rematch_unmatched — currently-unmatched
-	// processed transactions worth re-checking against member_payment_identifiers,
-	// for when a member's liability window was wrong at original processing time
-	// (a bad fee_start_date pulled from Orca) and has since been corrected
-	// upstream and re-synced (see "Orca member sync"). Skips
-	// matched_by = 'manual' (never override an admin's explicit decision, same
-	// rule as elsewhere in this schema) and category = 'internal_transfer' (that
-	// precedence is fixed by processOne, not up for re-evaluation here — see
-	// ReclassifyInternalTransfers for the transfer side of the same idea).
-	// member_number IS NULL already implies matched_by IS NULL in practice
-	// (matched_by is only ever set alongside a member_number) — the explicit
-	// matched_by check is just defensive. Also skips category_set_manually
-	// rows — a category-only manual edit has no member, so matched_by alone
-	// doesn't protect it.
-	ListRematchCandidates(ctx context.Context) ([]ListRematchCandidatesRow, error)
+	// Backs POST /processing/run action=reapply_rules: every processed
+	// transaction not set by hand, with the raw fields the rules read and its
+	// current outcome to compare against.
+	ListReapplyCandidates(ctx context.Context) ([]ListReapplyCandidatesRow, error)
 	// Admin transaction browser: processed_transactions enriched with their
 	// raw_transactions row, with optional filters. Every filter arg is nullable —
 	// NULL / omitted means "don't filter on this". total_count is the full match
@@ -314,11 +279,10 @@ type Querier interface {
 	// Guards CreatePaymentWaiver: a month with a real payment_coverage row
 	// doesn't need (and shouldn't get) a waiver.
 	PaymentCoverageExists(ctx context.Context, arg PaymentCoverageExistsParams) (bool, error)
-	// Only touches member_number/category/matched_by — deliberately leaves
-	// admin_comment untouched (unlike AssignTransactionToMember, which always
-	// full-overwrites it), since this is an automatic re-match, not an admin
-	// action with a comment of its own to record.
-	RematchTransactionToMember(ctx context.Context, arg RematchTransactionToMemberParams) error
+	// Rewrites one row's automatic outcome. The manual guards are repeated so an
+	// admin edit landing between ListReapplyCandidates and this update wins (0
+	// rows). Leaves admin_comment alone — not part of categorization.
+	ReapplyCategorization(ctx context.Context, arg ReapplyCategorizationParams) (int64, error)
 	// Only for a member whose fee_start_date is null in Orca (UpsertDefaultPaymentIdentifier
 	// is skipped then): still mirrors fee_stop_date onto an already-existing
 	// default row's valid_to. No-op for members with no default row. The IS
@@ -327,8 +291,6 @@ type Querier interface {
 	// Reverts a manual (or automatic) match: clears the member and matched_by, and
 	// resets category to the direction-based default the caller passes in.
 	// Clears category_set_manually: the row is back to automatic categorization.
-	// Also used by processing's reclassify actions, which only ever touch rows
-	// that aren't manual anyway.
 	UnassignTransaction(ctx context.Context, arg UnassignTransactionParams) (int64, error)
 	// fio_account_id/iban/currency are properties of the real Fio account, not
 	// editable metadata — only our own display_name, color, and the sync token

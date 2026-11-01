@@ -15,7 +15,7 @@ import (
 	"github.com/kubik/bank-system/internal/keycloaktest"
 )
 
-// RunProcessing calls processing.Run/ReclassifyInternalTransfers, both of
+// RunProcessing calls processing.Run/ReapplyRules, both of
 // which open their own nested transactions on the concrete *pgxpool.Pool —
 // same reasoning as TriggerFioSync/AssignTransaction elsewhere, dbtest.Pool
 // instead of dbtest.Tx.
@@ -86,19 +86,19 @@ func TestRunProcessing_Run_Success(t *testing.T) {
 	}
 }
 
-func TestRunProcessing_ReclassifyInternalTransfers_RequiresManageTransactionsRole(t *testing.T) {
+func TestRunProcessing_ReapplyRules_RequiresManageTransactionsRole(t *testing.T) {
 	pool := dbtest.Pool(t)
 	provider := keycloaktest.New(t)
 
 	recorder := httptest.NewRecorder()
-	RunProcessing(pool, provider.Provider)(recorder, runProcessingRequest(t, manageBankAccountsClaims(), "reclassify_internal_transfers"))
+	RunProcessing(pool, provider.Provider)(recorder, runProcessingRequest(t, manageBankAccountsClaims(), "reapply_rules"))
 
 	if recorder.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want %d, body = %s", recorder.Code, http.StatusForbidden, recorder.Body)
 	}
 }
 
-func TestRunProcessing_ReclassifyInternalTransfers_Success(t *testing.T) {
+func TestRunProcessing_ReapplyRules_Success(t *testing.T) {
 	pool := dbtest.Pool(t)
 	queries := db.New(pool)
 	provider := keycloaktest.New(t)
@@ -127,7 +127,7 @@ func TestRunProcessing_ReclassifyInternalTransfers_Success(t *testing.T) {
 	seedBankAccount(t, queries, counterAccountNumber)
 
 	recorder = httptest.NewRecorder()
-	RunProcessing(pool, provider.Provider)(recorder, runProcessingRequest(t, manageTransactionsClaims(), "reclassify_internal_transfers"))
+	RunProcessing(pool, provider.Provider)(recorder, runProcessingRequest(t, manageTransactionsClaims(), "reapply_rules"))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
@@ -136,8 +136,8 @@ func TestRunProcessing_ReclassifyInternalTransfers_Success(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}
-	if got.Action != "reclassify_internal_transfers" || got.Succeeded != 1 || got.Failed != 0 {
-		t.Errorf("got %+v, want {reclassify_internal_transfers 1 0}", got)
+	if got.Action != "reapply_rules" || got.Succeeded != 1 || got.Failed != 0 {
+		t.Errorf("got %+v, want {reapply_rules 1 0}", got)
 	}
 }
 

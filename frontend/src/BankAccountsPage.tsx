@@ -7,9 +7,7 @@ import {
   createBankAccount,
   deleteBankAccount,
   fetchBankAccounts,
-  reclassifyInterest,
-  reclassifyInternalTransfers,
-  rematchUnmatched,
+  reapplyRules,
   triggerFioSync,
   triggerProcessing,
   updateBankAccount,
@@ -75,30 +73,12 @@ export function BankAccountsPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['transactions'] }),
   })
 
-  // Separate from runProcessing: rewrites already-processed rows (a transfer
-  // synced/processed before its counterparty account was registered here —
-  // see api/bankAccounts.ts reclassifyInternalTransfers), so it needs
-  // manage-transactions, not manage-bank-accounts, and gets its own explicit
-  // button rather than running automatically.
-  const reclassify = useMutation({
-    mutationFn: reclassifyInternalTransfers,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['transactions'] }),
-  })
-
-  // Also rewrites already-processed rows (a member whose fee_start_date was
-  // wrong in Orca when their earlier transactions were processed, since
-  // corrected and re-synced — see api/bankAccounts.ts rematchUnmatched), so
-  // same manage-transactions gate and its own explicit button as reclassify.
-  const rematch = useMutation({
-    mutationFn: rematchUnmatched,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['transactions'] }),
-  })
-
-  // Same "detection added after some rows were already processed" fix as
-  // reclassify, for the interest category (see api/bankAccounts.ts
-  // reclassifyInterest) — its own button/gate for the same reasons.
-  const reclassifyInterestMutation = useMutation({
-    mutationFn: reclassifyInterest,
+  // Separate from runProcessing: rewrites already-processed rows (see
+  // api/bankAccounts.ts reapplyRules), so it needs manage-transactions, not
+  // manage-bank-accounts, and gets its own explicit button rather than
+  // running automatically.
+  const reapply = useMutation({
+    mutationFn: reapplyRules,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['transactions'] }),
   })
 
@@ -119,51 +99,19 @@ export function BankAccountsPage() {
           </button>
           {canManageTransactions && (
             <>
-              {reclassify.error && <span style={{ color: '#b00' }}>{errMessage(reclassify.error)}</span>}
-              {reclassify.data && (
+              {reapply.error && <span style={{ color: '#b00' }}>{errMessage(reapply.error)}</span>}
+              {reapply.data && (
                 <span style={{ color: '#080' }}>
-                  Reclassified {reclassify.data.reclassified}
-                  {reclassify.data.failed > 0 ? ` (${reclassify.data.failed} failed)` : ''}
+                  Changed {reapply.data.changed}
+                  {reapply.data.failed > 0 ? ` (${reapply.data.failed} failed)` : ''}
                 </span>
               )}
               <button
-                disabled={reclassify.isPending}
-                title="Re-check already-processed transactions against the current account list"
-                onClick={() => reclassify.mutate()}
+                disabled={reapply.isPending}
+                title="Re-evaluate the categorization rules for already-processed transactions (manual edits are kept)"
+                onClick={() => reapply.mutate()}
               >
-                {reclassify.isPending ? 'Reclassifying…' : 'Reclassify internal transfers'}
-              </button>
-
-              {rematch.error && <span style={{ color: '#b00' }}>{errMessage(rematch.error)}</span>}
-              {rematch.data && (
-                <span style={{ color: '#080' }}>
-                  Matched {rematch.data.matched}
-                  {rematch.data.failed > 0 ? ` (${rematch.data.failed} failed)` : ''}
-                </span>
-              )}
-              <button
-                disabled={rematch.isPending}
-                title="Re-check already-processed but still-unmatched transactions against members"
-                onClick={() => rematch.mutate()}
-              >
-                {rematch.isPending ? 'Rematching…' : 'Rematch unmatched transactions'}
-              </button>
-
-              {reclassifyInterestMutation.error && (
-                <span style={{ color: '#b00' }}>{errMessage(reclassifyInterestMutation.error)}</span>
-              )}
-              {reclassifyInterestMutation.data && (
-                <span style={{ color: '#080' }}>
-                  Reclassified {reclassifyInterestMutation.data.reclassified}
-                  {reclassifyInterestMutation.data.failed > 0 ? ` (${reclassifyInterestMutation.data.failed} failed)` : ''}
-                </span>
-              )}
-              <button
-                disabled={reclassifyInterestMutation.isPending}
-                title="Re-check already-processed transactions against transaction_type for interest wording"
-                onClick={() => reclassifyInterestMutation.mutate()}
-              >
-                {reclassifyInterestMutation.isPending ? 'Reclassifying…' : 'Reclassify interest'}
+                {reapply.isPending ? 'Re-applying…' : 'Re-apply rules'}
               </button>
             </>
           )}

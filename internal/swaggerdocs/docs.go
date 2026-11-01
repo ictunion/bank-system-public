@@ -2001,7 +2001,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires manage-bank-accounts or manage-transactions (which, depends on the action). Body selects the action: \"run\" (re-run matching for unprocessed transactions, needs manage-bank-accounts), \"reclassify_internal_transfers\" (re-check already-processed transactions against the current bank_accounts roster, needs manage-transactions), \"rematch_unmatched\" (re-check already-processed-but-unmatched transactions against member_payment_identifiers, needs manage-transactions), or \"reclassify_interest\" (re-check already-processed transactions against transaction_type for interest wording, needs manage-transactions).",
+                "description": "Requires manage-bank-accounts or manage-transactions (which, depends on the action). Body selects the action: \"run\" (categorize unprocessed transactions, needs manage-bank-accounts) or \"reapply_rules\" (re-evaluate the current categorization rules for every already-processed transaction not set by hand, rewriting those whose outcome changed; succeeded = transactions changed; needs manage-transactions).",
                 "consumes": [
                     "application/json"
                 ],
