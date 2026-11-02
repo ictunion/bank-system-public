@@ -401,6 +401,9 @@ func TestAuditorReport_UploadAndDownload(t *testing.T) {
 	if got := upload("2025", "not a pdf"); got != http.StatusBadRequest {
 		t.Errorf("non-PDF upload status = %d, want 400", got)
 	}
+	if got := upload("2025", "%PDF-"+strings.Repeat("a", MaxAuditorReportSize)); got != http.StatusRequestEntityTooLarge {
+		t.Errorf("upload over %d bytes status = %d, want 413", MaxAuditorReportSize, got)
+	}
 	if got := upload("2024", "%PDF-1.7 report"); got != http.StatusNotFound {
 		t.Errorf("upload for year without budget status = %d, want 404", got)
 	}
