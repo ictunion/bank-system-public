@@ -12,25 +12,25 @@ import (
 
 // Column indices are Fio's own stable numbering for the classic export API.
 const (
-	colDate                  = "column0"
-	colAmount                = "column1"
-	colCounterAccountNumber  = "column2"
-	colCounterBankCode       = "column3"
-	colConstantSymbol        = "column4"
-	colVariableSymbol        = "column5"
-	colSpecificSymbol        = "column6"
-	colUserIdentification    = "column7"
-	colTransactionType       = "column8"
-	colExecutor              = "column9"
-	colCounterAccountName    = "column10"
-	colCounterBankName       = "column12"
-	colCurrency              = "column14"
-	colMessageForRecipient   = "column16"
-	colInstructionID         = "column17"
-	colSpecification         = "column18"
-	colFioTransactionID      = "column22"
-	colComment               = "column25"
-	colBIC                   = "column26"
+	colDate                 = "column0"
+	colAmount               = "column1"
+	colCounterAccountNumber = "column2"
+	colCounterBankCode      = "column3"
+	colConstantSymbol       = "column4"
+	colVariableSymbol       = "column5"
+	colSpecificSymbol       = "column6"
+	colUserIdentification   = "column7"
+	colTransactionType      = "column8"
+	colExecutor             = "column9"
+	colCounterAccountName   = "column10"
+	colCounterBankName      = "column12"
+	colCurrency             = "column14"
+	colMessageForRecipient  = "column16"
+	colInstructionID        = "column17"
+	colSpecification        = "column18"
+	colFioTransactionID     = "column22"
+	colComment              = "column25"
+	colBIC                  = "column26"
 )
 
 // fioDateLayout matches Fio's "2024-01-15+0100" date format. The zone offset in
@@ -51,11 +51,11 @@ type rawTransaction map[string]*fioColumn
 type TransactionsResponse struct {
 	AccountStatement struct {
 		Info struct {
-			AccountID      string  `json:"accountId"`
-			BankID         string  `json:"bankId"`
-			Currency       string  `json:"currency"`
-			IBAN           string  `json:"iban"`
-			BIC            string  `json:"bic"`
+			AccountID string `json:"accountId"`
+			BankID    string `json:"bankId"`
+			Currency  string `json:"currency"`
+			IBAN      string `json:"iban"`
+			BIC       string `json:"bic"`
 			// OpeningBalance/ClosingBalance: the account's balance as of the
 			// start/end of this statement — captured by syncjob's cursor-based
 			// sync (never backfill) into bank_accounts.balance, see
@@ -73,26 +73,26 @@ type TransactionsResponse struct {
 
 // Transaction is one parsed row, shaped to map directly onto raw_transactions columns.
 type Transaction struct {
-	FioTransactionID      int64
-	TransactionDate       time.Time
-	Amount                float64
-	Currency              string
-	CounterAccountNumber  *string
-	CounterAccountName    *string
-	CounterBankCode       *string
-	CounterBankName       *string
-	BIC                   *string
-	VariableSymbol        *string
-	SpecificSymbol        *string
-	ConstantSymbol        *string
-	UserIdentification    *string
-	MessageForRecipient   *string
-	TransactionType       *string
-	Executor              *string
-	Specification         *string
-	Comment               *string
-	InstructionID         *string
-	RawPayload            json.RawMessage
+	FioTransactionID     int64
+	TransactionDate      time.Time
+	Amount               float64
+	Currency             string
+	CounterAccountNumber *string
+	CounterAccountName   *string
+	CounterBankCode      *string
+	CounterBankName      *string
+	BIC                  *string
+	VariableSymbol       *string
+	SpecificSymbol       *string
+	ConstantSymbol       *string
+	UserIdentification   *string
+	MessageForRecipient  *string
+	TransactionType      *string
+	Executor             *string
+	Specification        *string
+	Comment              *string
+	InstructionID        *string
+	RawPayload           json.RawMessage
 }
 
 // Transactions parses every raw transaction row in the response into typed

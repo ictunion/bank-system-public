@@ -29,9 +29,9 @@ var (
 
 // Result summarizes one bank account's sync attempt.
 type Result struct {
-	BankAccountID         int32
-	TransactionsFetched   int
-	TransactionsInserted  int
+	BankAccountID        int32
+	TransactionsFetched  int
+	TransactionsInserted int
 }
 
 // RunFioSync fetches new transactions for every active bank account and

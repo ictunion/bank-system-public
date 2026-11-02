@@ -273,7 +273,7 @@ func TestRun_UnmatchedDefaultsByDirection(t *testing.T) {
 	pool := dbtest.Pool(t)
 	queries := db.New(pool)
 	account := seedBankAccount(t, queries, "9400000003")
-	seedRawTransaction(t, queries, account.ID, 6003, "250.00", nil, nil)  // incoming, no VS, no mzda
+	seedRawTransaction(t, queries, account.ID, 6003, "250.00", nil, nil) // incoming, no VS, no mzda
 	seedRawTransaction(t, queries, account.ID, 6004, "-80.00", nil, nil) // outgoing, no VS, no mzda
 
 	if _, err := Run(context.Background(), pool); err != nil {

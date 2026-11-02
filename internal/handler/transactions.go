@@ -664,8 +664,8 @@ func CategorySummary(queries *db.Queries) http.HandlerFunc {
 		}
 
 		rows, err := queries.GetTransactionCategorySummary(r.Context(), db.GetTransactionCategorySummaryParams{
-			DateFrom: dateFrom,
-			DateTo:   dateTo,
+			DateFrom:                   dateFrom,
+			DateTo:                     dateTo,
 			Rollup:                     rollup,
 			InternalTransferCategoryID: categoryid.InternalTransfer,
 		})

@@ -155,7 +155,7 @@ func TestVerify_MalformedToken(t *testing.T) {
 func TestClaims_HasRole(t *testing.T) {
 	claims := Claims{
 		ResourceAccess: map[string]RolesClaim{
-			testClientID: {Roles: []string{"payment-history", "view-budget"}},
+			testClientID:   {Roles: []string{"payment-history", "view-budget"}},
 			"other-client": {Roles: []string{"payment-history"}},
 		},
 	}

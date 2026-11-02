@@ -370,7 +370,7 @@ func seedMember(requestContext context.Context, queries *db.Queries, m fixtureMe
 // arrears convention processing.processOne uses for real payments (see
 // CLAUDE.md "Transaction processing").
 func seedPaymentTransaction(requestContext context.Context, queries *db.Queries, bankAccountID int32, fioTransactionID int64, memberNumber int32, coveredMonthsAgo int) error {
-	transactionDate := monthOffset(coveredMonthsAgo - 1).AddDate(0, 0, 24) // the 25th
+	transactionDate := monthOffset(coveredMonthsAgo-1).AddDate(0, 0, 24) // the 25th
 	variableSymbol := strconv.Itoa(int(memberNumber))
 	counterName := fmt.Sprintf("Seed Member %d", memberNumber)
 

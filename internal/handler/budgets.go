@@ -3,9 +3,9 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"errors"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -691,27 +691,27 @@ func saveBudgetLine(r *http.Request, pool *pgxpool.Pool, year int32, lineID int6
 
 	if lineID == 0 {
 		lineID, err = txQueries.CreateBudgetLine(r.Context(), db.CreateBudgetLineParams{
-			BudgetYear:      year,
-			Kind:            line.kind,
-			GroupName:       line.groupName,
-			Name:            line.name,
-			BudgetedAmount:  line.budgeted,
-			SortOrder:       line.sortOrder,
-			Note:            line.note,
+			BudgetYear:     year,
+			Kind:           line.kind,
+			GroupName:      line.groupName,
+			Name:           line.name,
+			BudgetedAmount: line.budgeted,
+			SortOrder:      line.sortOrder,
+			Note:           line.note,
 		})
 		if err != nil {
 			return 0, false, err
 		}
 	} else {
 		rows, err := txQueries.UpdateBudgetLine(r.Context(), db.UpdateBudgetLineParams{
-			ID:              lineID,
-			BudgetYear:      year,
-			Kind:            line.kind,
-			GroupName:       line.groupName,
-			Name:            line.name,
-			BudgetedAmount:  line.budgeted,
-			SortOrder:       line.sortOrder,
-			Note:            line.note,
+			ID:             lineID,
+			BudgetYear:     year,
+			Kind:           line.kind,
+			GroupName:      line.groupName,
+			Name:           line.name,
+			BudgetedAmount: line.budgeted,
+			SortOrder:      line.sortOrder,
+			Note:           line.note,
 		})
 		if err != nil {
 			return 0, false, err

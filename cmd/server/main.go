@@ -145,7 +145,7 @@ func main() {
 	api.HandleFunc("PUT /transactions/{id}/assignment", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.AssignTransaction(pool)))
 	api.HandleFunc("DELETE /transactions/{id}/assignment", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.UnassignTransaction(pool)))
 
-	api.HandleFunc("GET /categories", handler.RequireAnyRole(keycloakProvider, []keycloak.Role{keycloak.RoleListTransactions, keycloak.RoleManageRules}, handler.ListCategories(db.New(pool))))
+	api.HandleFunc("GET /categories", handler.RequireAnyRole(keycloakProvider, []keycloak.Role{keycloak.RoleListTransactions, keycloak.RoleViewRules, keycloak.RoleManageRules}, handler.ListCategories(db.New(pool))))
 	api.HandleFunc("POST /categories", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.CreateCategory(db.New(pool))))
 	api.HandleFunc("DELETE /categories/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.DeleteCategory(db.New(pool))))
 	api.HandleFunc("GET /categorization-rules", handler.RequireAnyRole(keycloakProvider, []keycloak.Role{keycloak.RoleViewRules, keycloak.RoleManageRules}, handler.ListCategorizationRules(db.New(pool))))
@@ -153,7 +153,7 @@ func main() {
 	api.HandleFunc("PUT /categorization-rules/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageRules, handler.UpdateCategorizationRule(db.New(pool))))
 	api.HandleFunc("DELETE /categorization-rules/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageRules, handler.DeleteCategorizationRule(db.New(pool))))
 	api.HandleFunc("POST /categorization-rules/{id}/reapply", handler.RequireRole(keycloakProvider, keycloak.RoleManageRules, handler.ReapplyCategorizationRule(pool, keycloakProvider)))
-	
+
 	api.HandleFunc("GET /budgets", handler.RequireRole(keycloakProvider, keycloak.RoleViewBudget, handler.ListBudgets(db.New(pool))))
 	api.HandleFunc("GET /budgets/{year}", handler.RequireRole(keycloakProvider, keycloak.RoleViewBudget, handler.GetBudget(db.New(pool))))
 	api.HandleFunc("POST /budgets", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.CreateBudget(pool)))
@@ -164,7 +164,7 @@ func main() {
 	api.HandleFunc("DELETE /budgets/{year}/lines/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.DeleteBudgetLine(db.New(pool))))
 	api.HandleFunc("GET /budgets/{year}/auditor-report", handler.RequireRole(keycloakProvider, keycloak.RoleViewBudget, handler.DownloadAuditorReport(db.New(pool))))
 	api.HandleFunc("PUT /budgets/{year}/auditor-report", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.UploadAuditorReport(db.New(pool))))
-	
+
 	api.HandleFunc("GET /payments/{member_number}/history", handler.RequireAnyRole(keycloakProvider, []keycloak.Role{keycloak.RolePaymentHistory, keycloak.RoleViewWorkplacePaymentHistory}, handler.PaymentHistory(keycloakProvider, db.New(pool))))
 	api.HandleFunc("GET /payments/me/history", handler.RequireAuth(keycloakProvider, handler.MyPaymentHistory(db.New(pool))))
 	api.HandleFunc("GET /payments/{year}/{month}/missing", handler.RequireRole(keycloakProvider, keycloak.RolePaymentHistory, handler.MissingPayments(db.New(pool))))

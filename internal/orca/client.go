@@ -44,21 +44,21 @@ func NewClient(baseURL, token string, debug bool) *OrcaClient {
 // Member is one parsed row from /sync/bank/members, shaped to map directly
 // onto the `members` table.
 type Member struct {
-	MemberNumber                  int32
-	FeeStartDate                  *time.Time // nil = not yet liable
-	FeeStopDate                   *time.Time // nil = fee liability still open
-	Active                        bool
-	Sub                           *string // Keycloak UUID; nil if member has no Keycloak account yet
+	MemberNumber                   int32
+	FeeStartDate                   *time.Time // nil = not yet liable
+	FeeStopDate                    *time.Time // nil = fee liability still open
+	Active                         bool
+	Sub                            *string // Keycloak UUID; nil if member has no Keycloak account yet
 	WorkplaceExecutiveCommitteeSub *string // Keycloak group UUID of the member's workplace reps group; nil if not assigned to one
 }
 
 type membersResponse struct {
 	Members []struct {
-		MemberNumber                  int32   `json:"member_number"`
-		FeeStartDate                  *string `json:"fee_start_date"`
-		FeeStopDate                   *string `json:"fee_stop_date"`
-		Active                        bool    `json:"active"`
-		Sub                           *string `json:"sub"`
+		MemberNumber                   int32   `json:"member_number"`
+		FeeStartDate                   *string `json:"fee_start_date"`
+		FeeStopDate                    *string `json:"fee_stop_date"`
+		Active                         bool    `json:"active"`
+		Sub                            *string `json:"sub"`
 		WorkplaceExecutiveCommitteeSub *string `json:"workplace_executive_committee_sub"`
 	} `json:"members"`
 }

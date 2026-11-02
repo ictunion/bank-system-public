@@ -18,12 +18,12 @@ import (
 // merge the two lists client-side by member_number, since a commented
 // transaction can exist on a member who owes nothing.
 type commentedTransaction struct {
-	MemberNumber            int32  `json:"member_number"`
-	ProcessedTransactionID  int64  `json:"processed_transaction_id"`
-	TransactionDate         string `json:"transaction_date"`
-	Amount                  string `json:"amount"`
-	Currency                string `json:"currency"`
-	AdminComment            string `json:"admin_comment"`
+	MemberNumber           int32  `json:"member_number"`
+	ProcessedTransactionID int64  `json:"processed_transaction_id"`
+	TransactionDate        string `json:"transaction_date"`
+	Amount                 string `json:"amount"`
+	Currency               string `json:"currency"`
+	AdminComment           string `json:"admin_comment"`
 }
 
 // CommentedTransactions handles GET /payments/{year}/{month}/commented — every

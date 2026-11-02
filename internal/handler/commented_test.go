@@ -414,4 +414,3 @@ func TestWorkplaceCommentedTransactionsInYear_Success(t *testing.T) {
 		t.Errorf("commented transaction %d (member in the rep's workplace) missing from response: %+v", pt.ID, got)
 	}
 }
-

@@ -87,8 +87,8 @@ type Config struct {
 	KeycloakClientID string
 
 	// CorsAllowedOrigins is an exact-match allow-list of browser origins
-	// permitted to call this API cross-origin (e.g. https://orca.ictunion.cz). 
-	// Optional, comma-separated, empty by default: no origin 
+	// permitted to call this API cross-origin (e.g. https://orca.ictunion.cz).
+	// Optional, comma-separated, empty by default: no origin
 	// needs to be here unless another site calls in from a browser.
 	CorsAllowedOrigins []string
 }

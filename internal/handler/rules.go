@@ -68,7 +68,7 @@ func toCategorizationRuleResponse(rule db.CategorizationRule) categorizationRule
 type categorizationRuleRequest struct {
 	Priority   *int32      `json:"priority"`
 	CategoryID pgtype.UUID `json:"category_id"`
-	Enabled    *bool       `json:"enabled"`     // optional, defaults to true
+	Enabled    *bool       `json:"enabled"` // optional, defaults to true
 	Note       *string     `json:"note"`
 
 	CounterAccountNumber    *string `json:"counter_account_number"`
@@ -76,7 +76,7 @@ type categorizationRuleRequest struct {
 	ConstantSymbol          *string `json:"constant_symbol"`
 	TextContains            *string `json:"text_contains"`
 	TransactionTypeContains *string `json:"transaction_type_contains"`
-	Direction               *string `json:"direction"`                 // incoming | outgoing
+	Direction               *string `json:"direction"` // incoming | outgoing
 }
 
 // normalizedRule is a validated categorizationRuleRequest: optional strings
@@ -123,9 +123,9 @@ func normalizeRuleRequest(request categorizationRuleRequest) (normalizedRule, st
 		return normalizedRule{}, "priority is required"
 	}
 	rule := normalizedRule{
-		priority: *request.Priority,
+		priority:   *request.Priority,
 		categoryID: request.CategoryID,
-		enabled:  request.Enabled == nil || *request.Enabled,
+		enabled:    request.Enabled == nil || *request.Enabled,
 	}
 
 	fields := []struct {

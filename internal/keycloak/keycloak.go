@@ -47,7 +47,7 @@ const (
 	// RoleListTransactions protects:
 	//   GET /transactions
 	//   GET /transactions/{id}
-	//   GET /categories  (also accepts RoleManageRules)
+	//   GET /categories  (also accepts RoleViewRules, RoleManageRules)
 	RoleListTransactions Role = "list-transactions"
 
 	// RoleManageTransactions protects:
@@ -81,6 +81,7 @@ const (
 	//   GET /transactions/summary
 	//   GET /budgets
 	//   GET /budgets/{year}
+	//   GET /budgets/{year}/auditor-report
 	RoleViewBudget Role = "view-budget"
 
 	// RoleManageBudget protects (granted to admins — Board + Treasurer decide
@@ -91,10 +92,12 @@ const (
 	//   POST /budgets/{year}/lines
 	//   PUT /budgets/{year}/lines/{id}
 	//   DELETE /budgets/{year}/lines/{id}
+	//   PUT /budgets/{year}/auditor-report
 	RoleManageBudget Role = "manage-budget"
 
 	// RoleViewRules protects (read-only):
 	//   GET /categorization-rules  (also accepts RoleManageRules)
+	//   GET /categories  (for category names in the rules table)
 	RoleViewRules Role = "view-rules"
 
 	// RoleManageRules protects:
@@ -153,8 +156,8 @@ type Provider struct {
 	clientID string
 	jwksURL  string
 
-	mutex   sync.Mutex
-	keys map[string]*rsa.PublicKey // Keycloak key ID (kid) -> RSA public key
+	mutex sync.Mutex
+	keys  map[string]*rsa.PublicKey // Keycloak key ID (kid) -> RSA public key
 }
 
 type jwksResponse struct {
