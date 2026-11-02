@@ -376,3 +376,53 @@ func TestCreateBudget_CopyFromYear(t *testing.T) {
 
 	createBudget(t, pool, `{"year":2028,"copy_from_year":2020}`, http.StatusBadRequest)
 }
+
+func TestAuditorReport_UploadAndDownload(t *testing.T) {
+	queries := dbtest.Tx(t)
+	if _, err := queries.CreateBudget(context.Background(), db.CreateBudgetParams{Year: 2025}); err != nil {
+		t.Fatalf("CreateBudget: %v", err)
+	}
+	pathValues := map[string]string{"year": "2025"}
+
+	upload := func(year, body string) int {
+		recorder := httptest.NewRecorder()
+		UploadAuditorReport(queries)(recorder, budgetRequest(http.MethodPut, "/budgets/"+year+"/auditor-report", body, map[string]string{"year": year}))
+		return recorder.Code
+	}
+	download := func() *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		DownloadAuditorReport(queries)(recorder, budgetRequest(http.MethodGet, "/budgets/2025/auditor-report", "", pathValues))
+		return recorder
+	}
+
+	if got := download().Code; got != http.StatusNotFound {
+		t.Errorf("download before upload status = %d, want 404", got)
+	}
+	if got := upload("2025", "not a pdf"); got != http.StatusBadRequest {
+		t.Errorf("non-PDF upload status = %d, want 400", got)
+	}
+	if got := upload("2024", "%PDF-1.7 report"); got != http.StatusNotFound {
+		t.Errorf("upload for year without budget status = %d, want 404", got)
+	}
+	if got := upload("2025", "%PDF-1.7 first"); got != http.StatusNoContent {
+		t.Fatalf("upload status = %d, want 204", got)
+	}
+	if got := upload("2025", "%PDF-1.7 second"); got != http.StatusNoContent {
+		t.Fatalf("re-upload status = %d, want 204", got)
+	}
+
+	recorder := download()
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "%PDF-1.7 second" {
+		t.Errorf("download = %d %q, want 200 with the re-uploaded PDF", recorder.Code, recorder.Body)
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "application/pdf" {
+		t.Errorf("Content-Type = %q, want application/pdf", got)
+	}
+
+	reportRecorder := httptest.NewRecorder()
+	GetBudget(queries)(reportRecorder, budgetRequest(http.MethodGet, "/budgets/2025", "", pathValues))
+	var report budgetResponse
+	if err := json.Unmarshal(reportRecorder.Body.Bytes(), &report); err != nil || report.AuditorReportUploadedAt == nil {
+		t.Errorf("budget report auditor_report_uploaded_at = %v (err %v), want set", report.AuditorReportUploadedAt, err)
+	}
+}

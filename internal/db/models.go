@@ -43,6 +43,12 @@ type Budget struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type BudgetAuditorReport struct {
+	BudgetYear int32     `json:"budget_year"`
+	Content    []byte    `json:"content"`
+	UploadedAt time.Time `json:"uploaded_at"`
+}
+
 type BudgetLine struct {
 	ID             int64   `json:"id"`
 	BudgetYear     int32   `json:"budget_year"`

@@ -1,4 +1,4 @@
-import { apiGet, apiSend } from './client'
+import { ApiError, apiFetch, apiGet, apiSend } from './client'
 
 export interface CategoryTotal {
   category_id: string
@@ -85,6 +85,8 @@ export interface BudgetReport {
   unbudgeted: UnbudgetedTotal[]
   /** non-CZK transactions that year, left out of every figure */
   other_currency_count: number
+  /** null until the year's auditor report PDF has been uploaded */
+  auditor_report_uploaded_at: string | null
 }
 
 export function fetchBudgets(): Promise<BudgetSummary[]> {
@@ -105,6 +107,32 @@ export function updateBudgetNote(year: number, note: string): Promise<BudgetSumm
 
 export function deleteBudget(year: number): Promise<void> {
   return apiSend<void>('DELETE', `/api/budgets/${year}`)
+}
+
+// The auditor report travels as a raw PDF body, not JSON, so these two go
+// through apiFetch directly.
+export async function uploadAuditorReport(year: number, file: File): Promise<void> {
+  const path = `/api/budgets/${year}/auditor-report`
+  const response = await apiFetch(path, { method: 'PUT', body: file, headers: { 'Content-Type': 'application/pdf' } })
+  if (!response.ok) {
+    throw new ApiError(response.status, await response.json().catch(() => null), `PUT ${path} → ${response.status}`)
+  }
+}
+
+// A plain <a href> can't carry the bearer token, so fetch the PDF and hand
+// the browser a blob URL to save.
+export async function downloadAuditorReport(year: number): Promise<void> {
+  const path = `/api/budgets/${year}/auditor-report`
+  const response = await apiFetch(path)
+  if (!response.ok) {
+    throw new ApiError(response.status, await response.json().catch(() => null), `GET ${path} → ${response.status}`)
+  }
+  const url = URL.createObjectURL(await response.blob())
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `auditor-report-${year}.pdf`
+  link.click()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 // Body of both create and update — update is a full overwrite, category_ids

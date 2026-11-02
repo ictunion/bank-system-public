@@ -75,7 +75,7 @@ type Querier interface {
 	// :execrows lets handler.DeleteBankAccount tell "already gone" (0 rows) from
 	// "deleted just now" (1 row) and return 404 vs 204 accordingly.
 	DeleteBankAccount(ctx context.Context, id int32) (int64, error)
-	// Cascades to budget_lines and budget_line_categories.
+	// Cascades to budget_lines, budget_line_categories and budget_auditor_reports.
 	DeleteBudget(ctx context.Context, year int32) (int64, error)
 	// Cascades to the line's budget_line_categories.
 	DeleteBudgetLine(ctx context.Context, arg DeleteBudgetLineParams) (int64, error)
@@ -112,6 +112,9 @@ type Querier interface {
 	// ListBankAccountsWithToken, same never-expose-over-HTTP caveat.
 	GetBankAccountWithToken(ctx context.Context, arg GetBankAccountWithTokenParams) (GetBankAccountWithTokenRow, error)
 	GetBudget(ctx context.Context, year int32) (Budget, error)
+	GetBudgetAuditorReport(ctx context.Context, budgetYear int32) ([]byte, error)
+	// Metadata only, so the budget report doesn't load the PDF itself.
+	GetBudgetAuditorReportUploadedAt(ctx context.Context, budgetYear int32) (time.Time, error)
 	// "Actual" per budget line: the year's CZK transactions in the line's mapped
 	// categories. A signed sum, not SUM(ABS(amount)) like
 	// GetTransactionCategorySummary: a refund (money coming back on an expense
@@ -372,6 +375,8 @@ type Querier interface {
 	// rule the caller passes its fixed category and NULL conditions (the table's
 	// CHECK rejects anything else anyway).
 	UpdateCategorizationRule(ctx context.Context, arg UpdateCategorizationRuleParams) (int64, error)
+	// One report per year; a re-upload replaces the previous one.
+	UpsertBudgetAuditorReport(ctx context.Context, arg UpsertBudgetAuditorReportParams) error
 	// The member's auto-generated "default" payment identifier: variable_symbol
 	// == member_number, window mirrored from Orca (valid_from = fee_start_date,
 	// valid_to = fee_stop_date). Runs on every Orca sync and owns that window

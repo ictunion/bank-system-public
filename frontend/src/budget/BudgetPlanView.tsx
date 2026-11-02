@@ -6,12 +6,14 @@ import {
   type BudgetReport,
   type BudgetReportLine,
   createBudget,
+  downloadAuditorReport,
   fetchBudget,
   fetchBudgets,
   lineToInput,
   type UnbudgetedTotal,
   updateBudgetLine,
   updateBudgetNote,
+  uploadAuditorReport,
 } from '../api/budget'
 import { categoryLabel, categoryLabelById, fetchCategories } from '../api/categories'
 import { errMessage } from '../api/client'
@@ -119,13 +121,19 @@ export function BudgetPlanView() {
           </select>
         </label>
         {!isEditing && report.data?.note && <span style={{ color: '#666' }}>{report.data.note}</span>}
+        {!isEditing && report.data?.auditor_report_uploaded_at && <AuditorReportLink year={year} />}
         {canManage && hasBudget && (
           <button onClick={() => setEditing((value) => !value)}>{isEditing ? 'Done editing' : 'Edit'}</button>
         )}
       </div>
 
       {isEditing && report.data && (
-        <BudgetSettings key={year} year={year} note={report.data.note} />
+        <BudgetSettings
+          key={year}
+          year={year}
+          note={report.data.note}
+          auditorReportUploadedAt={report.data.auditor_report_uploaded_at}
+        />
       )}
 
       {budgets.isPending ? (
@@ -206,9 +214,22 @@ function CreateBudgetForm({
 // Edit mode's budget-level control: the note. Deleting a whole budget is
 // deliberately not offered here (DELETE /budgets/{year} exists in the API
 // only) — a voted budget is never meant to disappear.
-function BudgetSettings({ year, note }: { year: number; note: string | null }) {
+function BudgetSettings({
+  year,
+  note,
+  auditorReportUploadedAt,
+}: {
+  year: number
+  note: string | null
+  auditorReportUploadedAt: string | null
+}) {
   const qc = useQueryClient()
   const [draft, setDraft] = useState(note ?? '')
+
+  const upload = useMutation({
+    mutationFn: (file: File) => uploadAuditorReport(year, file),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['budget', year] }),
+  })
 
   const saveNote = useMutation({
     mutationFn: () => updateBudgetNote(year, draft.trim()),
@@ -228,7 +249,46 @@ function BudgetSettings({ year, note }: { year: number; note: string | null }) {
         {saveNote.isPending ? 'Saving…' : 'Save note'}
       </button>
       {saveNote.error && <span style={{ color: '#b00' }}>{errMessage(saveNote.error)}</span>}
+      <label>
+        Auditor report (PDF){' '}
+        <input
+          type="file"
+          accept="application/pdf"
+          disabled={upload.isPending}
+          onChange={(e) => {
+            const file = e.target.files?.[0]
+            if (file) upload.mutate(file)
+            e.target.value = ''
+          }}
+        />
+      </label>
+      <span style={{ color: '#666' }}>
+        {upload.isPending
+          ? 'Uploading…'
+          : auditorReportUploadedAt
+            ? `uploaded ${new Date(auditorReportUploadedAt).toLocaleDateString()}, a new upload replaces it`
+            : 'none uploaded yet'}
+      </span>
+      {upload.error && <span style={{ color: '#b00' }}>{errMessage(upload.error)}</span>}
     </div>
+  )
+}
+
+function AuditorReportLink({ year }: { year: number }) {
+  const download = useMutation({ mutationFn: () => downloadAuditorReport(year) })
+  return (
+    <>
+      <a
+        href={`/api/budgets/${year}/auditor-report`}
+        onClick={(e) => {
+          e.preventDefault()
+          if (!download.isPending) download.mutate()
+        }}
+      >
+        Auditor report (PDF)
+      </a>
+      {download.error && <span style={{ color: '#b00' }}>{errMessage(download.error)}</span>}
+    </>
   )
 }
 

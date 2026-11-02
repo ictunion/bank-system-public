@@ -980,8 +980,21 @@ UPDATE budgets SET note = sqlc.narg(note) WHERE year = sqlc.arg(year)
 RETURNING *;
 
 -- name: DeleteBudget :execrows
--- Cascades to budget_lines and budget_line_categories.
+-- Cascades to budget_lines, budget_line_categories and budget_auditor_reports.
 DELETE FROM budgets WHERE year = sqlc.arg(year);
+
+-- name: UpsertBudgetAuditorReport :exec
+-- One report per year; a re-upload replaces the previous one.
+INSERT INTO budget_auditor_reports (budget_year, content)
+VALUES (sqlc.arg(budget_year), sqlc.arg(content))
+ON CONFLICT (budget_year) DO UPDATE SET content = EXCLUDED.content, uploaded_at = now();
+
+-- name: GetBudgetAuditorReport :one
+SELECT content FROM budget_auditor_reports WHERE budget_year = sqlc.arg(budget_year);
+
+-- name: GetBudgetAuditorReportUploadedAt :one
+-- Metadata only, so the budget report doesn't load the PDF itself.
+SELECT uploaded_at FROM budget_auditor_reports WHERE budget_year = sqlc.arg(budget_year);
 
 -- name: ListBudgetLines :many
 -- In display order; ties (e.g. every line still at the default 0) by id, so

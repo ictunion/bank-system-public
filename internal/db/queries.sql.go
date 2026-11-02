@@ -522,7 +522,7 @@ const deleteBudget = `-- name: DeleteBudget :execrows
 DELETE FROM budgets WHERE year = $1
 `
 
-// Cascades to budget_lines and budget_line_categories.
+// Cascades to budget_lines, budget_line_categories and budget_auditor_reports.
 func (q *Queries) DeleteBudget(ctx context.Context, year int32) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteBudget, year)
 	if err != nil {
@@ -792,6 +792,29 @@ func (q *Queries) GetBudget(ctx context.Context, year int32) (Budget, error) {
 	var i Budget
 	err := row.Scan(&i.Year, &i.Note, &i.CreatedAt)
 	return i, err
+}
+
+const getBudgetAuditorReport = `-- name: GetBudgetAuditorReport :one
+SELECT content FROM budget_auditor_reports WHERE budget_year = $1
+`
+
+func (q *Queries) GetBudgetAuditorReport(ctx context.Context, budgetYear int32) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getBudgetAuditorReport, budgetYear)
+	var content []byte
+	err := row.Scan(&content)
+	return content, err
+}
+
+const getBudgetAuditorReportUploadedAt = `-- name: GetBudgetAuditorReportUploadedAt :one
+SELECT uploaded_at FROM budget_auditor_reports WHERE budget_year = $1
+`
+
+// Metadata only, so the budget report doesn't load the PDF itself.
+func (q *Queries) GetBudgetAuditorReportUploadedAt(ctx context.Context, budgetYear int32) (time.Time, error) {
+	row := q.db.QueryRow(ctx, getBudgetAuditorReportUploadedAt, budgetYear)
+	var uploaded_at time.Time
+	err := row.Scan(&uploaded_at)
+	return uploaded_at, err
 }
 
 const getBudgetLineActuals = `-- name: GetBudgetLineActuals :many
@@ -3201,6 +3224,23 @@ func (q *Queries) UpdateCategorizationRule(ctx context.Context, arg UpdateCatego
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const upsertBudgetAuditorReport = `-- name: UpsertBudgetAuditorReport :exec
+INSERT INTO budget_auditor_reports (budget_year, content)
+VALUES ($1, $2)
+ON CONFLICT (budget_year) DO UPDATE SET content = EXCLUDED.content, uploaded_at = now()
+`
+
+type UpsertBudgetAuditorReportParams struct {
+	BudgetYear int32  `json:"budget_year"`
+	Content    []byte `json:"content"`
+}
+
+// One report per year; a re-upload replaces the previous one.
+func (q *Queries) UpsertBudgetAuditorReport(ctx context.Context, arg UpsertBudgetAuditorReportParams) error {
+	_, err := q.db.Exec(ctx, upsertBudgetAuditorReport, arg.BudgetYear, arg.Content)
+	return err
 }
 
 const upsertDefaultPaymentIdentifier = `-- name: UpsertDefaultPaymentIdentifier :exec

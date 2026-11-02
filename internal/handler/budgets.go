@@ -1,7 +1,10 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"errors"
 	"net/http"
 	"regexp"
@@ -99,6 +102,9 @@ type budgetResponse struct {
 	// OtherCurrencyCount is how many of the year's transactions weren't in
 	// CZK and so aren't in any figure here.
 	OtherCurrencyCount int32 `json:"other_currency_count"`
+	// AuditorReportUploadedAt is null until the year's auditor report PDF
+	// has been uploaded (GET /budgets/{year}/auditor-report downloads it).
+	AuditorReportUploadedAt *time.Time `json:"auditor_report_uploaded_at"`
 }
 
 // parseBudgetYear reads the {year} path value.
@@ -238,14 +244,24 @@ func GetBudget(queries *db.Queries) http.HandlerFunc {
 			return
 		}
 
+		var auditorReportUploadedAt *time.Time
+		uploadedAt, err := queries.GetBudgetAuditorReportUploadedAt(r.Context(), year)
+		if err == nil {
+			auditorReportUploadedAt = &uploadedAt
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusInternalServerError, "failed to load auditor report")
+			return
+		}
+
 		response := budgetResponse{
-			Year:               budget.Year,
-			Note:               budget.Note,
-			CreatedAt:          budget.CreatedAt,
-			AsOf:               time.Now().Format("2006-01-02"),
-			Lines:              make([]budgetReportLine, len(lines)),
-			Unbudgeted:         make([]unbudgetedTotal, len(unbudgetedRows)),
-			OtherCurrencyCount: otherCurrencyCount,
+			Year:                    budget.Year,
+			Note:                    budget.Note,
+			CreatedAt:               budget.CreatedAt,
+			AsOf:                    time.Now().Format("2006-01-02"),
+			Lines:                   make([]budgetReportLine, len(lines)),
+			Unbudgeted:              make([]unbudgetedTotal, len(unbudgetedRows)),
+			OtherCurrencyCount:      otherCurrencyCount,
+			AuditorReportUploadedAt: auditorReportUploadedAt,
 		}
 		for i, line := range lines {
 			actualTotal, ok := actualByLine[line.ID]
@@ -439,6 +455,93 @@ func DeleteBudget(queries *db.Queries) http.HandlerFunc {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// MaxAuditorReportSize caps an uploaded auditor report PDF. MaxBodySize
+// exempts this route from the global 1 MiB cap, so the handler applies this
+// one itself.
+const MaxAuditorReportSize = 20 << 20 // 20 MiB
+
+// UploadAuditorReport handles PUT /budgets/{year}/auditor-report — stores the
+// year's auditor report, replacing any earlier upload. The body is the raw
+// PDF, not multipart.
+//
+// @Summary      Upload a year's auditor report
+// @Description  Requires the manage-budget role. Body is the raw PDF (Content-Type application/pdf), at most 20 MiB. One report per year; a re-upload replaces it.
+// @Tags         budgets
+// @Security     BearerAuth
+// @Accept       application/pdf
+// @Param        year  path  int  true  "Budget year"
+// @Success      204  "no content"
+// @Failure      400,401,403  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      413  {object}  map[string]string
+// @Router       /budgets/{year}/auditor-report [put]
+func UploadAuditorReport(queries *db.Queries) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		year, ok := parseBudgetYear(r)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid year")
+			return
+		}
+		content, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxAuditorReportSize))
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "auditor report must be at most 20 MiB")
+			return
+		} else if err != nil {
+			writeError(w, http.StatusBadRequest, "failed to read request body")
+			return
+		}
+		if !bytes.HasPrefix(content, []byte("%PDF-")) {
+			writeError(w, http.StatusBadRequest, "auditor report must be a PDF")
+			return
+		}
+		if _, ok := loadBudget(w, r, queries, year); !ok {
+			return
+		}
+		if err := queries.UpsertBudgetAuditorReport(r.Context(), db.UpsertBudgetAuditorReportParams{
+			BudgetYear: year,
+			Content:    content,
+		}); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to store auditor report")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// DownloadAuditorReport handles GET /budgets/{year}/auditor-report.
+//
+// @Summary      Download a year's auditor report
+// @Description  Requires the view-budget role. Returns the PDF as an attachment.
+// @Tags         budgets
+// @Security     BearerAuth
+// @Produce      application/pdf
+// @Param        year  path  int  true  "Budget year"
+// @Success      200  {file}  file
+// @Failure      400,401,403  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Router       /budgets/{year}/auditor-report [get]
+func DownloadAuditorReport(queries *db.Queries) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		year, ok := parseBudgetYear(r)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid year")
+			return
+		}
+		content, err := queries.GetBudgetAuditorReport(r.Context(), year)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "auditor report not found")
+			return
+		} else if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load auditor report")
+			return
+		}
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="auditor-report-%d.pdf"`, year))
+		w.Write(content)
 	}
 }
 

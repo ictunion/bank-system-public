@@ -72,6 +72,7 @@ var auditRoutes = map[string]auditAction{
 	"POST /budgets/{year}/lines":                            {AuditCategoryBudget, "create_budget_line"},
 	"PUT /budgets/{year}/lines/{id}":                        {AuditCategoryBudget, "update_budget_line"},
 	"DELETE /budgets/{year}/lines/{id}":                     {AuditCategoryBudget, "delete_budget_line"},
+	"PUT /budgets/{year}/auditor-report":                    {AuditCategoryBudget, "upload_auditor_report"},
 }
 
 // auditRecord is placed on the request context by AuditLog and filled in by

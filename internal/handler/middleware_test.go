@@ -42,3 +42,20 @@ func TestMaxBodySize_RejectsBodyOverLimit(t *testing.T) {
 		t.Errorf("reading a body one byte over the limit succeeded, want an error from http.MaxBytesReader")
 	}
 }
+
+func TestMaxBodySize_ExemptsAuditorReportUpload(t *testing.T) {
+	const limit = 16
+
+	var readErr error
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, readErr = io.ReadAll(r.Body)
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/budgets/2026/auditor-report", bytes.NewBufferString(strings.Repeat("a", limit+1)))
+	MaxBodySize(limit, next).ServeHTTP(recorder, request)
+
+	if readErr != nil {
+		t.Errorf("auditor report upload over the global limit failed to read: %v", readErr)
+	}
+}

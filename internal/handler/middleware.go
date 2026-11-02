@@ -3,6 +3,7 @@ package handler
 import (
 	"log"
 	"net/http"
+	"strings"
 )
 
 // Recover wraps next so a panicking handler returns a clean 500 JSON
@@ -24,7 +25,8 @@ func Recover(next http.Handler) http.Handler {
 // MaxRequestBodySize caps every request body read via MaxBodySize below.
 // Every POST/PUT/PATCH handler here decodes a small JSON object (account
 // details, category names, transaction assignments, waiver reasons, ...) —
-// there's no file upload or bulk-data route in this API — so 1 MiB is
+// the one file upload, the auditor report PDF, is exempt and capped by its
+// handler instead (MaxAuditorReportSize) — so 1 MiB is
 // generous headroom over any legitimate body while still bounding a client
 // (malicious or just broken) from forcing an unbounded read into memory via
 // encoding/json.Decoder, which has no size cap of its own.
@@ -38,6 +40,10 @@ const MaxRequestBodySize = 1 << 20 // 1 MiB
 // changes to take effect.
 func MaxBodySize(limit int64, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/auditor-report") {
+			next.ServeHTTP(w, r)
+			return
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		next.ServeHTTP(w, r)
 	})
