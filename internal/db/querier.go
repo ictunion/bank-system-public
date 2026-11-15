@@ -141,9 +141,12 @@ type Querier interface {
 	GetPaymentHistory(ctx context.Context, memberNumber int32) ([]GetPaymentHistoryRow, error)
 	// Backs GET /payments/stats — the org-wide % of currently-liable members who
 	// actually sent a membership_fee payment in the trailing rolling month
-	// (window_from = CURRENT_DATE - 1 calendar month, window_to = CURRENT_DATE,
-	// both inclusive — e.g. queried on April 15th, that's March 15th through
-	// April 15th). Deliberately NOT the arrears/coverage-month convention every
+	// plus 3 days of slack (window_from = CURRENT_DATE - 1 calendar month - 3
+	// days, window_to = CURRENT_DATE, both inclusive — e.g. queried on April
+	// 15th, that's March 12th through April 15th). The slack absorbs standing
+	// orders booked a few days late when their day falls on a weekend/holiday —
+	// without it those members drop out for a day or two and the % dips.
+	// Deliberately NOT the arrears/coverage-month convention every
 	// other payment query in this file uses (dues paid a month in arrears, 2
 	// month grace cap, etc. — see ListMembersMissingPayment above): this
 	// stat is a simple, direct "did a real bank transaction from this member
@@ -264,7 +267,7 @@ type Querier interface {
 	ListCoverageForTransaction(ctx context.Context, processedTransactionID int64) ([]ListCoverageForTransactionRow, error)
 	// Backs GET /payments/stats/history — GetPaymentStats evaluated as if it had
 	// been queried on each day from date_from through date_to (inclusive), oldest first:
-	// for day D, window = D minus 1 calendar month through D (inclusive), and
+	// for day D, window = D minus 1 calendar month minus 3 days through D (inclusive), and
 	// "liable" = liable on D itself (same snapshot check as GetPaymentStats, with
 	// D in place of CURRENT_DATE). The membership_fee payments are read once and
 	// joined to (day, liable member) pairs — a per-pair EXISTS subquery took
