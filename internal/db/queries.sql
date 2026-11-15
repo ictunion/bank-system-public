@@ -438,9 +438,12 @@ ORDER BY ma.total_missed_months DESC, ma.member_number;
 -- name: GetPaymentStats :one
 -- Backs GET /payments/stats — the org-wide % of currently-liable members who
 -- actually sent a membership_fee payment in the trailing rolling month
--- (window_from = CURRENT_DATE - 1 calendar month, window_to = CURRENT_DATE,
--- both inclusive — e.g. queried on April 15th, that's March 15th through
--- April 15th). Deliberately NOT the arrears/coverage-month convention every
+-- plus 3 days of slack (window_from = CURRENT_DATE - 1 calendar month - 3
+-- days, window_to = CURRENT_DATE, both inclusive — e.g. queried on April
+-- 15th, that's March 12th through April 15th). The slack absorbs standing
+-- orders booked a few days late when their day falls on a weekend/holiday —
+-- without it those members drop out for a day or two and the % dips.
+-- Deliberately NOT the arrears/coverage-month convention every
 -- other payment query in this file uses (dues paid a month in arrears, 2
 -- month grace cap, etc. — see ListMembersMissingPayment above): this
 -- stat is a simple, direct "did a real bank transaction from this member
@@ -461,7 +464,7 @@ ORDER BY ma.total_missed_months DESC, ma.member_number;
 -- category id is passed in (categoryid.MembershipFee) rather than written
 -- here, so the fixed id lives in one place.
 WITH window_bounds AS (
-    SELECT (CURRENT_DATE - interval '1 month')::date AS window_from, CURRENT_DATE::date AS window_to
+    SELECT (CURRENT_DATE - interval '1 month' - interval '3 days')::date AS window_from, CURRENT_DATE::date AS window_to
 )
 SELECT
     wb.window_from,
@@ -482,6 +485,42 @@ LEFT JOIN members m
     ON m.fee_start_date <= CURRENT_DATE
    AND (m.fee_stop_date IS NULL OR m.fee_stop_date >= CURRENT_DATE)
 GROUP BY wb.window_from, wb.window_to;
+
+-- name: ListDailyPaymentStats :many
+-- Backs GET /payments/stats/history — GetPaymentStats evaluated as if it had
+-- been queried on each day from date_from through date_to (inclusive), oldest first:
+-- for day D, window = D minus 1 calendar month minus 3 days through D (inclusive), and
+-- "liable" = liable on D itself (same snapshot check as GetPaymentStats, with
+-- D in place of CURRENT_DATE). The membership_fee payments are read once and
+-- joined to (day, liable member) pairs — a per-pair EXISTS subquery took
+-- seconds at ~800 members. LEFT JOINs keep a day with zero liable members;
+-- count(DISTINCT) ignores the NULLs they produce and a member paying twice in
+-- one window.
+WITH days AS (
+    SELECT d::date AS day
+    FROM generate_series(sqlc.arg(date_from)::date::timestamp, sqlc.arg(date_to)::date::timestamp, interval '1 day') AS d
+),
+payments AS (
+    SELECT pt.member_number, rt.transaction_date
+    FROM processed_transactions pt
+    JOIN raw_transactions rt ON rt.id = pt.raw_transaction_id
+    WHERE pt.category_id = sqlc.arg(membership_fee_category_id)::uuid
+      AND rt.transaction_date BETWEEN (sqlc.arg(date_from)::date - interval '1 month' - interval '3 days')::date AND sqlc.arg(date_to)::date
+)
+SELECT
+    (days.day - interval '1 month' - interval '3 days')::date AS window_from,
+    days.day::date AS window_to,
+    count(DISTINCT m.member_number)::int AS liable_members,
+    count(DISTINCT p.member_number)::int AS paid_members
+FROM days
+LEFT JOIN members m
+    ON m.fee_start_date <= days.day
+   AND (m.fee_stop_date IS NULL OR m.fee_stop_date >= days.day)
+LEFT JOIN payments p
+    ON p.member_number = m.member_number
+   AND p.transaction_date BETWEEN (days.day - interval '1 month' - interval '3 days')::date AND days.day
+GROUP BY days.day
+ORDER BY days.day;
 
 -- name: ListCommentedTransactionsInYear :many
 -- Backs GET /payments/{year}/commented — see ListCommentedTransactionsInMonth,

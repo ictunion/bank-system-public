@@ -880,6 +880,150 @@
                 }
             }
         },
+        "/budgets/{year}/auditor-report": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Requires the view-budget role. Returns the PDF as an attachment.",
+                "produces": [
+                    "application/pdf"
+                ],
+                "tags": [
+                    "budgets"
+                ],
+                "summary": "Download a year's auditor report",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Budget year",
+                        "name": "year",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Requires the manage-budget role. Body is the raw PDF (Content-Type application/pdf), at most 20 MiB. One report per year; a re-upload replaces it.",
+                "consumes": [
+                    "application/pdf"
+                ],
+                "tags": [
+                    "budgets"
+                ],
+                "summary": "Upload a year's auditor report",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Budget year",
+                        "name": "year",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "no content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "413": {
+                        "description": "Request Entity Too Large",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/budgets/{year}/lines": {
             "post": {
                 "security": [
@@ -1800,6 +1944,75 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/handler.paymentStats"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/payments/stats/history": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Requires the payment-history role. One entry per day from `from` through `to`, oldest first: each is what GET /payments/stats would have returned on that day (window_to = that day, window_from = one calendar month earlier, liable = liable on that day). Defaults: to = today, from = to minus 364 days (365 entries). A to in the future is capped to today; from after (capped) to is a 400.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payments"
+                ],
+                "summary": "Daily history of the org-wide % of members paying dues",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "YYYY-MM-DD, inclusive. Default: to minus 364 days",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "YYYY-MM-DD, inclusive. Default and maximum: today",
+                        "name": "to",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/handler.paymentStats"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
                         }
                     },
                     "401": {
@@ -3384,6 +3597,10 @@
             "properties": {
                 "as_of": {
                     "description": "YYYY-MM-DD the actual figures were computed on",
+                    "type": "string"
+                },
+                "auditor_report_uploaded_at": {
+                    "description": "AuditorReportUploadedAt is null until the year's auditor report PDF\nhas been uploaded (GET /budgets/{year}/auditor-report downloads it).",
                     "type": "string"
                 },
                 "created_at": {

@@ -262,6 +262,16 @@ type Querier interface {
 	// month-scoped.
 	ListCommentedTransactionsInYearForWorkplace(ctx context.Context, arg ListCommentedTransactionsInYearForWorkplaceParams) ([]ListCommentedTransactionsInYearForWorkplaceRow, error)
 	ListCoverageForTransaction(ctx context.Context, processedTransactionID int64) ([]ListCoverageForTransactionRow, error)
+	// Backs GET /payments/stats/history — GetPaymentStats evaluated as if it had
+	// been queried on each day from date_from through date_to (inclusive), oldest first:
+	// for day D, window = D minus 1 calendar month through D (inclusive), and
+	// "liable" = liable on D itself (same snapshot check as GetPaymentStats, with
+	// D in place of CURRENT_DATE). The membership_fee payments are read once and
+	// joined to (day, liable member) pairs — a per-pair EXISTS subquery took
+	// seconds at ~800 members. LEFT JOINs keep a day with zero liable members;
+	// count(DISTINCT) ignores the NULLs they produce and a member paying twice in
+	// one window.
+	ListDailyPaymentStats(ctx context.Context, arg ListDailyPaymentStatsParams) ([]ListDailyPaymentStatsRow, error)
 	// The rule chain processing.Run walks, in evaluation order. Disabled rules
 	// are skipped as if they didn't exist.
 	ListEnabledCategorizationRules(ctx context.Context) ([]CategorizationRule, error)
