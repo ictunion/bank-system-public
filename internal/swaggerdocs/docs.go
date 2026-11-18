@@ -1938,7 +1938,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the payment-history role. window_from/window_to are the trailing rolling month (today minus 1 calendar month through today, both inclusive) — no year/month params, always a live \"as of now\" snapshot. Counts a real transaction.transaction_date landing in that window, not the arrears/coverage-month convention the other payment endpoints use.",
+                "description": "Requires the payment-history role. window_from/window_to are the trailing rolling month plus 3 days of slack for standing orders booked late over a weekend/holiday (today minus 1 calendar month minus 3 days through today, both inclusive) — no year/month params, always a live \"as of now\" snapshot. Counts a real transaction.transaction_date landing in that window, not the arrears/coverage-month convention the other payment endpoints use.",
                 "produces": [
                     "application/json"
                 ],
@@ -1981,7 +1981,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Requires the payment-history role. One entry per day from ` + "`" + `from` + "`" + ` through ` + "`" + `to` + "`" + `, oldest first: each is what GET /payments/stats would have returned on that day (window_to = that day, window_from = one calendar month earlier, liable = liable on that day). Defaults: to = today, from = to minus 364 days (365 entries). A to in the future is capped to today; from after (capped) to is a 400.",
+                "description": "Requires the payment-history role. One entry per day from ` + "`" + `from` + "`" + ` through ` + "`" + `to` + "`" + `, oldest first: each is what GET /payments/stats would have returned on that day (window_to = that day, window_from = one calendar month and 3 days earlier, liable = liable on that day). Defaults: to = today, from = to minus 364 days (365 entries). A to in the future is capped to today; from after (capped) to is a 400.",
                 "produces": [
                     "application/json"
                 ],
