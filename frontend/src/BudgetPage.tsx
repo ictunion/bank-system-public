@@ -1,6 +1,6 @@
 import { type CSSProperties, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import { categoryLabel } from './api/categories'
 import { type CategoryTotal, fetchCategorySummary } from './api/budget'
@@ -55,24 +55,22 @@ function groupByCurrency(totals: CategoryTotal[]): Map<string, CategoryTotal[]> 
   return groups
 }
 
-// Two views of the same page: Overview (category pie charts for any month or
-// year) and Budget vs. actual (the voted yearly budget against real
-// figures). The choice lives in the URL (?view=plan) so a link opens the
-// same view.
-export function BudgetPage() {
-  const [searchParams, setSearchParams] = useSearchParams()
-  const view = searchParams.get('view') === 'plan' ? 'plan' : 'overview'
-  const choose = (next: 'overview' | 'plan') =>
-    setSearchParams(next === 'plan' ? { view: 'plan' } : {}, { replace: true })
+// Two views of the same page: Budget vs. actual (the voted yearly budget
+// against real figures, the default) and Overview (category pie charts for any
+// month or year). Each view has its own path (/budget/plan, /budget/overview)
+// so a link opens the same view.
+export function BudgetPage({ view }: { view: 'plan' | 'overview' }) {
+  const navigate = useNavigate()
+  const choose = (next: 'overview' | 'plan') => navigate(`/budget/${next}`)
 
   return (
     <>
       <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
-        <button style={view === 'overview' ? activeTab : tab} onClick={() => choose('overview')}>
-          Overview
-        </button>
         <button style={view === 'plan' ? activeTab : tab} onClick={() => choose('plan')}>
-          Budget vs. actual
+          Budget
+        </button>
+        <button style={view === 'overview' ? activeTab : tab} onClick={() => choose('overview')}>
+          Categories overview
         </button>
       </div>
       {view === 'plan' ? <BudgetPlanView /> : <BudgetOverview />}
@@ -81,8 +79,21 @@ export function BudgetPage() {
 }
 
 function BudgetOverview() {
-  const [year, setYear] = useState(CURRENT_YEAR)
-  const [month, setMonth] = useState<number | null>(null)
+  // Year and month live in the URL (?year=2026&month=3, no month = whole year)
+  // so a link opens the same period.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const yearParam = Number(searchParams.get('year'))
+  const year = YEARS.includes(yearParam) ? yearParam : CURRENT_YEAR
+  const monthParam = Number(searchParams.get('month'))
+  const month = Number.isInteger(monthParam) && monthParam >= 1 && monthParam <= 12 ? monthParam : null
+  const setPeriod = (nextYear: number, nextMonth: number | null) =>
+    setSearchParams(
+      nextMonth === null ? { year: String(nextYear) } : { year: String(nextYear), month: String(nextMonth) },
+      { replace: true },
+    )
+  // Shared so one click opens the breakdown under every pie at once.
+  const [showBreakdown, setShowBreakdown] = useState(false)
+  const toggleBreakdown = () => setShowBreakdown((v) => !v)
 
   const { from, to } = dateRange(year, month)
   const { data, isPending, isError, error } = useQuery({
@@ -93,19 +104,16 @@ function BudgetOverview() {
 
   return (
     <section>
-      <h2 style={{ marginTop: 0 }}>
-        Budget
-        {data && data.current_balance.length > 0 && (
-          <span style={{ fontWeight: 400, fontSize: '1rem', color: '#666', marginLeft: '0.75rem' }}>
-            — Current Balance {data.current_balance.map((b) => formatAmount(b.total, b.currency)).join(', ')}
-          </span>
-        )}
-      </h2>
+      {data && data.current_balance.length > 0 && (
+        <p style={{ marginTop: 0, color: '#666' }}>
+          Current balance {data.current_balance.map((b) => formatAmount(b.total, b.currency)).join(', ')}
+        </p>
+      )}
 
       <div style={filterRow}>
         <label>
           Year{' '}
-          <select value={year} onChange={(e) => setYear(Number(e.target.value))}>
+          <select value={year} onChange={(e) => setPeriod(Number(e.target.value), month)}>
             {YEARS.map((y) => (
               <option key={y} value={y}>
                 {y}
@@ -117,7 +125,7 @@ function BudgetOverview() {
           Month{' '}
           <select
             value={month ?? ''}
-            onChange={(e) => setMonth(e.target.value === '' ? null : Number(e.target.value))}
+            onChange={(e) => setPeriod(year, e.target.value === '' ? null : Number(e.target.value))}
           >
             <option value="">Whole year</option>
             {MONTH_NAMES.map((name, i) => (
@@ -135,15 +143,24 @@ function BudgetOverview() {
         <p>Failed to load: {errMessage(error)}</p>
       ) : (
         <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
-          <DirectionPanel title="Incoming" totals={data.incoming} />
-          <DirectionPanel title="Outgoing" totals={data.outgoing} />
+          <DirectionPanel title="Income" totals={data.incoming} showBreakdown={showBreakdown} onToggleBreakdown={toggleBreakdown} />
+          <DirectionPanel title="Expenses" totals={data.outgoing} showBreakdown={showBreakdown} onToggleBreakdown={toggleBreakdown} />
         </div>
       )}
     </section>
   )
 }
 
-function DirectionPanel({ title, totals }: { title: string; totals: CategoryTotal[] }) {
+interface BreakdownToggle {
+  showBreakdown: boolean
+  onToggleBreakdown: () => void
+}
+
+function DirectionPanel({
+  title,
+  totals,
+  ...breakdown
+}: { title: string; totals: CategoryTotal[] } & BreakdownToggle) {
   const byCurrency = groupByCurrency(totals)
 
   return (
@@ -153,15 +170,19 @@ function DirectionPanel({ title, totals }: { title: string; totals: CategoryTota
         <p style={{ color: '#666' }}>No data for this period.</p>
       ) : (
         [...byCurrency.entries()].map(([currency, rows]) => (
-          <CategoryPie key={currency} currency={currency} totals={rows} />
+          <CategoryPie key={currency} currency={currency} totals={rows} {...breakdown} />
         ))
       )}
     </div>
   )
 }
 
-function CategoryPie({ currency, totals }: { currency: string; totals: CategoryTotal[] }) {
-  const [showTable, setShowTable] = useState(false)
+function CategoryPie({
+  currency,
+  totals,
+  showBreakdown,
+  onToggleBreakdown,
+}: { currency: string; totals: CategoryTotal[] } & BreakdownToggle) {
 
   const sorted = useMemo(() => [...totals].sort((a, b) => Number(b.total) - Number(a.total)), [totals])
   const grandTotal = useMemo(() => sorted.reduce((sum, t) => sum + Number(t.total), 0), [sorted])
@@ -208,10 +229,10 @@ function CategoryPie({ currency, totals }: { currency: string; totals: CategoryT
           <Legend />
         </PieChart>
       </ResponsiveContainer>
-      <button onClick={() => setShowTable((v) => !v)} style={{ fontSize: '0.8rem' }}>
-        {showTable ? 'Hide' : 'Show'} breakdown
+      <button onClick={onToggleBreakdown} style={{ fontSize: '0.8rem' }}>
+        {showBreakdown ? 'Hide' : 'Show'} breakdown
       </button>
-      {showTable && (
+      {showBreakdown && (
         <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '0.8rem', marginTop: '0.5rem' }}>
           <tbody>
             {sorted.map((t) => (

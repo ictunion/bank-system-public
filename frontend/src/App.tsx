@@ -1,5 +1,5 @@
 import { useAuth } from 'react-oidc-context'
-import { Link, Route, Routes } from 'react-router-dom'
+import { Link, Navigate, Route, Routes } from 'react-router-dom'
 import { AuditLogsPage } from './AuditLogsPage'
 import { AuthGate } from './AuthGate'
 import { BankAccountsPage } from './BankAccountsPage'
@@ -93,7 +93,9 @@ function Dashboard() {
             <Route path="/" element={<TransactionsTable />} />
             <Route path="/categories" element={<CategoriesPage />} />
             <Route path="/rules" element={<RulesPage />} />
-            <Route path="/budget" element={<BudgetPage />} />
+            <Route path="/budget" element={<Navigate to="/budget/plan" replace />} />
+            <Route path="/budget/plan" element={<BudgetPage view="plan" />} />
+            <Route path="/budget/overview" element={<BudgetPage view="overview" />} />
             <Route path="/bank-accounts" element={<BankAccountsPage />} />
             <Route path="/event-logs" element={<EventLogsPage />} />
             <Route path="/audit-logs" element={<AuditLogsPage />} />

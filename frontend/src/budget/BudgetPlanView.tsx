@@ -1,5 +1,6 @@
 import { createContext, type CSSProperties, type ReactNode, useContext, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import {
   type BudgetLine,
   type BudgetLineKind,
@@ -87,7 +88,10 @@ const EditContext = createContext<EditActions | null>(null)
 export function BudgetPlanView() {
   const canManage = useHasRole('manage-budget')
   const budgets = useQuery({ queryKey: ['budgets'], queryFn: fetchBudgets })
-  const [selectedYear, setSelectedYear] = useState<number | null>(null)
+  // The chosen year lives in the URL (?year=2026) so a link opens the same budget.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const yearParam = Number(searchParams.get('year'))
+  const selectedYear = Number.isInteger(yearParam) && yearParam > 0 ? yearParam : null
   const [editing, setEditing] = useState(false)
 
   const budgetYears = (budgets.data ?? []).map((b) => b.year)
@@ -111,7 +115,7 @@ export function BudgetPlanView() {
       <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginBottom: '1rem' }}>
         <label>
           Year{' '}
-          <select value={year} onChange={(e) => setSelectedYear(Number(e.target.value))}>
+          <select value={year} onChange={(e) => setSearchParams({ year: e.target.value }, { replace: true })}>
             {yearOptions.map((y) => (
               <option key={y} value={y}>
                 {y}
