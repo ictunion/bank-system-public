@@ -27,8 +27,8 @@ interface MemberWaivers {
   waivers: Waiver[]
 }
 
-// One entry per member, in the order each member first appears in the API's
-// newest-first list; a member's own months are sorted chronologically.
+// One entry per member, sorted by member number; a member's own months are
+// sorted chronologically.
 function groupByMember(waivers: Waiver[]): MemberWaivers[] {
   const groups = new Map<number, Waiver[]>()
   for (const w of waivers) {
@@ -39,7 +39,7 @@ function groupByMember(waivers: Waiver[]): MemberWaivers[] {
   return Array.from(groups, ([member_number, memberWaivers]) => ({
     member_number,
     waivers: memberWaivers.sort((a, b) => a.year - b.year || a.month - b.month),
-  }))
+  })).sort((a, b) => a.member_number - b.member_number)
 }
 
 // Case-insensitive substring match. A member-number hit keeps all of that
