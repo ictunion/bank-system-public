@@ -83,7 +83,7 @@ func main() {
 	orcaClient := orca.NewClient(appConfig.OrcaAPIURL, appConfig.OrcaSyncToken, appConfig.Debug)
 	go func() {
 		defer schedulerDone.Done()
-		scheduler.RunImmediatellyAndThenDaily(requestContext, 3, 0, func(runContext context.Context) {
+		scheduler.RunImmediatellyAndThenDaily(requestContext, 8, 0, func(runContext context.Context) {
 
 			// We don't care about Orca sync result. We wil always try to match new transactions, if Fio returns anything new
 			if result, err := syncjob.RunOrcaSync(runContext, pool, orcaClient); err != nil {

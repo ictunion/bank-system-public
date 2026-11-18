@@ -379,7 +379,7 @@ type syncResultResponse struct {
 // Runs transaction processing/matching synchronously right after a
 // successful sync, same as BackfillAccount and for the same reason: an admin
 // pressing "sync now" wants to see the result categorized immediately, not
-// wait for the next 3am scheduled cycle. If processing fails, the
+// wait for the next 8am scheduled cycle. If processing fails, the
 // already-committed raw_transactions rows aren't lost — left for the next
 // scheduled cycle, same as any other unprocessed row — so that's reported as
 // a 200 with zeroed processing counts, not an error.
@@ -452,7 +452,7 @@ type backfillRequest struct {
 // Unlike TriggerFioSync, this also runs transaction processing/matching
 // synchronously afterward: a backfill is meant to be reviewed right away
 // (typically right after creating the account, before it starts riding the
-// daily cursor-based sync), not left uncategorized until the next 3am cycle.
+// daily cursor-based sync), not left uncategorized until the next 8am cycle.
 // If processing fails, the already-committed backfilled rows aren't lost —
 // they're just left for the next scheduled cycle to pick up, same as any
 // other unprocessed raw_transactions row — so that failure is reported as a

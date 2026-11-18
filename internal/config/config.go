@@ -40,7 +40,7 @@ type Config struct {
 
 	// Debug enables verbose logging of outgoing requests and incoming responses
 	// (method, URL, headers, bodies) for external calls, e.g. to Fio's API, and
-	// skips the Fio sync job entirely (no startup run, no daily 3am run, and the
+	// skips the Fio sync job entirely (no startup run, no daily 8am run, and the
 	// admin "sync now"/backfill buttons refuse with 409) — local dev has no real
 	// Fio account/token, so touching the live API would just fail or overwrite
 	// `make seed`'s fixture data. Set via the DEBUG env var (any of "1", "true",

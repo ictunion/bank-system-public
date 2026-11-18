@@ -1,6 +1,6 @@
 // Package syncjob orchestrates syncing external data (Fio Bank transactions,
 // later Orca members) into Postgres. Callable directly (server startup) or from
-// a scheduler (daily 3am run) — it has no knowledge of what triggers it.
+// a scheduler (daily 8am run) — it has no knowledge of what triggers it.
 package syncjob
 
 import (
