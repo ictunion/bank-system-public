@@ -11,7 +11,13 @@ function budgetEntryFallback(): Plugin {
   return {
     name: 'budget-entry-fallback',
     configureServer(server) {
-      server.middlewares.use((request, _response, next) => {
+      server.middlewares.use((incoming, _response, next) => {
+        // Without @types/node, IncomingMessage is typed as an empty stub.
+        const request = incoming as unknown as {
+          method?: string
+          url?: string
+          headers: { accept?: string }
+        }
         if (request.method === 'GET' && request.headers.accept?.includes('text/html')) {
           request.url = '/budget.html'
         }
