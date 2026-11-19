@@ -105,6 +105,10 @@ frontend-install:
 frontend-dev:
 	cd frontend && npm run dev
 
+.PHONY: frontend-dev-budget
+frontend-dev-budget:
+	cd frontend && npm run dev:budget
+
 .PHONY: frontend-build
 frontend-build:
 	cd frontend && npm run build

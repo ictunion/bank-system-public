@@ -122,6 +122,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("keycloak: %v", err)
 	}
+	// Providers accepted on the view-budget read routes: the admin client, plus
+	// the members' budget site's own client when configured.
+	budgetViewProviders := []*keycloak.Provider{keycloakProvider}
+	if appConfig.KeycloakBudgetClientID != "" {
+		budgetProvider, err := keycloak.NewProvider(appConfig.KeycloakHost, appConfig.KeycloakRealm, appConfig.KeycloakBudgetClientID)
+		if err != nil {
+			log.Fatalf("keycloak (budget client): %v", err)
+		}
+		budgetViewProviders = append(budgetViewProviders, budgetProvider)
+	}
 
 	// All application routes live under /api so a reverse proxy can serve the
 	// frontend at / and forward only /api/ here (see docs deploy notes). Handler
@@ -140,7 +150,7 @@ func main() {
 	api.HandleFunc("GET /audit-logs", handler.RequireRole(keycloakProvider, keycloak.RoleViewAuditLogs, handler.ListAuditLogs(db.New(pool))))
 
 	api.HandleFunc("GET /transactions", handler.RequireRole(keycloakProvider, keycloak.RoleListTransactions, handler.ListTransactions(db.New(pool))))
-	api.HandleFunc("GET /transactions/summary", handler.RequireRole(keycloakProvider, keycloak.RoleViewBudget, handler.CategorySummary(db.New(pool))))
+	api.HandleFunc("GET /transactions/summary", handler.RequireRoleFromAnyProvider(budgetViewProviders, keycloak.RoleViewBudget, handler.CategorySummary(db.New(pool))))
 	api.HandleFunc("GET /transactions/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleListTransactions, handler.GetTransaction(db.New(pool))))
 	api.HandleFunc("PUT /transactions/{id}/assignment", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.AssignTransaction(pool)))
 	api.HandleFunc("DELETE /transactions/{id}/assignment", handler.RequireRole(keycloakProvider, keycloak.RoleManageTransactions, handler.UnassignTransaction(pool)))
@@ -154,15 +164,15 @@ func main() {
 	api.HandleFunc("DELETE /categorization-rules/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageRules, handler.DeleteCategorizationRule(db.New(pool))))
 	api.HandleFunc("POST /categorization-rules/{id}/reapply", handler.RequireRole(keycloakProvider, keycloak.RoleManageRules, handler.ReapplyCategorizationRule(pool, keycloakProvider)))
 
-	api.HandleFunc("GET /budgets", handler.RequireRole(keycloakProvider, keycloak.RoleViewBudget, handler.ListBudgets(db.New(pool))))
-	api.HandleFunc("GET /budgets/{year}", handler.RequireRole(keycloakProvider, keycloak.RoleViewBudget, handler.GetBudget(db.New(pool))))
+	api.HandleFunc("GET /budgets", handler.RequireRoleFromAnyProvider(budgetViewProviders, keycloak.RoleViewBudget, handler.ListBudgets(db.New(pool))))
+	api.HandleFunc("GET /budgets/{year}", handler.RequireRoleFromAnyProvider(budgetViewProviders, keycloak.RoleViewBudget, handler.GetBudget(db.New(pool))))
 	api.HandleFunc("POST /budgets", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.CreateBudget(pool)))
 	api.HandleFunc("PATCH /budgets/{year}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.UpdateBudget(db.New(pool))))
 	api.HandleFunc("DELETE /budgets/{year}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.DeleteBudget(db.New(pool))))
 	api.HandleFunc("POST /budgets/{year}/lines", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.CreateBudgetLine(pool)))
 	api.HandleFunc("PUT /budgets/{year}/lines/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.UpdateBudgetLine(pool)))
 	api.HandleFunc("DELETE /budgets/{year}/lines/{id}", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.DeleteBudgetLine(db.New(pool))))
-	api.HandleFunc("GET /budgets/{year}/auditor-report", handler.RequireRole(keycloakProvider, keycloak.RoleViewBudget, handler.DownloadAuditorReport(db.New(pool))))
+	api.HandleFunc("GET /budgets/{year}/auditor-report", handler.RequireRoleFromAnyProvider(budgetViewProviders, keycloak.RoleViewBudget, handler.DownloadAuditorReport(db.New(pool))))
 	api.HandleFunc("PUT /budgets/{year}/auditor-report", handler.RequireRole(keycloakProvider, keycloak.RoleManageBudget, handler.UploadAuditorReport(db.New(pool))))
 
 	api.HandleFunc("GET /payments/{member_number}/history", handler.RequireAnyRole(keycloakProvider, []keycloak.Role{keycloak.RolePaymentHistory, keycloak.RoleViewWorkplacePaymentHistory}, handler.PaymentHistory(keycloakProvider, db.New(pool))))

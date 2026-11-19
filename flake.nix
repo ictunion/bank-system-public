@@ -45,6 +45,7 @@
             keycloakUrl = "http://localhost:8180";
             keycloakRealm = "members";
             keycloakClientId = "bank-system";
+            keycloakBudgetClientId = "budget-page";
           };
 
           default = bank-api;

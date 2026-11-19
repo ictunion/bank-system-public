@@ -2,7 +2,13 @@ import { type User, UserManager, WebStorageStateStore } from 'oidc-client-ts'
 
 const url = import.meta.env.VITE_KEYCLOAK_URL
 const realm = import.meta.env.VITE_KEYCLOAK_REALM
-const clientId = import.meta.env.VITE_KEYCLOAK_CLIENT_ID
+// The members' budget site (budget.html) may sign in through its own Keycloak
+// client (weaker login flow, only view-budget); it falls back to the admin
+// client. Roles are read from whichever client signed in (see roles.ts).
+const isBudgetSite =
+  document.querySelector('meta[name="keycloak-client"]')?.getAttribute('content') === 'budget'
+export const clientId =
+  (isBudgetSite && import.meta.env.VITE_KEYCLOAK_BUDGET_CLIENT_ID) || import.meta.env.VITE_KEYCLOAK_CLIENT_ID
 
 if (!url || !realm || !clientId) {
   throw new Error(

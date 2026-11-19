@@ -85,6 +85,11 @@ type Config struct {
 	KeycloakHost     string
 	KeycloakRealm    string
 	KeycloakClientID string
+	// KeycloakBudgetClientID (optional) is the members' budget site's own
+	// Keycloak client. Its tokens are accepted only on the view-budget read
+	// routes, with roles read from that client — so a token from its weaker
+	// login flow (no 2FA) can't be used anywhere else in this API.
+	KeycloakBudgetClientID string
 
 	// CorsAllowedOrigins is an exact-match allow-list of browser origins
 	// permitted to call this API cross-origin (e.g. https://orca.ictunion.cz).
@@ -171,6 +176,11 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("KEYCLOAK_CLIENT_ID environment variable is required")
 	}
 
+	keycloakBudgetClientID := os.Getenv("KEYCLOAK_BUDGET_CLIENT_ID")
+	if keycloakBudgetClientID == keycloakClientID {
+		return Config{}, fmt.Errorf("KEYCLOAK_BUDGET_CLIENT_ID must differ from KEYCLOAK_CLIENT_ID")
+	}
+
 	var corsAllowedOrigins []string
 	for _, origin := range strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",") {
 		if origin = strings.TrimSpace(origin); origin != "" {
@@ -190,6 +200,7 @@ func Load() (Config, error) {
 		KeycloakHost:           keycloakHost,
 		KeycloakRealm:          keycloakRealm,
 		KeycloakClientID:       keycloakClientID,
+		KeycloakBudgetClientID: keycloakBudgetClientID,
 		CorsAllowedOrigins:     corsAllowedOrigins,
 	}, nil
 }

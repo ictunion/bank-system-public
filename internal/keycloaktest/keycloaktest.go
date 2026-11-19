@@ -40,6 +40,8 @@ type Provider struct {
 	PrivateKey *rsa.PrivateKey
 	Issuer     string
 
+	serverURL string
+
 	groups *[]string
 }
 
@@ -84,8 +86,21 @@ func New(t *testing.T) *Provider {
 		Provider:   provider,
 		PrivateKey: key,
 		Issuer:     fmt.Sprintf("%s/realms/%s", server.URL, Realm),
+		serverURL:  server.URL,
 		groups:     groups,
 	}
+}
+
+// ForClient returns a real *keycloak.Provider for another client of the same
+// fake realm — tokens SignToken issues verify against it when their Audience
+// names clientID.
+func (p *Provider) ForClient(t *testing.T, clientID string) *keycloak.Provider {
+	t.Helper()
+	provider, err := keycloak.NewProvider(p.serverURL, Realm, clientID)
+	if err != nil {
+		t.Fatalf("keycloak.NewProvider(%q) against fake server: %v", clientID, err)
+	}
+	return provider
 }
 
 // SetGroups controls what UserGroupIDs returns for every subsequent call.

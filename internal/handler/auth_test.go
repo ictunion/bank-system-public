@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/golang-jwt/jwt/v5"
+
 	"github.com/kubik/bank-system/internal/keycloak"
 	"github.com/kubik/bank-system/internal/keycloaktest"
 )
@@ -199,5 +201,84 @@ func TestClaimsFromContext_Absent(t *testing.T) {
 func TestTokenFromContext_Absent(t *testing.T) {
 	if token, ok := TokenFromContext(context.Background()); ok || token != "" {
 		t.Errorf("TokenFromContext on a bare context = (%q, %v), want (\"\", false)", token, ok)
+	}
+}
+
+// A token from the members' budget site's own client: its own audience and
+// only view-budget under its own client, as that Keycloak client is set up.
+func budgetSiteToken(t *testing.T, provider *keycloaktest.Provider) string {
+	return provider.SignToken(t, keycloak.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Audience: jwt.ClaimStrings{"bank-budget"}},
+		ResourceAccess: map[string]keycloak.RolesClaim{
+			"bank-budget": {Roles: []string{string(keycloak.RoleViewBudget)}},
+		},
+	})
+}
+
+func TestRequireRoleFromAnyProvider(t *testing.T) {
+	provider := keycloaktest.New(t)
+	providers := []*keycloak.Provider{provider.Provider, provider.ForClient(t, "bank-budget")}
+
+	adminToken := provider.SignToken(t, keycloak.Claims{
+		ResourceAccess: map[string]keycloak.RolesClaim{
+			keycloaktest.ClientID: {Roles: []string{string(keycloak.RoleViewBudget), string(keycloak.RolePaymentHistory)}},
+		},
+	})
+	// Budget-site audience, but claiming roles under the admin client: must not
+	// count, roles are read only from the client the audience names.
+	forgedRolesToken := provider.SignToken(t, keycloak.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Audience: jwt.ClaimStrings{"bank-budget"}},
+		ResourceAccess: map[string]keycloak.RolesClaim{
+			keycloaktest.ClientID: {Roles: []string{string(keycloak.RoleViewBudget)}},
+		},
+	})
+
+	tests := []struct {
+		name   string
+		token  string
+		role   keycloak.Role
+		single bool // wrap with RequireRole(admin provider) instead
+		want   int
+	}{
+		{"admin token on budget route", adminToken, keycloak.RoleViewBudget, false, http.StatusOK},
+		{"budget-site token on budget route", budgetSiteToken(t, provider), keycloak.RoleViewBudget, false, http.StatusOK},
+		{"budget-site token, role it lacks", budgetSiteToken(t, provider), keycloak.RoleManageBudget, false, http.StatusForbidden},
+		{"budget-site token on admin-only route", budgetSiteToken(t, provider), keycloak.RoleViewBudget, true, http.StatusForbidden},
+		{"budget-site audience with admin-client roles", forgedRolesToken, keycloak.RoleViewBudget, false, http.StatusForbidden},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			next, called, _, _ := recordingNext()
+			wrapped := RequireRoleFromAnyProvider(providers, tt.role, next)
+			if tt.single {
+				wrapped = RequireRole(provider.Provider, tt.role, next)
+			}
+
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/", nil)
+			request.Header.Set("Authorization", "Bearer "+tt.token)
+			wrapped(recorder, request)
+
+			if recorder.Code != tt.want {
+				t.Fatalf("status = %d, want %d, body = %s", recorder.Code, tt.want, recorder.Body)
+			}
+			if *called != (tt.want == http.StatusOK) {
+				t.Errorf("next called = %v", *called)
+			}
+		})
+	}
+}
+
+func TestRequireAuth_RejectsBudgetSiteToken(t *testing.T) {
+	provider := keycloaktest.New(t)
+	next, called, _, _ := recordingNext()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Authorization", "Bearer "+budgetSiteToken(t, provider))
+	RequireAuth(provider.Provider, next)(recorder, request)
+
+	if recorder.Code != http.StatusForbidden || *called {
+		t.Fatalf("status = %d, next called = %v; want 403, not called", recorder.Code, *called)
 	}
 }

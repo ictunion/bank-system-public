@@ -6,6 +6,8 @@
 , keycloakUrl
 , keycloakRealm
 , keycloakClientId
+  # Client for the members' budget site (budget.html); may equal keycloakClientId.
+, keycloakBudgetClientId
 }:
 buildNpmPackage {
   pname = "bank-frontend";
@@ -18,6 +20,7 @@ buildNpmPackage {
     VITE_KEYCLOAK_URL = keycloakUrl;
     VITE_KEYCLOAK_REALM = keycloakRealm;
     VITE_KEYCLOAK_CLIENT_ID = keycloakClientId;
+    VITE_KEYCLOAK_BUDGET_CLIENT_ID = keycloakBudgetClientId;
   };
 
   installPhase = ''

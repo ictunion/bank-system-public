@@ -18,6 +18,16 @@ import (
 // grants the capability to call the route, the handler's own check narrows
 // which rows it returns.
 func RequireRole(provider *keycloak.Provider, role keycloak.Role, next http.HandlerFunc) http.HandlerFunc {
+	return RequireRoleFromAnyProvider([]*keycloak.Provider{provider}, role, next)
+}
+
+// RequireRoleFromAnyProvider is RequireRole for a route that accepts tokens of
+// more than one Keycloak client: the request passes if any provider verifies
+// the token (its own audience) and finds role under its own client. Used for
+// the budget read routes, which also accept the members' budget site's client —
+// a client whose tokens carry no other audience or role, so they can't reach
+// any route wrapped with a single provider.
+func RequireRoleFromAnyProvider(providers []*keycloak.Provider, role keycloak.Role, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		token, ok := strings.CutPrefix(authHeader, "Bearer ")
@@ -26,13 +36,14 @@ func RequireRole(provider *keycloak.Provider, role keycloak.Role, next http.Hand
 			return
 		}
 
-		claims, err := provider.Authorize(token, role)
-		if err != nil {
-			writeError(w, http.StatusForbidden, "not authorized")
-			return
+		for _, provider := range providers {
+			claims, err := provider.Authorize(token, role)
+			if err == nil {
+				next(w, r.WithContext(withClaims(r.Context(), claims, token)))
+				return
+			}
 		}
-
-		next(w, r.WithContext(withClaims(r.Context(), claims, token)))
+		writeError(w, http.StatusForbidden, "not authorized")
 	}
 }
 

@@ -298,7 +298,9 @@ function AuditorReportLink({ year }: { year: number }) {
 
 function BudgetTable({ report, editing }: { report: BudgetReport; editing: boolean }) {
   const qc = useQueryClient()
-  const categories = useQuery({ queryKey: ['categories'], queryFn: fetchCategories })
+  // Category names show only in edit mode; viewers holding just view-budget
+  // can't read GET /categories.
+  const categories = useQuery({ queryKey: ['categories'], queryFn: fetchCategories, enabled: editing })
   // null = closed; otherwise the line being edited, or a new line's kind.
   const [dialog, setDialog] = useState<{ line: BudgetLine | null; kind: BudgetLineKind } | null>(null)
 
