@@ -93,10 +93,12 @@ interface EditActions {
 
 const EditContext = createContext<EditActions | null>(null)
 
-// Phones drop the Note column (the note moves under the line's name).
+// Phones show each row as two table rows — the name (with its note and edit
+// buttons) spanning the full width, then Budgeted / Actual / % below it — so
+// the table fits the screen without scrolling sideways.
 function useColumnCount(): number {
   const edit = useContext(EditContext)
-  return (useIsNarrow() ? 4 : 5) + (edit ? 1 : 0)
+  return useIsNarrow() ? 3 : 5 + (edit ? 1 : 0)
 }
 
 export function BudgetPlanView() {
@@ -379,11 +381,13 @@ function BudgetTable({ report, editing }: { report: BudgetReport; editing: boole
       )}
 
       <EditContext.Provider value={editActions}>
-        <div style={{ overflowX: 'auto' }}>
+        {/* A scroll container would pin the sticky header to itself instead of
+            the page, so phones (whose layout fits the width) get none. */}
+        <div style={narrow ? undefined : { overflowX: 'auto' }}>
           <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: narrow ? '0.8125rem' : '0.875rem' }}>
             <thead>
               <tr>
-                <th style={th} />
+                {!narrow && <th style={th} />}
                 <th style={th}>Budgeted</th>
                 <th style={th}>Actual</th>
                 {!narrow && <th style={th}>Note</th>}
@@ -392,13 +396,14 @@ function BudgetTable({ report, editing }: { report: BudgetReport; editing: boole
                     {narrow ? '%' : '% of budgeted'}
                   </span>
                 </th>
-                {editing && <th style={th} />}
+                {editing && !narrow && <th style={th} />}
               </tr>
             </thead>
             <tbody>
               <SectionRows title="Incomes" kind="income" lines={incomeLines} categoryNames={categoryNames} />
               <SpacerRow />
               <FigureRow label="Incomes sum" kind="income" figures={incomes} emphasis="sum" />
+              <SpacerRow />
 
               <SectionRows title="Expenses" kind="expense" lines={expenseLines} categoryNames={categoryNames} />
               <SpacerRow />
@@ -422,16 +427,14 @@ function BudgetTable({ report, editing }: { report: BudgetReport; editing: boole
                   {[...unbudgetedIncoming, ...unbudgetedOutgoing].map((u) => (
                     <UnbudgetedRow key={`${u.category_id}-${u.direction}`} total={u} />
                   ))}
-                  <tr>
-                    <td style={{ ...td, fontWeight: 600, textAlign: 'center' }}>Difference incl. unbudgeted</td>
-                    <td style={tdNumber}>—</td>
-                    <td style={{ ...tdNumber, fontWeight: 600 }}>
-                      {formatCents(incomes.actual - expenses.actual + unbudgetedNet, narrow)}
-                    </td>
-                    {!narrow && <td style={td} />}
-                    <td style={tdNumber} />
-                    {editing && <td style={td} />}
-                  </tr>
+                  <TableRow
+                    label="Difference incl. unbudgeted"
+                    labelStyle={{ ...td, textAlign: 'center' }}
+                    rowStyle={{ fontWeight: 600 }}
+                    budgeted="—"
+                    actual={formatCents(incomes.actual - expenses.actual + unbudgetedNet, narrow)}
+                    percent=""
+                  />
                 </>
               )}
             </tbody>
@@ -476,11 +479,19 @@ function SectionRows({
           </td>
         </tr>
       )}
-      {toBlocks(lines).map((block) =>
+      {toBlocks(lines).map((block, index, blocks) =>
         block.group === null ? (
           <LineRow key={block.line.id} line={block.line} kind={kind} categories={categoryNames(block.line)} />
         ) : (
-          <GroupRows key={`group-${block.group}`} group={block.group} lines={block.lines} kind={kind} categoryNames={categoryNames} />
+          <GroupRows
+            key={`group-${block.group}`}
+            group={block.group}
+            lines={block.lines}
+            kind={kind}
+            categoryNames={categoryNames}
+            // The section's own spacer row already follows its last block.
+            last={index === blocks.length - 1}
+          />
         ),
       )}
     </>
@@ -492,12 +503,15 @@ function GroupRows({
   lines,
   kind,
   categoryNames,
+  last,
 }: {
   group: string
   lines: BudgetReportLine[]
   kind: BudgetLineKind
   categoryNames: (line: BudgetReportLine) => string
+  last: boolean
 }) {
+  const narrow = useIsNarrow()
   return (
     <>
       {lines.map((line) => (
@@ -505,6 +519,8 @@ function GroupRows({
       ))}
       {/* The group's own row comes after its lines, as their sum. */}
       <FigureRow label={group} kind={kind} figures={sumFigures(lines)} emphasis="group" />
+      {/* Phones: a gap so the next lines don't read as part of this group. */}
+      {narrow && !last && <SpacerRow />}
     </>
   )
 }
@@ -520,13 +536,11 @@ function LineRow({
 }) {
   // The mapped categories are an editing aid — shown only in edit mode.
   const edit = useContext(EditContext)
-  const narrow = useIsNarrow()
   return (
     <FigureRow
       label={
         <>
           {line.name}
-          {narrow && line.note && <span style={{ display: 'block', color: '#555', fontSize: '0.75rem' }}>{line.note}</span>}
           {edit && (
             <span style={{ display: 'block', color: '#666', fontSize: '0.75rem' }}>
               {categories === '' ? 'no categories mapped' : categories}
@@ -589,7 +603,6 @@ function FigureRow({
   // Set for a single line's row, which gets the edit buttons in edit mode.
   line?: BudgetReportLine
 }) {
-  const edit = useContext(EditContext)
   const narrow = useIsNarrow()
   // The Difference row compares two balances, not two amounts of the same
   // kind — with a near-zero or negative budgeted balance the ratio reads
@@ -615,32 +628,109 @@ function FigureRow({
     background: emphasis === undefined ? kindColor : undefined,
   }
   return (
-    <tr style={rowStyle}>
-      <td style={labelStyle}>{label}</td>
-      <td style={tdNumber}>{formatCents(figures.budgeted, narrow)}</td>
-      <td style={tdNumber}>{formatCents(figures.actual, narrow)}</td>
-      {!narrow && <td style={tdNote}>{line?.note}</td>}
-      <td style={tdNumber}>{percent}</td>
-      {edit && <td style={tdNumber}>{line && <LineActions line={line} />}</td>}
-    </tr>
+    <TableRow
+      label={label}
+      labelStyle={labelStyle}
+      rowStyle={rowStyle}
+      budgeted={formatCents(figures.budgeted, narrow)}
+      actual={formatCents(figures.actual, narrow)}
+      note={line?.note}
+      percent={percent}
+      actions={line && <LineActions line={line} />}
+    />
   )
 }
 
 function UnbudgetedRow({ total }: { total: UnbudgetedTotal }) {
-  const edit = useContext(EditContext)
   const narrow = useIsNarrow()
   const cents = toCents(total.actual)
   return (
-    <tr style={{ color: WARNING_COLOR }}>
-      <td style={td}>
-        {categoryLabel(total.category)} ({total.direction === 'incoming' ? 'income' : 'expense'})
-      </td>
-      <td style={tdNumber}>—</td>
-      <td style={tdNumber}>{formatCents(total.direction === 'incoming' ? cents : -cents, narrow)}</td>
-      {!narrow && <td style={td} />}
-      <td style={tdNumber} />
-      {edit && <td style={td} />}
-    </tr>
+    <TableRow
+      label={`${categoryLabel(total.category)} (${total.direction === 'incoming' ? 'income' : 'expense'})`}
+      labelStyle={td}
+      rowStyle={{ color: WARNING_COLOR }}
+      budgeted="—"
+      actual={formatCents(total.direction === 'incoming' ? cents : -cents, narrow)}
+      percent=""
+    />
+  )
+}
+
+// One row of the table. Wide screens: a single <tr> with name, Budgeted,
+// Actual, Note, % (and the edit buttons in edit mode). Phones: the name row
+// spanning every column — note under the name, edit buttons on its right —
+// then the figures row.
+function TableRow({
+  label,
+  labelStyle,
+  rowStyle,
+  budgeted,
+  actual,
+  note,
+  percent,
+  actions,
+}: {
+  label: ReactNode
+  labelStyle: CSSProperties
+  rowStyle?: CSSProperties
+  budgeted: ReactNode
+  actual: ReactNode
+  note?: string | null
+  percent: ReactNode
+  actions?: ReactNode
+}) {
+  const edit = useContext(EditContext)
+  const narrow = useIsNarrow()
+
+  if (!narrow) {
+    return (
+      <tr style={rowStyle}>
+        <td style={labelStyle}>{label}</td>
+        <td style={tdNumber}>{budgeted}</td>
+        <td style={tdNumber}>{actual}</td>
+        <td style={tdNote}>{note}</td>
+        <td style={tdNumber}>{percent}</td>
+        {edit && <td style={tdNumber}>{actions}</td>}
+      </tr>
+    )
+  }
+
+  const showActions = edit !== null && actions
+  // A line's name cell carries its kind's color on wide screens; spanning the
+  // full width here it would look like a group/sum row, so phones show that
+  // color as a stripe down the entry's left edge instead. Colored group/sum
+  // rows get the same-width stripe in their own color, so every entry's text
+  // starts at the same offset.
+  const stripeColor = labelStyle.background ?? rowStyle?.background
+  const stripe = stripeColor ? `6px solid ${stripeColor}` : undefined
+  return (
+    <>
+      <tr style={rowStyle}>
+        <td
+          colSpan={3}
+          style={{
+            ...labelStyle,
+            background: undefined,
+            borderLeft: stripe ?? labelStyle.borderLeft,
+            borderBottom: 'none',
+            paddingTop: '0.6rem',
+          }}
+        >
+          <div style={showActions ? { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '0.5rem' } : undefined}>
+            <div>
+              {label}
+              {note && <span style={{ display: 'block', color: '#555', fontSize: '0.75rem', fontWeight: 400 }}>{note}</span>}
+            </div>
+            {showActions && actions}
+          </div>
+        </td>
+      </tr>
+      <tr style={rowStyle}>
+        <td style={stripe ? { ...narrowFigure, borderLeft: stripe } : narrowFigure}>{budgeted}</td>
+        <td style={narrowFigure}>{actual}</td>
+        <td style={narrowFigure}>{percent}</td>
+      </tr>
+    </>
   )
 }
 
@@ -690,7 +780,15 @@ const GRID_BORDER = '1px solid #d4d4d4'
 const PERCENT_EXPLANATION =
   "Actual as a percentage of this line's budgeted amount, for the whole year"
 
+// Sticky so the column titles stay visible while scrolling a long budget.
+// With collapsed borders a stuck cell loses its own borders, hence the
+// background and the shadow standing in for the bottom border.
 const th: CSSProperties = {
+  position: 'sticky',
+  top: 0,
+  zIndex: 1,
+  background: '#fff',
+  boxShadow: 'inset 0 -2px 0 #bbb',
   textAlign: 'center',
   border: GRID_BORDER,
   borderBottom: '2px solid #bbb',
@@ -705,5 +803,9 @@ const td: CSSProperties = {
 }
 
 const tdNumber: CSSProperties = { ...td, textAlign: 'right', whiteSpace: 'nowrap' }
+
+// Phones: the extra top padding on the name row and bottom padding here
+// space one entry from the next.
+const narrowFigure: CSSProperties = { ...tdNumber, borderTop: 'none', paddingBottom: '0.6rem' }
 
 const tdNote: CSSProperties = { ...td, color: '#555', fontSize: '0.8125rem', maxWidth: 320 }
