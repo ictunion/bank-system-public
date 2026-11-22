@@ -31,16 +31,12 @@ function toCents(amount: string): number {
 }
 
 const czk = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'CZK' })
-// Phones show whole crowns so the amount columns fit the screen width.
-const czkWhole = new Intl.NumberFormat(undefined, {
-  style: 'currency',
-  currency: 'CZK',
-  minimumFractionDigits: 0,
-  maximumFractionDigits: 0,
-})
+// Phones leave out the currency symbol (the column titles carry it) so large
+// amounts fit the screen width.
+const czkPlain = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
-function formatCents(cents: number, whole = false): string {
-  return (whole ? czkWhole : czk).format(cents / 100)
+function formatCents(cents: number, plain = false): string {
+  return (plain ? czkPlain : czk).format(cents / 100)
 }
 
 interface Figures {
@@ -388,8 +384,8 @@ function BudgetTable({ report, editing }: { report: BudgetReport; editing: boole
             <thead>
               <tr>
                 {!narrow && <th style={th} />}
-                <th style={th}>Budgeted</th>
-                <th style={th}>Actual</th>
+                <th style={th}>{narrow ? 'Budgeted (CZK)' : 'Budgeted'}</th>
+                <th style={th}>{narrow ? 'Actual (CZK)' : 'Actual'}</th>
                 {!narrow && <th style={th}>Note</th>}
                 <th style={th}>
                   <span title={PERCENT_EXPLANATION} style={{ cursor: 'help', borderBottom: '1px dotted #666' }}>
@@ -431,8 +427,8 @@ function BudgetTable({ report, editing }: { report: BudgetReport; editing: boole
                     label="Difference incl. unbudgeted"
                     labelStyle={{ ...td, textAlign: 'center' }}
                     rowStyle={{ fontWeight: 600 }}
-                    budgeted="—"
-                    actual={formatCents(incomes.actual - expenses.actual + unbudgetedNet, narrow)}
+                    budgeted={null}
+                    actual={incomes.actual - expenses.actual + unbudgetedNet}
                     percent=""
                   />
                 </>
@@ -596,7 +592,6 @@ function FigureRow({
   // Set for a single line's row, which gets the edit buttons in edit mode.
   line?: BudgetReportLine
 }) {
-  const narrow = useIsNarrow()
   // The Difference row compares two balances, not two amounts of the same
   // kind — with a near-zero or negative budgeted balance the ratio reads
   // misleadingly (a good result as a negative %), so it shows none.
@@ -625,8 +620,8 @@ function FigureRow({
       label={label}
       labelStyle={labelStyle}
       rowStyle={rowStyle}
-      budgeted={formatCents(figures.budgeted, narrow)}
-      actual={formatCents(figures.actual, narrow)}
+      budgeted={figures.budgeted}
+      actual={figures.actual}
       note={line?.note}
       percent={percent}
       actions={line && <LineActions line={line} />}
@@ -635,15 +630,14 @@ function FigureRow({
 }
 
 function UnbudgetedRow({ total }: { total: UnbudgetedTotal }) {
-  const narrow = useIsNarrow()
   const cents = toCents(total.actual)
   return (
     <TableRow
       label={`${categoryLabel(total.category)} (${total.direction === 'incoming' ? 'income' : 'expense'})`}
       labelStyle={td}
       rowStyle={{ color: WARNING_COLOR }}
-      budgeted="—"
-      actual={formatCents(total.direction === 'incoming' ? cents : -cents, narrow)}
+      budgeted={null}
+      actual={total.direction === 'incoming' ? cents : -cents}
       percent=""
     />
   )
@@ -666,21 +660,28 @@ function TableRow({
   label: ReactNode
   labelStyle: CSSProperties
   rowStyle?: CSSProperties
-  budgeted: ReactNode
-  actual: ReactNode
+  // Amounts in hellers; budgeted null = no budget (unbudgeted rows), shown as —.
+  budgeted: number | null
+  actual: number
   note?: string | null
   percent: ReactNode
   actions?: ReactNode
 }) {
   const edit = useContext(EditContext)
   const narrow = useIsNarrow()
+  const budgetedText = budgeted === null ? '—' : formatCents(budgeted, narrow)
+  const actualText = formatCents(actual, narrow)
 
   if (!narrow) {
+    // The key makes React build fresh cells when the layout switches (e.g. a
+    // phone rotated past 600px) instead of reusing the phone layout's first
+    // cell, whose removed borderLeft/borderBottom would wipe those sides of
+    // the `border` shorthand.
     return (
-      <tr style={rowStyle}>
+      <tr key="wide" style={rowStyle}>
         <td style={labelStyle}>{label}</td>
-        <td style={tdNumber}>{budgeted}</td>
-        <td style={tdNumber}>{actual}</td>
+        <td style={tdNumber}>{budgetedText}</td>
+        <td style={tdNumber}>{actualText}</td>
         <td style={tdNote}>{note}</td>
         <td style={tdNumber}>{percent}</td>
         {edit && <td style={tdNumber}>{actions}</td>}
@@ -704,7 +705,7 @@ function TableRow({
           style={{
             ...labelStyle,
             background: undefined,
-            borderLeft: stripe ?? labelStyle.borderLeft,
+            borderLeft: stripe,
             borderBottom: 'none',
             paddingTop: '0.6rem',
           }}
@@ -719,8 +720,8 @@ function TableRow({
         </td>
       </tr>
       <tr style={rowStyle}>
-        <td style={stripe ? { ...narrowFigure, borderLeft: stripe } : narrowFigure}>{budgeted}</td>
-        <td style={narrowFigure}>{actual}</td>
+        <td style={stripe ? { ...narrowFigure, borderLeft: stripe } : narrowFigure}>{budgetedText}</td>
+        <td style={narrowFigure}>{actualText}</td>
         <td style={narrowFigure}>{percent}</td>
       </tr>
     </>
@@ -784,7 +785,6 @@ const th: CSSProperties = {
   boxShadow: 'inset 0 -2px 0 #bbb',
   textAlign: 'center',
   border: GRID_BORDER,
-  borderBottom: '2px solid #bbb',
   padding: '0.4rem 0.6rem',
   whiteSpace: 'nowrap',
 }
@@ -799,6 +799,13 @@ const tdNumber: CSSProperties = { ...td, textAlign: 'right', whiteSpace: 'nowrap
 
 // Phones: the extra top padding on the name row and bottom padding here
 // space one entry from the next.
-const narrowFigure: CSSProperties = { ...tdNumber, borderTop: 'none', paddingBottom: '0.6rem' }
+// Narrower side padding than tdNumber so three amounts fit a phone's width.
+const narrowFigure: CSSProperties = {
+  ...tdNumber,
+  borderTop: 'none',
+  paddingLeft: '0.35rem',
+  paddingRight: '0.35rem',
+  paddingBottom: '0.6rem',
+}
 
 const tdNote: CSSProperties = { ...td, color: '#555', fontSize: '0.8125rem', maxWidth: 320 }
