@@ -7,3 +7,38 @@ body {
   background: #109ac0;
   font-family: system-ui, sans-serif;
 }
+
+/* Members' budget site frame; tighter on phones (breakpoint shared with budget/useIsNarrow.ts). */
+.budget-site-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem 1rem;
+  color: #fff;
+  padding: 1rem 2rem;
+}
+
+.budget-site-body {
+  padding: 0 2rem 2rem;
+}
+
+.budget-site-card {
+  background: #fff;
+  border-radius: 8px;
+  padding: 1.5rem;
+}
+
+@media (max-width: 600px) {
+  .budget-site-header {
+    padding: 0.75rem 1rem;
+  }
+
+  .budget-site-body {
+    padding: 0 0.5rem 0.5rem;
+  }
+
+  .budget-site-card {
+    padding: 1rem 0.5rem;
+  }
+}

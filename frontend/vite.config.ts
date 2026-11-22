@@ -34,7 +34,10 @@ function budgetEntryFallback(): Plugin {
 export default defineConfig({
   plugins: [react(), ...(process.env.BUDGET_SITE ? [budgetEntryFallback()] : [])],
   server: {
-    port: 5173,
+    // Fixed ports, each registered as a redirect URI on its Keycloak client
+    // (admin: 5173, budget site: 5174); strict so a busy port fails loudly.
+    port: process.env.BUDGET_SITE ? 5174 : 5173,
+    strictPort: true,
     proxy: {
       '/api': { target: 'http://127.0.0.1:25987', changeOrigin: true },
     },

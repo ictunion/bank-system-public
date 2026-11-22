@@ -6,6 +6,7 @@ import { categoryLabel } from './api/categories'
 import { type CategoryTotal, fetchCategorySummary } from './api/budget'
 import { errMessage } from './api/client'
 import { BudgetPlanView } from './budget/BudgetPlanView'
+import { useIsNarrow } from './budget/useIsNarrow'
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -164,7 +165,7 @@ function DirectionPanel({
   const byCurrency = groupByCurrency(totals)
 
   return (
-    <div style={{ flex: '1 1 360px', minWidth: 320 }}>
+    <div style={{ flex: '1 1 360px', minWidth: 0 }}>
       <h3 style={{ marginBottom: '0.5rem' }}>{title}</h3>
       {byCurrency.size === 0 ? (
         <p style={{ color: '#666' }}>No data for this period.</p>
@@ -183,7 +184,9 @@ function CategoryPie({
   showBreakdown,
   onToggleBreakdown,
 }: { currency: string; totals: CategoryTotal[] } & BreakdownToggle) {
-
+  // Phones always show the breakdown: the pie's hover tooltip doesn't work well on touch.
+  const narrow = useIsNarrow()
+  const breakdownVisible = narrow || showBreakdown
   const sorted = useMemo(() => [...totals].sort((a, b) => Number(b.total) - Number(a.total)), [totals])
   const grandTotal = useMemo(() => sorted.reduce((sum, t) => sum + Number(t.total), 0), [sorted])
 
@@ -229,10 +232,12 @@ function CategoryPie({
           <Legend />
         </PieChart>
       </ResponsiveContainer>
-      <button onClick={onToggleBreakdown} style={{ fontSize: '0.8rem' }}>
-        {showBreakdown ? 'Hide' : 'Show'} breakdown
-      </button>
-      {showBreakdown && (
+      {!narrow && (
+        <button onClick={onToggleBreakdown} style={{ fontSize: '0.8rem' }}>
+          {showBreakdown ? 'Hide' : 'Show'} breakdown
+        </button>
+      )}
+      {breakdownVisible && (
         <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '0.8rem', marginTop: '0.5rem' }}>
           <tbody>
             {sorted.map((t) => (
@@ -263,7 +268,8 @@ const activeTab: CSSProperties = { ...tab, background: '#2a78d6', borderColor: '
 
 const filterRow: CSSProperties = {
   display: 'flex',
-  gap: '1rem',
+  flexWrap: 'wrap',
+  gap: '0.5rem 1rem',
   alignItems: 'center',
   marginBottom: '1rem',
 }

@@ -20,6 +20,7 @@ import { categoryLabel, categoryLabelById, fetchCategories } from '../api/catego
 import { errMessage } from '../api/client'
 import { useHasRole } from '../roles'
 import { BudgetLineDialog } from './BudgetLineDialog'
+import { useIsNarrow } from './useIsNarrow'
 
 const CURRENT_YEAR = new Date().getFullYear()
 
@@ -30,9 +31,16 @@ function toCents(amount: string): number {
 }
 
 const czk = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'CZK' })
+// Phones show whole crowns so the amount columns fit the screen width.
+const czkWhole = new Intl.NumberFormat(undefined, {
+  style: 'currency',
+  currency: 'CZK',
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 0,
+})
 
-function formatCents(cents: number): string {
-  return czk.format(cents / 100)
+function formatCents(cents: number, whole = false): string {
+  return (whole ? czkWhole : czk).format(cents / 100)
 }
 
 interface Figures {
@@ -85,6 +93,12 @@ interface EditActions {
 
 const EditContext = createContext<EditActions | null>(null)
 
+// Phones drop the Note column (the note moves under the line's name).
+function useColumnCount(): number {
+  const edit = useContext(EditContext)
+  return (useIsNarrow() ? 4 : 5) + (edit ? 1 : 0)
+}
+
 export function BudgetPlanView() {
   const canManage = useHasRole('manage-budget')
   const budgets = useQuery({ queryKey: ['budgets'], queryFn: fetchBudgets })
@@ -112,7 +126,7 @@ export function BudgetPlanView() {
 
   return (
     <section>
-      <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginBottom: '1rem' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem 1rem', alignItems: 'center', marginBottom: '1rem' }}>
         <label>
           Year{' '}
           <select value={year} onChange={(e) => setSearchParams({ year: e.target.value }, { replace: true })}>
@@ -247,7 +261,7 @@ function BudgetSettings({
     <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap', marginBottom: '1rem' }}>
       <label>
         Note{' '}
-        <input value={draft} onChange={(e) => setDraft(e.target.value)} style={{ width: '22rem' }} />
+        <input value={draft} onChange={(e) => setDraft(e.target.value)} style={{ width: '22rem', maxWidth: '100%' }} />
       </label>
       <button disabled={saveNote.isPending || draft.trim() === (note ?? '')} onClick={() => saveNote.mutate()}>
         {saveNote.isPending ? 'Saving…' : 'Save note'}
@@ -298,6 +312,7 @@ function AuditorReportLink({ year }: { year: number }) {
 
 function BudgetTable({ report, editing }: { report: BudgetReport; editing: boolean }) {
   const qc = useQueryClient()
+  const narrow = useIsNarrow()
   // Category names show only in edit mode; viewers holding just view-budget
   // can't read GET /categories.
   const categories = useQuery({ queryKey: ['categories'], queryFn: fetchCategories, enabled: editing })
@@ -365,16 +380,16 @@ function BudgetTable({ report, editing }: { report: BudgetReport; editing: boole
 
       <EditContext.Provider value={editActions}>
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '0.875rem' }}>
+          <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: narrow ? '0.8125rem' : '0.875rem' }}>
             <thead>
               <tr>
                 <th style={th} />
                 <th style={th}>Budgeted</th>
                 <th style={th}>Actual</th>
-                <th style={th}>Note</th>
+                {!narrow && <th style={th}>Note</th>}
                 <th style={th}>
                   <span title={PERCENT_EXPLANATION} style={{ cursor: 'help', borderBottom: '1px dotted #666' }}>
-                    % of budgeted
+                    {narrow ? '%' : '% of budgeted'}
                   </span>
                 </th>
                 {editing && <th style={th} />}
@@ -410,8 +425,10 @@ function BudgetTable({ report, editing }: { report: BudgetReport; editing: boole
                   <tr>
                     <td style={{ ...td, fontWeight: 600, textAlign: 'center' }}>Difference incl. unbudgeted</td>
                     <td style={tdNumber}>—</td>
-                    <td style={{ ...tdNumber, fontWeight: 600 }}>{formatCents(incomes.actual - expenses.actual + unbudgetedNet)}</td>
-                    <td style={td} />
+                    <td style={{ ...tdNumber, fontWeight: 600 }}>
+                      {formatCents(incomes.actual - expenses.actual + unbudgetedNet, narrow)}
+                    </td>
+                    {!narrow && <td style={td} />}
                     <td style={tdNumber} />
                     {editing && <td style={td} />}
                   </tr>
@@ -446,7 +463,7 @@ function SectionRows({
   lines: BudgetReportLine[]
   categoryNames: (line: BudgetReportLine) => string
 }) {
-  const edit = useContext(EditContext)
+  const columns = useColumnCount()
   return (
     <>
       <HeaderRow>
@@ -454,7 +471,7 @@ function SectionRows({
       </HeaderRow>
       {lines.length === 0 && (
         <tr>
-          <td style={{ ...td, color: '#999' }} colSpan={edit ? 6 : 5}>
+          <td style={{ ...td, color: '#999' }} colSpan={columns}>
             No lines.
           </td>
         </tr>
@@ -503,11 +520,13 @@ function LineRow({
 }) {
   // The mapped categories are an editing aid — shown only in edit mode.
   const edit = useContext(EditContext)
+  const narrow = useIsNarrow()
   return (
     <FigureRow
       label={
         <>
           {line.name}
+          {narrow && line.note && <span style={{ display: 'block', color: '#555', fontSize: '0.75rem' }}>{line.note}</span>}
           {edit && (
             <span style={{ display: 'block', color: '#666', fontSize: '0.75rem' }}>
               {categories === '' ? 'no categories mapped' : categories}
@@ -571,6 +590,7 @@ function FigureRow({
   line?: BudgetReportLine
 }) {
   const edit = useContext(EditContext)
+  const narrow = useIsNarrow()
   // The Difference row compares two balances, not two amounts of the same
   // kind — with a near-zero or negative budgeted balance the ratio reads
   // misleadingly (a good result as a negative %), so it shows none.
@@ -597,9 +617,9 @@ function FigureRow({
   return (
     <tr style={rowStyle}>
       <td style={labelStyle}>{label}</td>
-      <td style={tdNumber}>{formatCents(figures.budgeted)}</td>
-      <td style={tdNumber}>{formatCents(figures.actual)}</td>
-      <td style={tdNote}>{line?.note}</td>
+      <td style={tdNumber}>{formatCents(figures.budgeted, narrow)}</td>
+      <td style={tdNumber}>{formatCents(figures.actual, narrow)}</td>
+      {!narrow && <td style={tdNote}>{line?.note}</td>}
       <td style={tdNumber}>{percent}</td>
       {edit && <td style={tdNumber}>{line && <LineActions line={line} />}</td>}
     </tr>
@@ -608,6 +628,7 @@ function FigureRow({
 
 function UnbudgetedRow({ total }: { total: UnbudgetedTotal }) {
   const edit = useContext(EditContext)
+  const narrow = useIsNarrow()
   const cents = toCents(total.actual)
   return (
     <tr style={{ color: WARNING_COLOR }}>
@@ -615,8 +636,8 @@ function UnbudgetedRow({ total }: { total: UnbudgetedTotal }) {
         {categoryLabel(total.category)} ({total.direction === 'incoming' ? 'income' : 'expense'})
       </td>
       <td style={tdNumber}>—</td>
-      <td style={tdNumber}>{formatCents(total.direction === 'incoming' ? cents : -cents)}</td>
-      <td style={td} />
+      <td style={tdNumber}>{formatCents(total.direction === 'incoming' ? cents : -cents, narrow)}</td>
+      {!narrow && <td style={td} />}
       <td style={tdNumber} />
       {edit && <td style={td} />}
     </tr>
@@ -626,10 +647,10 @@ function UnbudgetedRow({ total }: { total: UnbudgetedTotal }) {
 // An empty row of normal line height, no background or borders, separating
 // a section's lines from its sum row, and the sums from the difference.
 function SpacerRow() {
-  const edit = useContext(EditContext)
+  const columns = useColumnCount()
   return (
     <tr aria-hidden="true">
-      <td colSpan={edit ? 6 : 5} style={{ ...td, border: 'none' }}>
+      <td colSpan={columns} style={{ ...td, border: 'none' }}>
         &nbsp;
       </td>
     </tr>
@@ -637,10 +658,10 @@ function SpacerRow() {
 }
 
 function HeaderRow({ children }: { children: ReactNode }) {
-  const edit = useContext(EditContext)
+  const columns = useColumnCount()
   return (
     <tr>
-      <td colSpan={edit ? 6 : 5} style={{ ...td, fontWeight: 700, paddingTop: '0.9rem', borderBottom: '2px solid #ddd' }}>
+      <td colSpan={columns} style={{ ...td, fontWeight: 700, paddingTop: '0.9rem', borderBottom: '2px solid #ddd' }}>
         {children}
       </td>
     </tr>
