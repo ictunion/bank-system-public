@@ -479,7 +479,7 @@ function SectionRows({
           </td>
         </tr>
       )}
-      {toBlocks(lines).map((block, index, blocks) =>
+      {toBlocks(lines).map((block) =>
         block.group === null ? (
           <LineRow key={block.line.id} line={block.line} kind={kind} categories={categoryNames(block.line)} />
         ) : (
@@ -489,8 +489,6 @@ function SectionRows({
             lines={block.lines}
             kind={kind}
             categoryNames={categoryNames}
-            // The section's own spacer row already follows its last block.
-            last={index === blocks.length - 1}
           />
         ),
       )}
@@ -503,15 +501,12 @@ function GroupRows({
   lines,
   kind,
   categoryNames,
-  last,
 }: {
   group: string
   lines: BudgetReportLine[]
   kind: BudgetLineKind
   categoryNames: (line: BudgetReportLine) => string
-  last: boolean
 }) {
-  const narrow = useIsNarrow()
   return (
     <>
       {lines.map((line) => (
@@ -519,8 +514,6 @@ function GroupRows({
       ))}
       {/* The group's own row comes after its lines, as their sum. */}
       <FigureRow label={group} kind={kind} figures={sumFigures(lines)} emphasis="group" />
-      {/* Phones: a gap so the next lines don't read as part of this group. */}
-      {narrow && !last && <SpacerRow />}
     </>
   )
 }
